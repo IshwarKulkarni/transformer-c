@@ -42,9 +42,9 @@ class Logger
     void inline tee(const std::string& filename)
     {
         if (!file.is_open())
-            {
-                file.open(filename);
-            }
+        {
+            file.open(filename);
+        }
     }
 
     template <typename First>

@@ -4,12 +4,12 @@
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <stdexcept>
 #include <vector>
 #include "functors.cuh"
 #include "logger.hpp"
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
-#include "types"
 
 template <typename FloatT>
 Matrix<FloatT> read_csv(const std::string& filename)

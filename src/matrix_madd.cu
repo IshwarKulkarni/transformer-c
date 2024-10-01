@@ -29,25 +29,25 @@ __global__ void tiled_mmadd_shmem(T *__restrict__ result, const T *__restrict__ 
 
 #pragma unroll
     for (uint32 k = 0; k < iDivUp(aW, TILE_SIZE_X) * TILE_SIZE_X; k += TILE_SIZE_X)
-        {
-            uint32 aoffset = row * aW + k + threadIdx.y;
-            uint32 boffset = (k + threadIdx.x) * bW + col;
-            As[threadIdx.x][threadIdx.y] = (k + threadIdx.y < aW && row < aH) ? A[aoffset] : T(0);
-            Bs[threadIdx.x][threadIdx.y] = (k + threadIdx.x < bH && col < bW) ? B[boffset] : T(0);
-            __syncthreads();
+    {
+        uint32 aoffset = row * aW + k + threadIdx.y;
+        uint32 boffset = (k + threadIdx.x) * bW + col;
+        As[threadIdx.x][threadIdx.y] = (k + threadIdx.y < aW && row < aH) ? A[aoffset] : T(0);
+        Bs[threadIdx.x][threadIdx.y] = (k + threadIdx.x < bH && col < bW) ? B[boffset] : T(0);
+        __syncthreads();
 #pragma unroll
-            for (uint32 kk = 0; kk < TILE_SIZE_X; kk++)
-                {
-                    sum += SumType(As[threadIdx.x][kk] * Bs[kk][threadIdx.y]);
-                }
-            __syncthreads();
-        }
-    if (row < aH && col < bW)
+        for (uint32 kk = 0; kk < TILE_SIZE_X; kk++)
         {
-            uint32 offset = row * bW + col;
-            sum += SumType(C ? T(C[offset]) : T(0));
-            result[offset] = pprocess(sum);
+            sum += SumType(As[threadIdx.x][kk] * Bs[kk][threadIdx.y]);
         }
+        __syncthreads();
+    }
+    if (row < aH && col < bW)
+    {
+        uint32 offset = row * bW + col;
+        sum += SumType(C ? T(C[offset]) : T(0));
+        result[offset] = pprocess(row, col, sum);
+    }
 }
 
 template <typename T, typename PProcess>
@@ -58,15 +58,15 @@ __global__ void mmadd_kernel(T *__restrict__ result, const T *__restrict__ A, ui
     uint32 i = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i < aH && j < bW)
-        {
-            T sum = 0;
+    {
+        T sum = 0;
 #pragma unroll
-            for (uint32 k = 0; k < aW; k++)
-                {
-                    sum += A[i * aW + k] * B[k * bW + j];
-                }
-            result[i * bW + j] = pprocess(sum + (C ? C[i * bW + j] : T(0)));
+        for (uint32 k = 0; k < aW; k++)
+        {
+            sum += A[i * aW + k] * B[k * bW + j];
         }
+        result[i * bW + j] = pprocess(i, j, sum + (C ? C[i * bW + j] : T(0)));
+    }
 }
 
 // A (h,w)  * B (w, 1)  + <C(h,1> -> result (h, 1)
@@ -91,26 +91,26 @@ __global__ void mat_vector_mul_kernel(T *result, const T *A, const T *B, const T
     T r = (addToresult ? result[blockIdx.x] : T(0));
 #pragma unroll
     for (uint32 s = blockDim.x / 2; s > 32; s >>= 1)
-        {
-            if (x < s) As[x] += As[x + s];
-            __syncthreads();
-        }
+    {
+        if (x < s) As[x] += As[x + s];
+        __syncthreads();
+    }
     __syncthreads();
     volatile T *vAs = (volatile T *)As;
     if (x <= 32 and offset_x < width)
-        {
-            if (BLOCK_X >= 64) vAs[x] += vAs[x + 32];
-            if (BLOCK_X >= 32) vAs[x] += vAs[x + 16];
-            if (BLOCK_X >= 16) vAs[x] += vAs[x + 8];
-            if (BLOCK_X >= 8) vAs[x] += vAs[x + 4];
-            if (BLOCK_X >= 4) vAs[x] += vAs[x + 2];
-            if (BLOCK_X >= 2) vAs[x] += vAs[x + 1];
-        }
+    {
+        if (BLOCK_X >= 64) vAs[x] += vAs[x + 32];
+        if (BLOCK_X >= 32) vAs[x] += vAs[x + 16];
+        if (BLOCK_X >= 16) vAs[x] += vAs[x + 8];
+        if (BLOCK_X >= 8) vAs[x] += vAs[x + 4];
+        if (BLOCK_X >= 4) vAs[x] += vAs[x + 2];
+        if (BLOCK_X >= 2) vAs[x] += vAs[x + 1];
+    }
     __syncthreads();
     if (x == 0 and blockIdx.x < height)
-        {
-            result[blockIdx.x] = pProcess(vAs[0] + c + r);
-        }
+    {
+        result[blockIdx.x] = pProcess(y, x, vAs[0] + c + r);
+    }
 }
 
 template <typename T, typename PostProcess>
@@ -122,11 +122,11 @@ __global__ void outer_product(T *result, const T *A, const T *B, const T *C, uin
     uint32 y = blockIdx.x;
 
     if (x < rwidth and y < rheight)
-        {
-            T c = (C ? C[y * rwidth + x] : T(0));
-            T r = (addToresult ? result[y * rwidth + x] : T(0));
-            result[y * rwidth + x] = pProcess(T(A[y] * B[x]) + c + r);
-        }
+    {
+        T c = (C ? C[y * rwidth + x] : T(0));
+        T r = (addToresult ? result[y * rwidth + x] : T(0));
+        result[y * rwidth + x] = pProcess(y, x, T(A[y] * B[x]) + c + r);
+    }
 }
 
 template <typename T, typename PostProcess>
@@ -136,65 +136,64 @@ void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     check_mmadd_sizes(result, A, B, C);
 
     if (B.height <= 16)
-        {
-            mat_vector_mul_kernel<T, 16><<<A.height, 16>>>(result.begin(), A.begin(), B.begin(),
-                                                           C ? C->begin() : nullptr, A.height,
-                                                           A.width, 0, false, pProcess);
-        }
+    {
+        mat_vector_mul_kernel<T, 16><<<A.height, 16>>>(result.begin(), A.begin(), B.begin(),
+                                                       C ? C->begin() : nullptr, A.height, A.width,
+                                                       0, false, pProcess);
+    }
     else if (B.height <= 32)
-        {
-            mat_vector_mul_kernel<T, 32><<<A.height, 32>>>(result.begin(), A.begin(), B.begin(),
-                                                           C ? C->begin() : nullptr, A.height,
-                                                           A.width, 0, false, pProcess);
-        }
+    {
+        mat_vector_mul_kernel<T, 32><<<A.height, 32>>>(result.begin(), A.begin(), B.begin(),
+                                                       C ? C->begin() : nullptr, A.height, A.width,
+                                                       0, false, pProcess);
+    }
     else if (B.height <= 64)
-        {
-            mat_vector_mul_kernel<T, 64><<<A.height, 64>>>(result.begin(), A.begin(), B.begin(),
+    {
+        mat_vector_mul_kernel<T, 64><<<A.height, 64>>>(result.begin(), A.begin(), B.begin(),
+                                                       C ? C->begin() : nullptr, A.height, A.width,
+                                                       0, false, pProcess);
+    }
+    else if (B.height <= 128)
+    {
+        mat_vector_mul_kernel<T, 128><<<A.height, 128>>>(result.begin(), A.begin(), B.begin(),
+                                                         C ? C->begin() : nullptr, A.height,
+                                                         A.width, 0, false, pProcess);
+    }
+    else if (B.height <= 256)
+    {
+        mat_vector_mul_kernel<T, 256><<<A.height, 256>>>(result.begin(), A.begin(), B.begin(),
+                                                         C ? C->begin() : nullptr, A.height,
+                                                         A.width, 0, false, pProcess);
+    }
+    else if (B.height <= 512)
+    {
+        mat_vector_mul_kernel<T, 512><<<A.height, 512>>>(result.begin(), A.begin(), B.begin(),
+                                                         C ? C->begin() : nullptr, A.height,
+                                                         A.width, 0, false, pProcess);
+    }
+    else if (B.height <= 1024)
+    {
+        LOG("Using mat_vector_mul_kernel, A, B: ", A.shape_str, " ", B.shape_str);
+        mat_vector_mul_kernel<T, 1024><<<A.height, 1024>>>(result.begin(), A.begin(), B.begin(),
                                                            C ? C->begin() : nullptr, A.height,
                                                            A.width, 0, false, pProcess);
-        }
-    else if (B.height <= 128)
-        {
-            mat_vector_mul_kernel<T, 128><<<A.height, 128>>>(result.begin(), A.begin(), B.begin(),
-                                                             C ? C->begin() : nullptr, A.height,
-                                                             A.width, 0, false, pProcess);
-        }
-    else if (B.height <= 256)
-        {
-            mat_vector_mul_kernel<T, 256><<<A.height, 256>>>(result.begin(), A.begin(), B.begin(),
-                                                             C ? C->begin() : nullptr, A.height,
-                                                             A.width, 0, false, pProcess);
-        }
-    else if (B.height <= 512)
-        {
-            mat_vector_mul_kernel<T, 512><<<A.height, 512>>>(result.begin(), A.begin(), B.begin(),
-                                                             C ? C->begin() : nullptr, A.height,
-                                                             A.width, 0, false, pProcess);
-        }
-    else if (B.height <= 1024)
-        {
-            LOG("Using mat_vector_mul_kernel, A, B: ", A.shape_string(), " ", B.shape_string());
-            mat_vector_mul_kernel<T, 1024><<<A.height, 1024>>>(result.begin(), A.begin(), B.begin(),
-                                                               C ? C->begin() : nullptr, A.height,
-                                                               A.width, 0, false, pProcess);
-        }
+    }
     else if (B.height > 1024)
+    {
+        constexpr int32 BLOCK_X = 1024;
+        int32 offset = 0;
+        for (; offset < B.height - BLOCK_X; offset += BLOCK_X)
         {
-            constexpr int32 BLOCK_X = 1024;
-            int32 offset = 0;
-            for (; offset < B.height - BLOCK_X; offset += BLOCK_X)
-                {
-                    mat_vector_mul_kernel<T, BLOCK_X, Identity<T>>
-                        <<<A.height, BLOCK_X>>>(  // only multi plication and addition, do not add C
-                            result.begin(), A.begin(), B.begin(), nullptr, A.height, A.width,
-                            offset, offset > 0);
-                }
-
-            mat_vector_mul_kernel<T, BLOCK_X>
-                <<<A.height, BLOCK_X>>>(  // add C and apply post process
-                    result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height,
-                    A.width, offset, offset > 0, pProcess);
+            mat_vector_mul_kernel<T, BLOCK_X, Identity<T>>
+                <<<A.height, BLOCK_X>>>(  // only multi plication and addition, do not add C
+                    result.begin(), A.begin(), B.begin(), nullptr, A.height, A.width, offset,
+                    offset > 0);
         }
+
+        mat_vector_mul_kernel<T, BLOCK_X><<<A.height, BLOCK_X>>>(  // add C and apply post process
+            result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width,
+            offset, offset > 0, pProcess);
+    }
 }
 
 template <typename T, typename PProcess>
@@ -205,40 +204,40 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
 
     if (A.width == 1 and
         B.width <= 1024)  // outer product (small enough to fit in one thread block)
-        {
-            outer_product<<<A.height, B.width>>>(result.begin(), A.begin(), B.begin(),
-                                                 (C ? C->begin() : nullptr), A.height, B.width,
-                                                 false, pProcess);
-        }
+    {
+        outer_product<<<A.height, B.width>>>(result.begin(), A.begin(), B.begin(),
+                                             (C ? C->begin() : nullptr), A.height, B.width, false,
+                                             pProcess);
+    }
     else if (B.width == 1)
-        {
-            mvadd<T>(result, A, B, C, pProcess);
-        }
+    {
+        mvadd<T>(result, A, B, C, pProcess);
+    }
     else if (result.numels() <= 1024)  // small matrices
-        {
-            // LOG("Using mmadd_kernel: ", result.numels());
-            mmadd_kernel<T><<<1, dim3(A.height, B.width)>>>(result.begin(), A.begin(), A.height,
-                                                            A.width, B.begin(), B.width,
-                                                            C ? C->begin() : nullptr, pProcess);
-        }
+    {
+        // LOG("Using mmadd_kernel: ", result.numels());
+        mmadd_kernel<T><<<1, dim3(A.height, B.width)>>>(result.begin(), A.begin(), A.height,
+                                                        A.width, B.begin(), B.width,
+                                                        C ? C->begin() : nullptr, pProcess);
+    }
     else if (A.height <= 1536)
-        {
-            constexpr uint32 BLOCK_SIZE_MM = 16;
-            dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
-            dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
-            tiled_mmadd_shmem<BLOCK_SIZE_MM, false>
-                <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
-                                        B.width, C ? C->begin() : nullptr, pProcess);
-        }
+    {
+        constexpr uint32 BLOCK_SIZE_MM = 16;
+        dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
+        dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
+        tiled_mmadd_shmem<BLOCK_SIZE_MM, false>
+            <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
+                                    B.width, C ? C->begin() : nullptr, pProcess);
+    }
     else
-        {
-            constexpr uint32 BLOCK_SIZE_MM = 32;
-            dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
-            dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
-            tiled_mmadd_shmem<BLOCK_SIZE_MM, false>
-                <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
-                                        B.width, C ? C->begin() : nullptr, pProcess);
-        }
+    {
+        constexpr uint32 BLOCK_SIZE_MM = 32;
+        dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
+        dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
+        tiled_mmadd_shmem<BLOCK_SIZE_MM, false>
+            <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
+                                    B.width, C ? C->begin() : nullptr, pProcess);
+    }
     cudaErrCheck(cudaGetLastError());
 }
 
@@ -264,18 +263,17 @@ template <typename T>
 void transpose(Matrix<T> &res, const Matrix<T> &A)
 {
     if (A.height != res.width || A.width != res.height)
-        {
-            LOG(BOLD, RED,
-                "Matrix dimensions do not match for transpose operation: ", A.shape_string(),
-                " -> ", res.shape_string());
-            throw std::runtime_error("Dimension mismatch");
-        }
+    {
+        LOG(BOLD, RED, "Matrix dimensions do not match for transpose operation: ", A.shape_str,
+            " -> ", res.shape_str);
+        throw runtime_error_with_backtrace("Dimension mismatch");
+    }
 
     if (A.width == 1)
-        {
-            fill(res, A.begin());
-            return;
-        }
+    {
+        fill(res, A.begin());
+        return;
+    }
 
     constexpr uint32 BLOCK_SIZE = 32;
     uint32 max_dim = std::max(A.width, A.height);
@@ -287,7 +285,7 @@ void transpose(Matrix<T> &res, const Matrix<T> &A)
     cudaErrCheck(cudaGetLastError());
 }
 
-using FloatT = float32;
+using FloatT = float64;
 template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                        Matrix<FloatT> const &,
                                                        Matrix<FloatT> const *,

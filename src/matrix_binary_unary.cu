@@ -19,7 +19,7 @@ __global__ void binary_apply_kernel(Tr *__restrict__ result, const Ta *__restric
     if (bW == 1) Bxy[0] = 0;
     if (bH == 1) Bxy[1] = 0;
 
-    result[y * resW + x] = op(A[Axy[0] + aW * Axy[1]], B[Bxy[0] + bW * Bxy[1]]);
+    result[y * resW + x] = op(y, x, A[Axy[0] + aW * Axy[1]], B[Bxy[0] + bW * Bxy[1]]);
 }
 
 template <typename Ta, typename Tb, typename Tr, typename Op>
@@ -28,7 +28,7 @@ void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op 
     check_broadcast_sizes<Ta>(res, A, B);
 
     dim3 block(32, 32);
-    dim3 grid((res.width + block.x - 1) / block.x, (res.height + block.y - 1) / block.y);
+    dim3 grid(iDivUp(res.width, block.x), iDivUp(res.height, block.y));
     binary_apply_kernel<Ta, Tb, Tr, Op><<<grid, block>>>(res.begin(), A.begin(), B.begin(),
                                                          res.height, res.width, A.height, A.width,
                                                          B.height, B.width, op);
@@ -48,19 +48,20 @@ __global__ void unary_apply_kernel(Tr *__restrict__ result, const Ta *__restrict
     if (aW == 1) Axy[0] = 0;  // broadcast along x axis
     if (aH == 1) Axy[1] = 0;
 
-    result[y * resW + x] = op(A[Axy[0] + aW * Axy[1]]);
+    result[y * resW + x] = op(y, x, A[Axy[0] + aW * Axy[1]]);
 }
 
 template <typename Ta, typename Tr, typename Op>
 void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op)
 {
     dim3 block(32, 32);
-    dim3 grid((res.width + block.x - 1) / block.x, (res.height + block.y - 1) / block.y);
+    dim3 grid(iDivUp(res.width, block.x), iDivUp(res.height, block.y));
     unary_apply_kernel<Ta, Tr, Op>
         <<<grid, block>>>(res.begin(), A.begin(), res.height, res.width, A.height, A.width, op);
 }
 
-using FloatT = float32;
+// All the tempalte instantiations of the above functions using same FloatT type
+using FloatT = float64;
 template void binary_apply<FloatT, FloatT, FloatT, Plus<FloatT, FloatT>>(Matrix<FloatT> &,
                                                                          Matrix<FloatT> const &,
                                                                          Matrix<FloatT> const &,
@@ -116,3 +117,19 @@ template void unary_apply<FloatT, FloatT, TanH<FloatT>::TanhB>(Matrix<FloatT> &,
 
 template void unary_apply<FloatT, FloatT, Abs<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                        Abs<FloatT>);
+
+template void unary_apply<FloatT, FloatT, Exp<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                       Exp<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, Div<FloatT, FloatT>>(Matrix<FloatT> &,
+                                                                        Matrix<FloatT> const &,
+                                                                        Matrix<FloatT> const &,
+                                                                        Div<FloatT, FloatT>);
+
+template void unary_apply<FloatT, FloatT, Identity<FloatT>>(Matrix<FloatT> &,
+                                                            Matrix<FloatT> const &,
+                                                            Identity<FloatT>);
+
+template void binary_apply<FloatT, FloatT, FloatT, SoftmaxGrad<FloatT>>(Matrix<FloatT> &,
+                                                                        Matrix<FloatT> const &,
+                                                                        Matrix<FloatT> const &,
+                                                                        SoftmaxGrad<FloatT>);
