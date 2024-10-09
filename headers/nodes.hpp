@@ -25,7 +25,10 @@ struct Parameter
         }
     }
 
-    inline void reset_grad() { cudaErrCheck(cudaMemset(Grads.begin(), 0, Grads.numels() * sizeof(TG))); }
+    inline void reset_grad()
+    {
+        cudaErrCheck(cudaMemset(Grads.begin(), 0, Grads.numels() * sizeof(TG)));
+    }
 };
 
 template <typename T, typename ActivationT = IdentityActivation<T>> struct Linear
@@ -60,31 +63,42 @@ template <typename T, typename ActivationT = IdentityActivation<T>> struct Linea
 
 template <typename T> struct MSE
 {
-    Matrix<T> diff;  // holds (x - y)^2 in forward and -2(y - x) in backward
-    Matrix<T> output_vec; // output of reduction to 1D
-    Matrix<T> output_scalar;
+    Matrix<T> diff;          // holds (x - y)^2 in forward and -2(y - x) in backward
+    Matrix<T> output_vec;    // output of reduction to 1D
+    Matrix<T> output_scalar; // output of reduction to scalar
     bool reduceToScalar;
 
-    MSE(uint32_t inHeight, uint32_t inWidth, bool reduce = true)
-        : diff({inHeight, inWidth}), output_vec({inHeight, 1}), output_scalar({1, 1}),
-          reduceToScalar(reduce)
+    MSE(uint32_t inHeight, uint32_t inWidth, bool reduceToScalar = true)
+        : diff(inHeight, inWidth), output_vec(inHeight, 1), output_scalar(1, 1),
+          reduceToScalar(reduceToScalar)
     {
     }
 
     const Matrix<T>& forward(const Matrix<T>& y, const Matrix<T>& target)
     {
-        binary_apply(diff, y, target, DiffSq<T>());
-        reduce_mean(output_vec, diff);
+        if (diff.width == 1)
+        {
+            binary_apply(output_vec, y, target, DiffSq<T>());
+        }
+        else
+        {
+            binary_apply(diff, y, target, DiffSq<T>());
+            reduce_mean(output_vec, diff);
+        }
+        cudaErrCheck(cudaDeviceSynchronize());
+        std::cout << "output_vec: " << output_vec << std::endl;
         if (reduceToScalar)
         {
             reduce_mean(output_scalar, output_vec);
+            cudaErrCheck(cudaDeviceSynchronize());
+            std::cout << "output_scalar: " << output_scalar << std::endl;
         }
         return get_output();
     }
 
     void backward(const Matrix<T>& y, const Matrix<T>& t)
     {
-        binary_apply(diff, y, t,  MultNeg2<T>());
+        binary_apply(diff, y, t, MultNeg2<T>());
     }
 
     const Matrix<T>& get_output() { return reduceToScalar ? output_scalar : output_vec; }

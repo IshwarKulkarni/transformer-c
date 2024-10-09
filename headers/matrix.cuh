@@ -118,12 +118,13 @@ template <typename T> struct Matrix
     }
 };
 
-template <typename T> std::ostream& operator<<(std::ostream& os, const Matrix<T>& m) // usable to paste in torch ()
+template <typename T>
+std::ostream& operator<<(std::ostream& os, const Matrix<T>& m) // usable to paste in torch ()
 {
-    os << m.get_name() << std::setprecision(6) << std::fixed << std::setfill(' ') << "\n";
+    os << m.get_name() << std::setprecision(6) << std::fixed << std::setfill(' ');
     for (uint32 y = 0; y < m.height; y++)
     {
-        os << std::endl << "[";
+        os << "\n[";
         for (uint32 x = 0; x < m.width; x++)
         {
             os << std::setw(10) << m(x, y) << ", ";

@@ -57,8 +57,7 @@ template <typename T> struct DividebBy
     __host__ __device__ inline T operator()(T a) const { return a / divisor; }
 };
 
-template <typename T> 
-struct MultiplyBy
+template <typename T> struct MultiplyBy
 {
     T factor;
     MultiplyBy(T factor) : factor(factor) {}
@@ -99,13 +98,15 @@ template <typename Ta, typename Tb = Ta> struct Plus
 
 template <typename T> struct Max
 {
-    static constexpr T Identity = std::is_floating_point<T>::value ? -1e9 : std::numeric_limits<T>::lowest();
+    static constexpr T Identity =
+        std::is_floating_point<T>::value ? -1e9 : std::numeric_limits<T>::lowest();
     __host__ __device__ inline T operator()(T a, T b) const { return (a > b ? a : b); }
 };
 
 template <typename T> struct Min
 {
-    static constexpr T Identity = std::is_floating_point<T>::value ? 1e9 : std::numeric_limits<T>::max();
+    static constexpr T Identity =
+        std::is_floating_point<T>::value ? 1e9 : std::numeric_limits<T>::max();
     __host__ __device__ inline T operator()(T a, T b) const { return (a <= b ? a : b); }
 };
 

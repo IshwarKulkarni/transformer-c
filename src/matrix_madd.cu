@@ -123,7 +123,7 @@ __global__ void outer_product(T *result, const T *A, const T *B, const T *C, uin
 
     if (x < rwidth and y < rheight)
     {
-        T c = (C ? C[y*rwidth + x] : T(0));
+        T c = (C ? C[y * rwidth + x] : T(0));
         T r = (addToresult ? result[y * rwidth + x] : T(0));
         result[y * rwidth + x] = pProcess(T(A[y] * B[x]) + c + r);
     }
@@ -142,7 +142,7 @@ void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
                                                        0, false, pProcess);
     }
     else if (B.height <= 32)
-    { 
+    {
         mat_vector_mul_kernel<T, 32><<<A.height, 32>>>(result.begin(), A.begin(), B.begin(),
                                                        C ? C->begin() : nullptr, A.height, A.width,
                                                        0, false, pProcess);
@@ -207,7 +207,8 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
         outer_product<<<A.height, B.width>>>(result.begin(), A.begin(), B.begin(),
                                              (C ? C->begin() : nullptr), A.height, B.width, false,
                                              pProcess);
-    } else if (B.width == 1)
+    }
+    else if (B.width == 1)
     {
         mvadd<T>(result, A, B, C, pProcess);
     }

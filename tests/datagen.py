@@ -40,11 +40,11 @@ def write_sample_mult_data(height, width, height2=None):
     a = torch.rand(height, width)
     b = torch.rand(width, height2)
     c = torch.mm(a, b)
-    
+
     filenames = [
-    save_tensor_to_csv(a, data_path/f'a_{a.shape[0]}x{a.shape[1]}.csv'),
-    save_tensor_to_csv(b, data_path/f'b_{a.shape[0]}x{a.shape[1]}.csv'),
-    save_tensor_to_csv(c, data_path/f'c{c.shape[0]}x{c.shape[1]}.csv')]
+        save_tensor_to_csv(a, data_path/f'a_{a.shape[0]}x{a.shape[1]}.csv'),
+        save_tensor_to_csv(b, data_path/f'b_{a.shape[0]}x{a.shape[1]}.csv'),
+        save_tensor_to_csv(c, data_path/f'c{c.shape[0]}x{c.shape[1]}.csv')]
 
     return [str(p) for p in filenames]
 

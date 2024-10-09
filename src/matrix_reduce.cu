@@ -1,19 +1,47 @@
 #include "../headers/matrix_ops.cuh"
+#include <vector_types.h>
 
-template <typename Ta, typename ReduceOp, uint32 BLOCK_X, typename PostProcess>
-__global__ void reduce_kernel(const Ta *A, Ta *result, ReduceOp reduceOp, uint32 height,
-                              uint32 width, uint32 offset = 0, bool reducExisting = false,
-                              Ta identity = Ta(0), PostProcess postProcess = PostProcess())
+template <typename T, uint32 BLOCK_Y, uint32 BLOCK_X, typename ReduceOp, typename PostProcess>
+__global__ void reduce_kernel_small(const T *A, T *result, ReduceOp reduceOp, uint32 height,
+                                    uint32 width, T identity = T(0),
+                                    PostProcess postProcess = PostProcess())
 {
     uint32 x = threadIdx.x;
-    uint32 y = blockIdx.x;
-    __shared__ Ta As[BLOCK_X + 1];
+    uint32 y = threadIdx.y;
+    __shared__ T As[BLOCK_Y + 1][BLOCK_X + 1];
+
+    if (x < width and y < height)
+        As[y][x] = T(A[x + y * width]);
+    else
+        As[y][x] = identity;
+    __syncthreads();
+    for (uint32 s = 16; s > 0; s >>= 1)
+    {
+        if (x < s and x < width) As[y][x] = reduceOp(As[y][x], As[y][x + s]);
+        __syncthreads();
+    }
+
+    if (x == 0 and y < height)
+    {
+        result[y] = postProcess(As[y][0]);
+    }
+}
+
+// it's best to read this kernel as reducing along the width of the matrix
+template <typename T, typename ReduceOp, uint32 BLOCK_X, typename PostProcess>
+__global__ void reduce_kernel(const T *A, T *result, ReduceOp reduceOp, uint32 height, uint32 width,
+                              uint32 offset = 0, bool reducExisting = false, T identity = T(0),
+                              PostProcess postProcess = PostProcess())
+{
+    uint32 x = threadIdx.x;
+    uint32 y = blockIdx.x; // always < height
+    __shared__ T As[BLOCK_X + 1];
 
     uint32 offset_x = x + offset;
 
-    As[threadIdx.x] = (offset_x < width) ? Ta(A[offset_x + y * width]) : identity;
+    As[x] = (offset_x < width) ? T(A[offset_x + y * width]) : identity;
 
-    Ta existing = (reducExisting ? result[y] : identity);
+    T existing = (reducExisting ? result[y] : identity);
 
 #pragma unroll
     for (uint32 s = blockDim.x / 2; s > 32; s >>= 1)
@@ -23,7 +51,7 @@ __global__ void reduce_kernel(const Ta *A, Ta *result, ReduceOp reduceOp, uint32
     }
     __syncthreads();
 
-    volatile Ta *vAs = (volatile Ta *)As;
+    volatile T *vAs = (volatile T *)As;
     if (x <= 32 and offset_x < width)
     {
         if (BLOCK_X >= 64) vAs[x] = reduceOp(vAs[x], vAs[x + 32]);
@@ -35,66 +63,115 @@ __global__ void reduce_kernel(const Ta *A, Ta *result, ReduceOp reduceOp, uint32
     }
     __syncthreads();
 
-    if (x == 0)
+    if (x == 0 and y < height)
     {
         result[y] = postProcess(reduceOp(vAs[0], existing));
     }
 }
 
 template <typename T, typename ReduceOp, typename PostProcess>
-void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp, T identity,
-            PostProcess postProcess)
+void reduce_kernel_launcher(const T *A, T *result, ReduceOp op, uint32 n_reductions, uint32 aspan,
+                            uint32 n_outputs, uint32 offset = 0, bool reducExisting = false,
+                            T identity = T(0), PostProcess pProcess = PostProcess())
 {
-    if (A.width < 32)
+    if (n_outputs != n_reductions)
     {
-        reduce_kernel<T, ReduceOp, 32><<<A.height, 32>>>(A.begin(), result.begin(), reduceOp,
-                                                         A.height, A.width, 0, false, identity,
-                                                         postProcess);
+        throw std::runtime_error("Number of outputs must be equal to number of reductions");
     }
-    else if (A.width < 64)
+    if (aspan <= 32)
     {
-        reduce_kernel<T, ReduceOp, 64><<<A.height, 64>>>(A.begin(), result.begin(), reduceOp,
-                                                         A.height, A.width, 0, false, identity,
-                                                         postProcess);
+        if (n_reductions < 24) // small matrix special case
+        {
+            dim3 blockSize(aspan, n_reductions);
+            reduce_kernel_small<T, 24, 32, ReduceOp, PostProcess>
+                <<<1, blockSize>>>(A, result, op, n_reductions, aspan, identity, pProcess);
+        }
+        else
+        {
+            reduce_kernel<T, ReduceOp, 32><<<n_outputs, 32>>>(A, result, op, n_reductions, aspan, 0,
+                                                              false, identity, pProcess);
+        }
     }
-    else if (A.width < 128)
+    else if (aspan <= 64)
     {
-        reduce_kernel<T, ReduceOp, 128><<<A.height, 128>>>(A.begin(), result.begin(), reduceOp,
-                                                           A.height, A.width, 0, false, identity,
-                                                           postProcess);
+        reduce_kernel<T, ReduceOp, 64>
+            <<<n_outputs, 64>>>(A, result, op, n_reductions, aspan, 0, false, identity, pProcess);
     }
-    else if (A.width < 256)
+    else if (aspan <= 128)
     {
-        reduce_kernel<T, ReduceOp, 256><<<A.height, 256>>>(A.begin(), result.begin(), reduceOp,
-                                                           A.height, A.width, 0, false, identity,
-                                                           postProcess);
+        reduce_kernel<T, ReduceOp, 128>
+            <<<n_outputs, 128>>>(A, result, op, n_reductions, aspan, 0, false, identity, pProcess);
     }
-    else if (A.width < 512)
+    else if (aspan <= 256)
     {
-        reduce_kernel<T, ReduceOp, 512><<<A.height, 512>>>(A.begin(), result.begin(), reduceOp,
-                                                           A.height, A.width, 0, false, identity,
-                                                           postProcess);
+        reduce_kernel<T, ReduceOp, 256>
+            <<<n_outputs, 256>>>(A, result, op, n_reductions, aspan, 0, false, identity, pProcess);
     }
-    else if (A.width < 1024)
+    else if (aspan <= 512)
     {
-        reduce_kernel<T, ReduceOp, 1024><<<A.height, 1024>>>(A.begin(), result.begin(), reduceOp,
-                                                             A.height, A.width, 0, false, identity,
-                                                             postProcess);
+        reduce_kernel<T, ReduceOp, 512>
+            <<<n_outputs, 512>>>(A, result, op, n_reductions, aspan, 0, false, identity, pProcess);
+    }
+    else if (aspan <= 1024)
+    {
+        reduce_kernel<T, ReduceOp, 1024>
+            <<<n_outputs, 1024>>>(A, result, op, n_reductions, aspan, 0, false, identity, pProcess);
     }
     else
     {
         constexpr int32 BLOCK_X = 256;
         int32 offset = 0;
-        for (; offset < A.width - BLOCK_X; offset += BLOCK_X)
+        for (; offset < aspan - BLOCK_X; offset += BLOCK_X)
         {
-            reduce_kernel<T, ReduceOp, BLOCK_X, Identity<T>>
-                <<<A.height, BLOCK_X>>>(A.begin(), result.begin(), reduceOp, A.height, A.width,
-                                      offset, offset > 0, identity);
+            reduce_kernel<T, ReduceOp, BLOCK_X, Identity<T>><<<n_outputs, BLOCK_X>>>(
+                A, result, op, n_reductions, aspan, offset, offset > 0, identity);
         }
-        reduce_kernel<T, ReduceOp, BLOCK_X><<<A.height, BLOCK_X>>>(A.begin(), result.begin(), reduceOp,
-                                                               A.height, A.width, offset, true,
-                                                               identity, postProcess);
+        reduce_kernel<T, ReduceOp, BLOCK_X><<<n_outputs, BLOCK_X>>>(
+            A, result, op, n_reductions, aspan, offset, true, identity, pProcess);
     }
+}
+
+template <typename T, typename ReduceOp, typename PostProcess>
+void reduce_column_vec(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp, T identity,
+                       PostProcess postProcess)
+{
+    if (!(A.width == 1 and result.width == 1 and result.height == 1))
+    {
+        if (A.height == 1)
+        {
+            LOG("No reduction needed, copying");
+            fill(result, A.begin());
+            return;
+        }
+        throw std::runtime_error("Invalid dimensions for column-reduction " + A.shape_string() +
+                                 " to " + result.shape_string());
+    }
+    reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, 1, A.height, 1, 0, false, identity,
+                           postProcess);
+}
+
+template <typename T, typename ReduceOp, typename PostProcess>
+void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp, T identity,
+            PostProcess postProcess)
+{
+
+    if (A.width == 1 and result.width == 1)
+    {
+        if (result.height == A.height)
+        {
+            LOG("No reduction needed, copying");
+            fill(result, A.begin());
+            return;
+        }
+        if (result.height == 1)
+        {
+            LOG("For reducing to scalar from a column vector, use reduce_column_vec function");
+        }
+        throw std::runtime_error("Invalid dimensions for row-reduction " + A.shape_string() +
+                                 " to " + result.shape_string());
+    }
+    reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, A.height, A.width, result.height, 0,
+                           false, identity, postProcess);
 }
 
 using FloatT = float32;
@@ -121,3 +198,6 @@ template void reduce<FloatT, Plus<FloatT, FloatT>, Exp<FloatT>>(Matrix<FloatT> &
                                                                 Matrix<FloatT> const &,
                                                                 Plus<FloatT, FloatT>, FloatT,
                                                                 Exp<FloatT>);
+
+template void reduce_column_vec<FloatT, Plus<FloatT, FloatT>, DividebBy<FloatT>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Plus<FloatT, FloatT>, FloatT, DividebBy<FloatT>);

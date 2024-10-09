@@ -23,6 +23,11 @@ template <typename T, typename ReduceOp = Plus<T>, typename PostProcess = Identi
 void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduction = ReduceOp(),
             T identity = ReduceOp::Identity, PostProcess process = PostProcess());
 
+// reduces along height, for column vectors, throws if .width > 1
+template <typename T, typename ReduceOp, typename PostProcess>
+void reduce_column_vec(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp, T identity,
+                       PostProcess postProcess);
+
 template <typename T, typename PostProcess = Identity<T>>
 void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
            PostProcess process = PostProcess());
@@ -74,12 +79,24 @@ template <typename T> inline void fill(Matrix<T> &A, const T *values)
 
 template <typename T> void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
 {
-    reduce(result, A, Plus<T>(), T(0), DividebBy<T>(A.width));
+    if (A.width > 1)
+        reduce(result, A, Plus<T>(), T(0), DividebBy<T>(A.width));
+    else if (A.height > 1 and A.width == 1 and result.width == 1)
+        reduce_column_vec(result, A, Plus<T>(), T(0), DividebBy<T>(A.height));
+    else
+        throw std::runtime_error("Invalid dimensions for mean reduction " + A.shape_string() +
+                                 " to " + result.shape_string());
 }
 
 template <typename T> void reduce_sum(Matrix<T> &result, const Matrix<T> &A)
 {
-    reduce(result, A, Plus<T>(), T(0));
+    if (A.width > 1)
+        reduce(result, A, Plus<T>(), T(0));
+    else if (A.height > 1 and A.width == 1 and result.width == 1)
+        reduce_column_vec(result, A, Plus<T>(), T(0));
+    else
+        throw std::runtime_error("Invalid dimensions for sum reduction " + A.shape_string() +
+                                 " to " + result.shape_string());
 }
 
 //////////////////////////////////////////////////////////////////////////////////////

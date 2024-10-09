@@ -81,7 +81,7 @@ def test_transpose():
 
 
 def test_reduce():
-    sizes = [(30, 40), (32, 300), (300, 15),
+    sizes = [(1, 24), (1, 32), (1, 512), (20, 30), (30, 40), (32, 300), (300, 15),
              (512, 512), (1024, 1024), (500, 3000)]
     for size in sizes:
         run_main(["test_reduce"] + list(size))

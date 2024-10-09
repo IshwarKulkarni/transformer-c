@@ -228,10 +228,7 @@ int main(int argc, char const* argv[])
             reduce_meanCPU<FloatT>(C, A);
             reduce_mean(D, A);
             match += test_match(C, D, "Mean");
-        }
 
-        if (match == 0 or true)
-        {
             reduceCPU<FloatT, Plus<FloatT>, Exp<FloatT>>(C, A);
             reduce<FloatT, Plus<FloatT>, Exp<FloatT>>(D, A);
             match += test_match(C, D, "Sum with Sigmoid");
