@@ -1,7 +1,9 @@
+#%%
 import torch
+import sys
 
-m = 128
-n = 96
+m = int(sys.argv[1])
+n = int(sys.argv[2])
 
 a = torch.rand(m, n)
 b = torch.rand(n, m)

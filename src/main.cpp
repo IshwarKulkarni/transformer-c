@@ -58,19 +58,20 @@ int main()
 
     Matrixf D = madd<float>(A, B, nullptr);
 
-    bool match = same(D, C);
+    float eps = 1e-5;
+    bool match = same(D, C, eps);
+    std::ofstream d_file("d.csv");
     if (!match)
     {
-        std::ofstream d_file("d.csv");
         // print where D is different from C
-        d_file << std::setprecision(8) <<  D << "\n\n";
-        for (int i = 0; i < D.cols; i++)
+        d_file << std::setprecision(8) ;// <<  D << "\n\n";
+        for (int i = 0; i < D.width; i++)
         {
-            for (int j = 0; j < D.rows; j++)
+            for (int j = 0; j < D.height; j++)
             {
                 auto d = D(i, j);
                 auto c = C(i, j);
-                if (c - d > 0.0001)
+                if (std::abs(c - d) > eps)
                 {
                     d_file << i << " " << j << " " << c << " " << d << std::endl;
                 }

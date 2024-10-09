@@ -25,8 +25,8 @@ template<typename T>
 struct Matrix {
 
     const uint32_t id;
-    const uint32_t rows;
-    const uint32_t cols;
+    const uint32_t height;
+    const uint32_t width;
 
     struct CudaDeleter 
     {
@@ -35,58 +35,75 @@ struct Matrix {
             cudaErrCheck(cudaFree(ptr));
         }
     };
-    
-    T* CudaAllocator(size_t numElems) {
-        T* ptr;
+
+    T* CudaAllocator(size_t numElems) 
+    {
+        T* ptr = nullptr;
         cudaErrCheck(cudaMallocManaged(&ptr, sizeof(T) * numElems));
         return ptr;
     }
 
-    typedef std::unique_ptr<T, CudaDeleter> CudaPtr;
+    typedef std::unique_ptr<T[], CudaDeleter> CudaPtr;
 
     CudaPtr data;
 
-    Matrix(uint32_t rows, uint32_t cols, const T* values=nullptr): 
-        rows(rows),
-        cols(cols),
+    Matrix(uint32_t height, uint32_t width, const T* values=nullptr): 
+        height(height),
+        width(width),
         id(getMatrixId()),
-        data(CudaAllocator(rows * cols))
+        data(CudaAllocator(height * width))
     {
         if(values) {
-            std::copy(values, values + rows * cols, data.get());
+            std::copy(values, values + height * width, data.get());
         }
     }
 
-    T& operator()(uint32_t i, uint32_t j) {
+    T& operator()(uint32_t x, uint32_t y)
+    {
         if (data == nullptr){
             throw std::runtime_error("Matrix data is null");
         }
-        if (i >= rows || j >= cols ) {
-            throw std::out_of_range("Matrix index out of range: " + std::to_string(i) + " " + std::to_string(j));
+        if (x >= height || y >= width ) {
+            throw std::out_of_range("Matrix index out of range: " + std::to_string(x) + " " + std::to_string(y));
         }
-        return data.get()[j * cols + i];
+        return data.get()[x + y * width];
     }
 
-    T operator()(uint32_t i, uint32_t j) const {
+    T operator()(uint32_t x, uint32_t y) const 
+    {
         if (data == nullptr){
             throw std::runtime_error("Matrix data is null");
         }
-        if (i >= rows || j >= cols ) {
-            throw std::out_of_range("Matrix index out of range: " + std::to_string(i) + " " + std::to_string(j));
+        if (x >= height || y >= width ) {
+            throw std::out_of_range("Matrix index out of range: " + std::to_string(x) + " " + std::to_string(y));
         }
-        return data.get()[j * cols + i];
+        return data.get()[x + y * width];
     }
 
-    std::string get_name() const {
+    std::string get_name() const 
+    {
         char name[64];
-        snprintf(name, 64, "Matrix{%d}[%dx%d]@0x%lx", id, rows, cols, uint64_t(data.get()));
+        snprintf(name, 64, "Matrix{%d}[%dx%d]@0x%lx", id, height, width, uint64_t(data.get()));
         return name;
     }
 
-    friend std::ostream& operator<<(std::ostream& os, const Matrix& m) {
-        os << m.get_name() << "\n" << std::fixed  << std::setprecision(8) << "\t";
-        for(uint32_t i = 0; i < m.rows; i++) {
-            for(uint32_t j = 0; j < m.cols; j++) {
+    inline float* begin() { return data.get(); }
+
+    inline const float* begin() const { return data.get();}
+
+    inline float* end() { return data.get() + height * width; }
+
+    inline const float* end() const { return data.get() + height * width; }
+
+    uint32_t numels() const { return height * width; }
+
+    friend std::ostream& operator<<(std::ostream& os, const Matrix& m)
+    {
+        os << m.get_name() << "\n" << std::setw(12) << std::setprecision(9) << std::setfill(' ');
+        for(uint32_t i = 0; i < m.height; i++)
+        {
+            for(uint32_t j = 0; j < m.width; j++)
+            {
                 os << m(i, j) << "  ";
             }
             os << "\n\t";

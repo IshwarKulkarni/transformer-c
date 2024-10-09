@@ -11,19 +11,19 @@
 template<typename T>
 void fill(Matrix<T> &A, float value)
 {
-    std::fill(A.data.get(), A.data.get() + A.rows * A.cols, value);
+    std::fill(A.begin(), A.end(), value);
 }
 
 template<typename T>
 inline void fill(Matrix<T>& A, const float* values)
 {
-    std::copy(values, values + A.rows * A.cols, A.data.get());
+    std::copy(values, values + A.nuemls(), A.begin());
 }
 
 template<typename T>
 bool same(const Matrix<T>&A, const Matrix<T> &B, float eps=1e-5)
 {
-    return std::equal(A.data.get(), A.data.get() + A.rows * A.cols, B.data.get(), [eps](T a, T b) { return std::abs(a - b) < eps; });
+    return std::equal(A.begin(), A.end(), B.begin(), [eps](T a, T b) { return std::abs(a - b) < eps; });
 }
 
 template<typename T>
@@ -58,7 +58,7 @@ void apply(const Matrix<T1> &A, const Matrix<T2>& B, F f)
     uint32_t numels = result.rows * result.cols;
     dim3 blockDim(256);
     dim3 gridDim((numels + blockDim.x - 1) / blockDim.x);
-    apply_kernel<<<gridDim, blockDim>>>(A.data.get(), result.data.get(), numels, f);
+    apply_kernel<<<gridDim, blockDim>>>(A.begin(), result.data.get(), numels, f);
     cudaErrCheck(cudaDeviceSynchronize());
 }
 */
