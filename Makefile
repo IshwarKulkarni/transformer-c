@@ -5,13 +5,16 @@ BUILDDIR := bin
 TARGET_MAIN := bin/main
 TARGET_TEST := bin/test
 
+ALL_TARGETS := $(TARGET_MAIN) $(TARGET_TEST)
+
 # Other variables
 SOURCES := $(shell find $(SRCDIR) -type f -name "*.cpp")
 # remove "main.cpp" and "test.cpp" from SOURCES
 
 OBJECTS := $(patsubst $(SRCDIR)/%,$(BUILDDIR)/%,$(SOURCES:.cpp=.o))
 
-OBJECTS_MAIN := $(filter-out $(BUILDDIR)/tests.o, $(OBJECTS))
+# remove "main.o" from test objects and "test.o" from main objects
+OBJECTS_MAIN := $(filter-out $(BUILDDIR)/tests.o, $(OBJECTS))  
 OBJECTS_TEST := $(filter-out $(BUILDDIR)/main.o, $(OBJECTS))
 
 SOURCESCU := $(shell find $(SRCDIR) -type f -name "*.cu")
@@ -71,10 +74,10 @@ endif
 # Target rules
 all: build
 
-build: $(TARGET_MAIN) $(TARGET_TEST)
+build: $(ALL_TARGETS)
 
 clean:
-	rm -fr $(OBJECTS) $(OBJECTSCU) $(TARGET) *.csv
+	rm -fr $(OBJECTS) $(OBJECTSCU) $(ALL_TARGETS) *.csv
 
 $(BUILDDIR)/%.cu.o: $(SRCDIR)/%.cu
 	@mkdir -p $(BUILDDIR);
@@ -87,7 +90,9 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp
 $(TARGET_MAIN): $(OBJECTS_MAIN) $(OBJECTSCU)
 	@mkdir -p $(TARGETDIR);
 	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@ 
+	@echo "\033[1;32mBuild complete for $(TARGET_MAIN) \033[0m "
 
 $(TARGET_TEST): $(OBJECTS_TEST) $(OBJECTSCU)
 	@mkdir -p $(TARGETDIR);
 	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@ 
+	@echo "\033[1;32mBuild complete for $(TARGET_TEST) \033[0m "

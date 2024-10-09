@@ -1,5 +1,6 @@
 #include "../headers/matrix_ops.cuh"
 #include "../headers/types"
+#include <cstddef>
 #include <cuda_fp16.h>
 #include <type_traits>
 
@@ -8,10 +9,6 @@ uint32 getMatrixId()
     static uint32 id = 0;
     return id++;
 }
-
-inline __device__ __host__ uint32 iDivUp(uint32 a, uint32 b) { return (a + b - 1) / b; }
-
-constexpr uint32 BLOCK_SIZE = 32;
 
 // AccumNative => internal accumulation is done in Tr, else 32bit(T) if sizeof(T) < 4 else 64bit(T)
 template <uint32 TILE_SIZE_X = 16, bool AccumNative = false, typename Ta, typename Tb, typename Tc,
@@ -116,84 +113,18 @@ __global__ void mat_vector_mul_kernel(Tr *result, const Ta *A, const Tb *B, cons
     }
 }
 
-template <typename Ta, typename Op, uint32 WIDTH>
-__global__ void reduce_kernel(const Ta *A, Ta *result, Op op, uint32 height, uint32 width,
-                              uint32 offset = 0, bool reducExisting = false, Ta identity = Ta(0))
+template <typename Ta, typename Tb = Ta, typename Tc = Ta, typename Tr = Ta>
+__global__ void outer_product(Tr *result, const Ta *A, const Tb *B, const Tc *C, uint32 rheight,
+                              uint32 rwidth, bool addToresult = false)
 {
     uint32 x = threadIdx.x;
     uint32 y = blockIdx.x;
-    __shared__ Ta As[WIDTH];
 
-    uint32 offset_x = x + offset;
-
-    As[threadIdx.x] = (offset_x < width) ? Ta(A[offset_x + y * width]) : identity;
-
-    __syncthreads();
-
-    Ta existing = (reducExisting ? result[y] : identity);
-
-#pragma unroll
-    for (uint32 s = blockDim.x / 2; s > 32; s >>= 1)
+    if (x < rwidth and y < rheight)
     {
-        if (x < s) As[x] = op(As[x], As[x + s]);
-        __syncthreads();
-    }
-    volatile Ta *vAs = (volatile Ta *)As;
-    if (x <= 32)
-    {
-        if (WIDTH >= 64) vAs[x] = op(vAs[x], vAs[x + 32]);
-        if (WIDTH >= 32) vAs[x] = op(vAs[x], vAs[x + 16]);
-        if (WIDTH >= 16) vAs[x] = op(vAs[x], vAs[x + 8]);
-        if (WIDTH >= 8) vAs[x] = op(vAs[x], vAs[x + 4]);
-        if (WIDTH >= 4) vAs[x] = op(vAs[x], vAs[x + 2]);
-        if (WIDTH >= 2) vAs[x] = op(vAs[x], vAs[x + 1]);
-    }
-    __syncthreads();
-
-    if (x == 0 and blockIdx.x < height)
-    {
-        result[y] = op(vAs[0], existing);
-    }
-}
-
-template <typename T, typename Op>
-void reduce(Matrix<T> &result, const Matrix<T> &A, const Op &op, T identity)
-{
-    if (A.width <= 32)
-    {
-        reduce_kernel<T, Op, 32><<<A.height, 32>>>(A.begin(), result.begin(), op, A.height, A.width,
-                                                   0, false, identity);
-    }
-    else if (A.width <= 64)
-    {
-        reduce_kernel<T, Op, 64><<<A.height, 64>>>(A.begin(), result.begin(), op, A.height, A.width,
-                                                   0, false, identity);
-    }
-    else if (A.width <= 128)
-    {
-        reduce_kernel<T, Op, 128><<<A.height, 128>>>(A.begin(), result.begin(), op, A.height,
-                                                     A.width, 0, false, identity);
-    }
-    else if (A.width <= 256)
-    {
-        reduce_kernel<T, Op, 256><<<A.height, 256>>>(A.begin(), result.begin(), op, A.height,
-                                                     A.width, 0, false, identity);
-    }
-    else if (A.width <= 512)
-    {
-        reduce_kernel<T, Op, 512><<<A.height, 512>>>(A.begin(), result.begin(), op, A.height,
-                                                     A.width, 0, false, identity);
-    }
-    else
-    {
-        reduce_kernel<T, Op, 1024><<<A.height, 1024>>>(A.begin(), result.begin(), op, A.height,
-                                                       A.width, 0, false, identity);
-        constexpr uint32 WIDTH = 1024;
-        for (uint offset = WIDTH; offset < A.width; offset += WIDTH)
-        {
-            reduce_kernel<T, Op, WIDTH><<<A.height, WIDTH>>>(
-                A.begin(), result.begin(), op, A.height, A.width, offset, offset > 0, identity);
-        }
+        Tr c = (C ? C[y] : Tr(0));
+        Tr r = (addToresult ? result[y * rwidth + x] : Tr(0));
+        result[y * rwidth + x] = Tr(A[y] * B[x]) + c + r;
     }
 }
 
@@ -201,6 +132,13 @@ template <typename Tr, typename Ta, typename Tb, typename Tc>
 void mvadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Matrix<Tc> *C)
 {
     check_mmadd_sizes(result, A, B, C);
+
+    if (B.height == 1) // outer product
+    {
+        outer_product<<<A.height, B.width>>>(result.begin(), A.begin(), B.begin(),
+                                             (C ? C->begin() : nullptr), A.height, B.width);
+        return;
+    }
     if (B.height <= 32)
     {
         mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 32><<<A.height, 32>>>(
@@ -277,7 +215,7 @@ void mmadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const M
     cudaErrCheck(cudaGetLastError());
 }
 
-template <typename T>
+template <typename T, uint32 BLOCK_SIZE>
 __global__ void transpose_kernel(T *__restrict__ result, const T *__restrict__ A, uint32 height,
                                  uint32 width)
 {
@@ -309,17 +247,16 @@ template <typename T> void transpose(Matrix<T> &res, const Matrix<T> &A)
         return;
     }
 
+    constexpr uint32 BLOCK_SIZE = 32;
     uint32 max_dim = std::max(A.width, A.height);
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
 
     dim3 gridDim(iDivUp(max_dim, BLOCK_SIZE), iDivUp(max_dim, BLOCK_SIZE));
-    // LOG("A: ", A.height, "x", A.width, "blockDim: ", blockDim.x, "x", blockDim.y, " gridDim: ",
-    // gridDim.x, "x", gridDim.y);
-    transpose_kernel<T><<<gridDim, blockDim>>>(res.begin(), A.begin(), A.height, A.width);
+    transpose_kernel<T, BLOCK_SIZE><<<gridDim, blockDim>>>(res.begin(), A.begin(), A.height, A.width);
     cudaErrCheck(cudaGetLastError());
 }
 
-using FloatT = float64;
+using FloatT = float32;
 
 template void mvadd(Matrix<FloatT> &result, const Matrix<FloatT> &A, const Matrix<FloatT> &B,
                     const Matrix<FloatT> *C);
@@ -328,9 +265,3 @@ template void mmadd(Matrix<FloatT> &result, const Matrix<FloatT> &A, const Matri
                     const Matrix<FloatT> *C);
 
 template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A);
-
-template void reduce(Matrix<FloatT> &, const Matrix<FloatT> &, const Plus<FloatT> &, FloatT);
-
-template void reduce(Matrix<FloatT> &, const Matrix<FloatT> &, const Min<FloatT> &, FloatT);
-
-template void reduce(Matrix<FloatT> &, const Matrix<FloatT> &, const Max<FloatT> &, FloatT);

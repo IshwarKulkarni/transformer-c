@@ -10,6 +10,8 @@
 #include <random>
 #include <vector>
 
+inline __device__ __host__ uint32 iDivUp(uint32 a, uint32 b) { return (a + b - 1) / b; }
+
 template <typename Tr, typename Ta, typename Tb, typename Tc>
 void mvadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Matrix<Tc> *C);
 
@@ -22,59 +24,15 @@ template <typename T> void transpose(Matrix<T> &res, const Matrix<T> &A);
 template <typename T, typename Op>
 void reduce(Matrix<T> &result, const Matrix<T> &A, const Op &op = Op(), T identity = Op::Identity);
 
-template <typename Tr, typename Ta, typename Tb, typename Tc>
-void mmaddCPU(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Matrix<Tc> *C)
-{
-    check_mmadd_sizes(result, A, B, C);
-    for (uint32 y = 0; y < A.height; y++)
-    {
-        for (uint32 x = 0; x < B.width; x++)
-        {
-            Tr value = 0;
-            for (uint32 k = 0; k < A.width; k++)
-            {
-                value += A(k, y) * B(x, k);
-            }
-            if (C)
-            {
-                value += C->operator()(x, y);
-            }
-            result(x, y) = value;
-        }
-    }
-}
-
-template <typename T> inline void fillCPU(Matrix<T> &A, const T &value)
-{
-    std::fill(A.begin(), A.end(), value);
-}
-
 template <typename T> inline void fill(Matrix<T> &A, const T *values)
 {
     cudaMemcpy(A.begin(), values, A.numels() * sizeof(T), cudaMemcpyDefault);
 }
 
-template <typename T> bool same(const Matrix<T> &A, const Matrix<T> &B, float eps = 1e-5)
+template <typename Ta, typename Tb = Ta> struct Plus
 {
-    return std::equal(A.begin(), A.end(), B.begin(),
-                      [eps](T a, T b) { return std::abs(a - b) < eps; });
-}
-
-template <typename T> void transposeCPU(Matrix<T> &res, const Matrix<T> &A)
-{
-    for (uint32 y = 0; y < A.height; y++)
-    {
-        for (uint32 x = 0; x < A.width; x++)
-        {
-            res(y, x) = A(x, y);
-        }
-    }
-}
-
-template <typename T> struct Plus
-{
-    static constexpr T Identity = 0;
-    __host__ __device__ inline T operator()(T a, T b) const { return a + b; }
+    static constexpr Ta Identity = 0;
+    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a + b; }
 };
 
 template <typename T> struct Max
@@ -89,29 +47,42 @@ template <typename T> struct Min
     __host__ __device__ inline T operator()(T a, T b) const { return (a <= b ? a : b); }
 };
 
-template <typename T, typename Op>
-void reduceCPU(Matrix<T> &result, const Matrix<T> &A, T identity = Op::Identity,
-               const Op &op = Op())
+template <typename Ta, typename Tb = Ta> struct Sub
 {
-    if (result.height != A.height || result.width != 1)
-    {
-        LOG(BOLD, RED, "Matrix dimensions do not match for reduce operation");
-        throw std::runtime_error("Dimension mismatch");
-    }
-    for (uint32 y = 0; y < A.height; y++)
-    {
-        T value = identity;
-        for (uint32 x = 0; x < A.width; x++)
-        {
-            value = op(value, A(x, y));
-        }
-        result(0, y) = value;
-    }
+    static constexpr Ta Identity = 0;
+    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a - b; }
+};
+
+template <typename Ta, typename Tb = Ta> struct Mul
+{
+    static constexpr Ta Identity = 1;
+    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a * b; }
+};
+
+template <typename T> void reduce_sum(Matrix<T> &res, const Matrix<T> &A)
+{
+    reduce<T, Plus<T>>(res, A);
+}
+template <typename T> void reduce_max(Matrix<T> &res, const Matrix<T> &A)
+{
+    reduce<T, Max<T>>(res, A);
 }
 
-template <typename T> void sum(Matrix<T> &res, const Matrix<T> &A) { reduce<T, Plus<T>>(res, A); }
-template <typename T> void max(Matrix<T> &res, const Matrix<T> &A) { reduce<T, Max<T>>(res, A); }
-template <typename T> void min(Matrix<T> &res, const Matrix<T> &A) { reduce<T, Min<T>>(res, A); }
+template <typename T> void reduce_min(Matrix<T> &res, const Matrix<T> &A)
+{
+    reduce<T, Min<T>>(res, A);
+}
+
+template <typename T> struct Neg
+{
+    inline __host__ __device__ T operator()(const T x) { return -x; }
+};
+
+template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Op>
+void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op);
+
+template <typename Ta, typename Tr = Ta, typename Op>
+void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op);
 
 template <class T>
 inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type>

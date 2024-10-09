@@ -1,5 +1,6 @@
 #include "../headers/logger.hpp"
 #include "../headers/matrix_ops.cuh"
+#include "../headers/matrix_ops.hpp"
 #include "../headers/types"
 #include "../headers/utils.hpp"
 #include <cstdlib>
@@ -12,15 +13,8 @@
 #include <sstream>
 #include <string>
 
-using FloatT = float64;
+using FloatT = float32;
 using MatrixT = Matrix<FloatT>;
-
-#define throw_if(cond, msg)                                                                        \
-    if ((cond))                                                                                    \
-    {                                                                                              \
-        LOG(RED, msg, BOLD, " Failed ", #cond, " at", Log::Location{__FILE__, __LINE__}, RESET);   \
-        throw std::runtime_error(msg);                                                             \
-    }
 
 FloatT run_mm_timing(const MatrixT& A, const MatrixT& B)
 {
@@ -57,7 +51,7 @@ void run_transpose_timing(const MatrixT& A)
 }
 
 // test if C(orrect) ==  D(ubious)
-int32 test_match(const MatrixT& C, const MatrixT& D)
+int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
 {
     FloatT eps = 1e-2;
     cudaErrCheck(cudaDeviceSynchronize());
@@ -65,17 +59,17 @@ int32 test_match(const MatrixT& C, const MatrixT& D)
     // check sizes match
     if (C.height != D.height || C.width != D.width)
     {
-        LOG(RED, "-----> Size mismatch for ", C.get_name(), " and ", D.get_name());
+        LOG(RED, msg, "-> Size mismatch for ", C.get_name(), " and ", D.get_name());
         return -1;
     }
 
-    bool match = same(D, C, eps);
+    bool match = sameCPU(D, C, eps);
     if (match)
     {
-        LOG(GREEN, "-----> Match!");
+        LOG(GREEN, msg, " -> Match!");
         return 0;
     }
-    LOG(RED, BOLD, "-----> Mismatch! ", RESET, RED, "Writing diff to diff.csv ");
+    LOG(RED, BOLD, msg, " -> Mismatch! ", RESET, RED, "Writing diff to diff.csv ");
 
     std::ofstream("C.csv") << C;
     std::ofstream("D.csv") << D;
@@ -110,18 +104,20 @@ int main(int argc, char const* argv[])
               name + " test_mult      h w               for testing matrix multiply    \n\t" +
               name + " test_mult_2    h w h2            for testing matrix multiply    \n\t" +
               name + " test_reduce    h w               for testing reduce sum/min/max \n\t" +
+              name + " test_bin_ops   h w               for testing binary ops         \n\t" +
+              name + " test_un_ops    h w               for testing unary ops          \n\t" +
               name + " test_mult_csv  a.csv b.csv c.csv for testing with golden files  \n\t");
 
     std::map<std::string, uint32> commands = {
-        {"time_mult", 4}, {"time_mult_2", 5}, {"time_transpose", 4}, {"test_transpose", 4},
-        {"test_mult", 4}, {"test_mult_2", 5}, {"test_reduce", 4},    {"test_mult_csv", 5}};
+        {"time_mult", 4},    {"time_mult_2", 5}, {"time_transpose", 4}, {"test_transpose", 4},
+        {"test_mult", 4},    {"test_mult_2", 5}, {"test_reduce", 4},    {"test_mult_csv", 5},
+        {"test_bin_ops", 4}, {"test_un_ops", 4}};
 
     if (argc <= 1 || commands.find(argv[1]) == commands.end() || argc != commands[argv[1]])
     {
         std::stringstream ss;
         for (uint32 i = 0; i < argc; i++) ss << argv[i] << " ";
-        LOG(RED, usage, RESET, ORANGE, "\nInstead called with ", argc - 1, " args \n\t",
-            ss.str().c_str());
+        LOG(RED, usage, RESET, ORANGE, "\nInstead called:\n\t", ss.str().c_str());
         throw std::runtime_error("Invalid usage");
     }
 
@@ -150,7 +146,7 @@ int main(int argc, char const* argv[])
         MatrixT D = MatrixT(A.width, A.height);
         transpose(D, A);
 
-        return test_match(C, D);
+        return test_match(C, D, "Transpose");
     }
     else if (argv[1] == std::string("test_mult") || argv[1] == std::string("test_mult_2"))
     {
@@ -161,7 +157,7 @@ int main(int argc, char const* argv[])
         MatrixT D(A.height, B.width);
         mmaddCPU<FloatT, FloatT, FloatT, FloatT>(C, A, B, (MatrixT*)(nullptr));
         mmadd<FloatT, FloatT, FloatT, FloatT>(D, A, B, (MatrixT*)(nullptr));
-        return test_match(C, D);
+        return test_match(C, D, "Matrix Multiply");
     }
     else if (argv[1] == std::string("test_mult_csv"))
     {
@@ -170,25 +166,81 @@ int main(int argc, char const* argv[])
         auto C = read_csv<FloatT>(argv[4]);
         MatrixT D(A.height, B.width);
         mmadd<FloatT, FloatT, FloatT, FloatT>(D, A, B, (MatrixT*)(nullptr));
-        return test_match(C, D);
+        return test_match(C, D, "Matrix Multiply CSV");
     }
     else if (argv[1] == std::string("test_reduce"))
     {
-
         auto A = normal_init_argv(argv);
         MatrixT C = MatrixT(A.height, 1);
         MatrixT D = MatrixT(A.height, 1);
-        reduceCPU<FloatT, std::plus<FloatT>>(C, A, 0.f);
-        sum(D, A);
-        throw_if(test_match(C, D), "Sum failed");
+        reduceCPU<FloatT, Plus<FloatT>>(C, A, 0.f);
+        reduce_sum(D, A);
+        test_match(C, D, "Sum");
 
         reduceCPU<FloatT, Max<FloatT>>(C, A, -1e10);
-        max(D, A);
-        throw_if(test_match(C, D), "Max failed");
+        reduce_max(D, A);
+        test_match(C, D, "Max");
 
         reduceCPU<FloatT, Min<FloatT>>(C, A);
-        min(D, A);
-        throw_if(test_match(C, D), "Min failed");
+        reduce_min(D, A);
+        test_match(C, D, "Min");
+    }
+    else if (argv[1] == std::string("test_bin_ops"))
+    {
+        auto A = normal_init_argv(argv);
+        auto B = normal_init<FloatT>(A.height, A.width);
+        MatrixT C(A.height, A.width);
+        MatrixT D(A.height, A.width);
+        auto add = Plus<FloatT>();
+
+        binary_apply(D, A, B, add);
+        binary_applyCPU(C, A, B, add);
+        test_match(C, D, "Bin add");
+
+        // test broadcast:
+        auto B1 = normal_init<FloatT>(A.height, 1);
+        binary_apply(D, A, B1, add);
+        binary_applyCPU(C, A, B1, add);
+        test_match(C, D, "Bin add broadcast col");
+
+        auto B2 = normal_init<FloatT>(1, A.width);
+        binary_apply(D, A, B2, add);
+        binary_applyCPU(C, A, B2, add);
+        test_match(C, D, "Bin add broadcast row");
+
+        auto A1 = normal_init<FloatT>(1, A.width);
+        binary_apply(D, A1, B, add);
+        binary_applyCPU(C, A1, B, add);
+        test_match(C, D, "Bin add broadcast row");
+
+        auto A2 = normal_init<FloatT>(A.height, 1);
+        binary_apply(D, A2, B, add);
+        binary_applyCPU(C, A2, B, add);
+        test_match(C, D, "Bin add broadcast col");
+    }
+    else if (argv[1] == std::string("test_un_ops"))
+    {
+        auto A = normal_init_argv(argv);
+        MatrixT C(A.height, A.width);
+        MatrixT D(A.height, A.width);
+
+        unary_apply(D, A, Neg<FloatT>());
+        unary_applyCPU(C, A, Neg<FloatT>());
+        test_match(C, D, "Unary square");
+
+        unary_apply(D, A, Neg<FloatT>());
+        unary_applyCPU(C, A, Neg<FloatT>());
+        test_match(C, D, "Unary negate");
+
+        auto A1 = normal_init<FloatT>(1, A.width);
+        unary_apply(D, A1, Neg<FloatT>());
+        unary_applyCPU(C, A1, Neg<FloatT>());
+        test_match(C, D, "Unary square broadcast row");
+
+        auto A2 = normal_init<FloatT>(A.height, 1);
+        unary_apply(D, A2, Neg<FloatT>());
+        unary_applyCPU(C, A2, Neg<FloatT>());
+        test_match(C, D, "Unary square broadcast col");
     }
 
     return 0;
