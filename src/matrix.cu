@@ -10,7 +10,7 @@ uint32_t getMatrixId() {
 
 inline __device__ __host__ uint32_t iDivUp(uint32_t a, uint32_t b){return (a + b - 1) / b;}
 
-constexpr uint32_t BLOCK_SIZE_X = 16;
+constexpr uint32_t BLOCK_SIZE_X = 8;
 
  // AccumNative => internal accumulation is done in Tr, else 32bit(T) if sizeof(T) < 4 else 64bit(T)
 template<bool AccumNative=false, typename Ta, typename Tb, typename Tc, typename Tr> __global__ 
@@ -75,20 +75,28 @@ void madd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Ma
     }
     if(result.height != A.height || result.width != B.width)
     {
-        std::cerr << "Matrix dimensions do not match for result " << result.get_name() << " and A " << A.get_name() << " and B " << B.get_name() << std::endl;
+        std::cerr << "Matrix dimensions do not match for result " << result.get_name() 
+                  << " and A " << A.get_name() << " and B " << B.get_name() << std::endl;
         throw std::runtime_error("Dimension mismatch");
     }
 
     uint32_t res_numels = result.height * result.width;
     if (res_numels < 1024)
     {
-        madd_kernel<<<1, dim3(A.height, B.width)>>>(A.begin(), A.height, A.width, B.begin(), B.width, C ? C->begin() : nullptr, result.begin());
+        madd_kernel<<<1, dim3(A.height, B.width)>>>(
+                A.begin(), A.height, A.width, 
+                B.begin(), B.width, 
+                C ? C->begin() : nullptr, result.begin()
+            );
     }
     else
     {
         dim3 blockDim(BLOCK_SIZE_X, BLOCK_SIZE_X);
-        dim3 gridDim( (A.height + BLOCK_SIZE_X-1) / BLOCK_SIZE_X, (B.width + BLOCK_SIZE_X-1) / BLOCK_SIZE_X);
-        tiled_madd_shmem<true, Tr, Ta, Tb, Tc><<<gridDim, blockDim>>>(A.begin(), A.height, A.width, B.begin(), C ? C->begin() : nullptr, result.begin());
+        dim3 gridDim( iDivUp(A.height , BLOCK_SIZE_X), iDivUp(B.width, BLOCK_SIZE_X));
+        tiled_madd_shmem<true, Tr, Ta, Tb, Tc><<<gridDim, blockDim>>>(
+            A.begin(), A.height, A.width, 
+            B.begin(), 
+            C ? C->begin() : nullptr, result.begin());
     }
     cudaErrCheck(cudaDeviceSynchronize());
 }
@@ -114,9 +122,11 @@ Matrix<T> madd(const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C)
     return result;
 }
 
+template void madd<float64, float64, float64>(Matrix<float64> &result, const Matrix<float64> &A, const Matrix<float64> &B, const Matrix<float64> *C);
+template Matrix<float64> madd(const Matrix<float64> &A, const Matrix<float64> &B, const Matrix<float64> *C);
 
-template void madd<float, float, float>(Matrix<float> &result, const Matrix<float> &A, const Matrix<float> &B, const Matrix<float> *C);
-template Matrix<float> madd(const Matrix<float> &A, const Matrix<float> &B, const Matrix<float> *C);
+template void madd<float32, float32, float32>(Matrix<float32> &result, const Matrix<float32> &A, const Matrix<float32> &B, const Matrix<float32> *C);
+template Matrix<float32> madd(const Matrix<float32> &A, const Matrix<float32> &B, const Matrix<float32> *C);
 
 template void madd<float16, float16, float16, float16>(Matrix<float16> &result, const Matrix<float16> &A, const Matrix<float16> &B, const Matrix<float16> *C);
 template Matrix<half> madd(const Matrix<half> &A, const Matrix<half> &B, const Matrix<half> *C);

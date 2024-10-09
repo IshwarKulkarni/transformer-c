@@ -1,3 +1,6 @@
+#ifndef TYPES_H
+#define TYPES_H
+
 #include <functional>
 #include <type_traits>
 #include <cuda_fp16.h>
@@ -50,3 +53,5 @@ using Accum64T = typename std::conditional<is_floating_point<T>::value, Fp64Accu
 
 template<typename T>
 using AccumT = typename std::conditional<sizeof(T)<=4, Accum32T<T>, Accum64T<T>>::type;
+
+#endif // TYPES_H

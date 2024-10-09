@@ -1,64 +1,38 @@
 #include "../headers/matrix_ops.cuh"
 #include "../headers/types"
+#include "../headers/utils.hpp"
 #include <iostream>
 #include <iostream>
 #include <fstream>
-#include <iterator>
-#include <type_traits>
-#include <vector>
 #include <iomanip>
-#include <chrono>
+#include <cstdlib>
 
-#include <typeinfo>
-
-using FloatT = float32;
+using FloatT = float64;
 using MatrixT = Matrix<FloatT>;
-
-MatrixT read_csv(const std::string& filename)
-{
-    std::ifstream file(filename, std::ios::in);
-    uint32_t m, n;
-    file >> m >> n;
-    std::vector<FloatT> data(m * n);
-    std::copy(std::istream_iterator<float>(file), std::istream_iterator<float>(), data.begin());
-    MatrixT matrix(m, n, data.data());
-    return matrix;
-}
-
-struct Timer
-{
-    std::chrono::high_resolution_clock::time_point t1;
-    std::chrono::high_resolution_clock::time_point t2;
-    std::string name;
-    Timer(const char* name) : name(name)
-    {
-        t1 = std::chrono::high_resolution_clock::now();
-    }
-    ~Timer()
-    {
-        t2 = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);
-        std::cout << name << " Time: " << time_span.count() << " seconds." << std::endl;
-    }
-};
 
 void run_timing(const MatrixT& A, const MatrixT& B)
 {
-    Timer t("1000 madd");
-    for (int i = 0; i < 1000; i++)
+    uint32_t max_iter = 5e2;
+    Timer t("--Timing with " + std::to_string(max_iter) + " iterations");
+    for (int i = 0; i < max_iter; i++)
     {
         MatrixT D = madd<FloatT>(A, B, nullptr);
     }
 }
 
-void run_test(const MatrixT &D, const MatrixT &C)
+void run_test(const std::string& filename_a, const std::string& filename_b, const std::string& filename_c)
 {
+    MatrixT A = read_csv<FloatT>(filename_a);
+    MatrixT B = read_csv<FloatT>(filename_b);
+    MatrixT C = read_csv<FloatT>(filename_c);
+    cudaErrCheck(cudaDeviceSynchronize());
+    MatrixT D = madd<FloatT>(A, B, nullptr);
+
     FloatT eps = (sizeof(FloatT) == 4 ? 1e-8 * D.numels() : 1e-5  * D.numels());
     bool match = same(D, C, eps);
     std::ofstream d_file("d.csv");
     if (!match)
     {
-        // print where D is different from C
         d_file << std::setprecision(8); // <<  D << "\n\n";
         for (int i = 0; i < D.width; i++)
         {
@@ -76,21 +50,24 @@ void run_test(const MatrixT &D, const MatrixT &C)
     std::cout << (match ? "Match" : "Failed! ") << " at eps: " << eps << std::endl;
 }
 
-int main()
+int main(int argc, char const *argv[])
 {
-    MatrixT A = read_csv("data/a.csv");
-    MatrixT B = read_csv("data/b.csv");
-    MatrixT C = read_csv("data/c.csv");
-    cudaErrCheck(cudaDeviceSynchronize());
 
-    std::cout << " Matrix A: " << A.get_name() << std::endl
-              << " Matrix B: " << B.get_name() << std::endl
-              << " Matrix C: " << C.get_name() << std::endl;  
-
-    MatrixT D = madd<FloatT>(A, B, nullptr);
-
-    run_test(D, C);
-    //run_timing(A, B);
+    if(argc == 3)
+    {   
+        auto A = normal_init<FloatT>(strtoul(argv[1], nullptr, 10),
+                                      strtoul(argv[2], nullptr, 10));
+        auto B = normal_init<FloatT>(strtoul(argv[2], nullptr, 10),
+                                      strtoul(argv[1], nullptr, 10));
+        run_timing(A, B);
+    }
+    else if(argc == 4)
+    {
+        run_test(argv[1], argv[2], argv[3]);
+    }
+    else
+    {
+        std::cout << "Usage: " << argv[0] << " <m> <n> or " << argv[0] << " <a.csv> <b.csv> <c.csv>" << std::endl;
+    }
     return 0;
 }
-

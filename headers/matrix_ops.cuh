@@ -4,9 +4,10 @@
 #include <algorithm>
 #include <cuda_runtime.h>
 #include <functional>
-#include <type_traits>
 #include "matrix.cuh"
-
+#include "types"
+#include <random>
+#include "utils.hpp"
 
 template<typename T>
 void fill(Matrix<T> &A, float value)
@@ -32,34 +33,24 @@ void madd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matri
 template<typename T>
 Matrix<T> madd(const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C);
 
-/**
-template<typename T1, typename T2, typename result_type, typename F>
-__global__ void apply_kernel(const T1 *A, const T2* B, result_type *result, uint32_t numels, F f)
+template<class T>
+inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> 
+normal_init(uint32 m, uint32 n, float32 mean=0.f, float32 std=1.f)
 {
-    uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < numels)
-    {
-        result[i] = f(A[i], B[i]);
-    }
+    Timer t("normal_init");
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<typename AccumT<T>::type> dist(mean, std);
+    std::vector<T> data(m * n);
+    std::generate(data.begin(), data.end(), [&dist, &gen]() { return dist(gen); });
+    return Matrix<T>(m, n, data.data());
 }
 
-template<typename T1, typename T2, typename F>
-void apply(const Matrix<T1> &A, const Matrix<T2>& B, F f)
+template<class T>
+inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> xavier_init(uint32 m, uint32 n)
 {
-    using result_type = typename std::result_of<F(T1, T2)>::type;
-    Matrix<result_type> result(A.rows, A.cols);
-
-    if(B.rows != A.rows || B.cols != A.cols)
-    {
-        std::cerr << "Matrix dimensions do not match for result " << B.get_name() << " and A " << A.get_name() << std::endl;
-        throw std::runtime_error("Dimension mismatch");
-    }
-
-    uint32_t numels = result.rows * result.cols;
-    dim3 blockDim(256);
-    dim3 gridDim((numels + blockDim.x - 1) / blockDim.x);
-    apply_kernel<<<gridDim, blockDim>>>(A.begin(), result.data.get(), numels, f);
-    cudaErrCheck(cudaDeviceSynchronize());
+    return normal_init<T>(m, n, 0.f, std::sqrt(2.0 / (m + n)));
 }
-*/
+
+
 #endif // MATRIX_OPS_CUH
