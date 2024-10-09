@@ -11,7 +11,6 @@ program = ["bin/test"]
 passed_tests = []
 failed_tests = []
 
-
 t_colors = {  # terminal colors
     "red": "\033[91m",
     "green": "\033[92m",
@@ -53,7 +52,7 @@ def build(debug=False):
     return True
 
 
-def mult_tests():
+def test_mult():
     def test_against_torch(m, n, k=None):
         args = ["test_mult_csv"]
         args += write_sample_mult_data(m, n, k)
@@ -74,14 +73,14 @@ def mult_tests():
           "Matrix multiplication tests passed", t_colors["end"])
 
 
-def transpose_tests():
+def test_transpose():
     sizes = [(30, 40), (512, 512), (1024, 1024)]
     for size in sizes:
         run_main(["test_transpose"] + list(size))
     print(t_colors["green"],  "Transpose tests passed", t_colors["end"])
 
 
-def reduce_tests():
+def test_reduce():
     sizes = [(30, 40), (32, 300), (300, 15),
              (512, 512), (1024, 1024), (500, 3000)]
     for size in sizes:
@@ -89,7 +88,7 @@ def reduce_tests():
     print(t_colors["green"],  "Reduce tests passed", t_colors["end"])
 
 
-def mult_timing():
+def time_mult():
     sizes = [(512, 256, 7), (512, 512), (2048, 512), (2048, 2048),
              (2048, 1024, 40), (64, 1200, 1), (4096, 4096)]
     for sizes in sizes:
@@ -97,18 +96,18 @@ def mult_timing():
         run_main(selc + list(sizes))
 
 
-def transpose_timing():
+def time_transpose():
     sizes = [(512, 20), (512, 512), (2048, 512)]
     for sizes in sizes:
         run_main(["time_transpose"] + list(sizes))
 
 
 all_functions = [
-    mult_timing,
-    transpose_timing,
-    mult_tests,
-    transpose_tests,
-    reduce_tests
+    time_mult,
+    time_transpose,
+    test_mult,
+    test_transpose,
+    test_reduce
 ]
 
 if __name__ == "__main__":
@@ -121,10 +120,10 @@ if __name__ == "__main__":
     test_funcs = [f for f in all_functions if "test" in f.__name__]
     timing_funcs = [f for f in all_functions if "timing" in f.__name__]
 
-    if "all" in args and len(args) == 2:
+    if "all" in args:
         for func in all_functions:
             func()
-    elif "tests" in args and len(args) == 2:
+    elif "tests" in args:
         for func in test_funcs:
             func()
     elif "timing" in args and len(args) == 2:
@@ -141,8 +140,8 @@ if __name__ == "__main__":
               '\n'.join(passed_tests), t_colors['end'])
     if len(failed_tests):
         print(t_colors['red'] + "Failed tests: \n", '\n'.join(failed_tests))
-        with open("failed_tests.csv", "w") as f:
-            f.write(',\n'.join(failed_tests))
+        with open("failed_tests.sh", "w", ) as f:
+            f.write('\n'.join(failed_tests))
 
     if len(passed_tests) + len(failed_tests) == 0:
         print("No tests run")

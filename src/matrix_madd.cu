@@ -72,14 +72,14 @@ __global__ void mmadd_kernel(T *__restrict__ result, const T *__restrict__ A, ui
 // A (h,w)  * B (w, 1)  + <C(h,1> -> result (h, 1)
 // Assuming that B is column vector, if h > 1024, multiple calls to this kernel
 // will be made with assuming h = 1024, followed by h=256  ...
-template <typename T, uint32 WIDTH, typename PostProcess>
+template <typename T, uint32 BLOCK_X, typename PostProcess>
 __global__ void mat_vector_mul_kernel(T *result, const T *A, const T *B, const T *C, uint32 height,
                                       uint32 width, uint32 offset = 0, bool addToresult = false,
                                       PostProcess pProcess = Identity<T>())
 {
     uint32 x = threadIdx.x;
     uint32 y = blockIdx.x;
-    __shared__ T As[WIDTH];
+    __shared__ T As[BLOCK_X + 1];
 
     uint32 offset_x = x + offset;
 
@@ -95,15 +95,16 @@ __global__ void mat_vector_mul_kernel(T *result, const T *A, const T *B, const T
         if (x < s) As[x] += As[x + s];
         __syncthreads();
     }
+    __syncthreads();
     volatile T *vAs = (volatile T *)As;
-    if (x <= 32)
+    if (x <= 32 and offset_x < width)
     {
-        if (WIDTH >= 64) vAs[x] += vAs[x + 32];
-        if (WIDTH >= 32) vAs[x] += vAs[x + 16];
-        if (WIDTH >= 16) vAs[x] += vAs[x + 8];
-        if (WIDTH >= 8) vAs[x] += vAs[x + 4];
-        if (WIDTH >= 4) vAs[x] += vAs[x + 2];
-        if (WIDTH >= 2) vAs[x] += vAs[x + 1];
+        if (BLOCK_X >= 64) vAs[x] += vAs[x + 32];
+        if (BLOCK_X >= 32) vAs[x] += vAs[x + 16];
+        if (BLOCK_X >= 16) vAs[x] += vAs[x + 8];
+        if (BLOCK_X >= 8) vAs[x] += vAs[x + 4];
+        if (BLOCK_X >= 4) vAs[x] += vAs[x + 2];
+        if (BLOCK_X >= 2) vAs[x] += vAs[x + 1];
     }
     __syncthreads();
     if (x == 0 and blockIdx.x < height)
@@ -122,7 +123,7 @@ __global__ void outer_product(T *result, const T *A, const T *B, const T *C, uin
 
     if (x < rwidth and y < rheight)
     {
-        T c = (C ? C[y] : T(0));
+        T c = (C ? C[y*rwidth + x] : T(0));
         T r = (addToresult ? result[y * rwidth + x] : T(0));
         result[y * rwidth + x] = pProcess(T(A[y] * B[x]) + c + r);
     }
@@ -134,16 +135,14 @@ void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
 {
     check_mmadd_sizes(result, A, B, C);
 
-    if (B.height == 1 and
-        B.width <= 1024) // outer product (small enough to fit in one thread block)
+    if (B.height <= 16)
     {
-        outer_product<<<A.height, B.width>>>(result.begin(), A.begin(), B.begin(),
-                                             (C ? C->begin() : nullptr), A.height, B.width, false,
-                                             pProcess);
-        return;
+        mat_vector_mul_kernel<T, 16><<<A.height, 16>>>(result.begin(), A.begin(), B.begin(),
+                                                       C ? C->begin() : nullptr, A.height, A.width,
+                                                       0, false, pProcess);
     }
-    if (B.height <= 32)
-    {
+    else if (B.height <= 32)
+    { 
         mat_vector_mul_kernel<T, 32><<<A.height, 32>>>(result.begin(), A.begin(), B.begin(),
                                                        C ? C->begin() : nullptr, A.height, A.width,
                                                        0, false, pProcess);
@@ -174,25 +173,24 @@ void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     }
     else if (B.height <= 1024)
     {
-        LOG("Using mat_vector_mul_kernel, A: ", A.height, "x", A.width, " B: ", B.height, "x",
-            B.width);
+        LOG("Using mat_vector_mul_kernel, A, B: ", A.shape_string(), " ", B.shape_string());
         mat_vector_mul_kernel<T, 1024><<<A.height, 1024>>>(result.begin(), A.begin(), B.begin(),
                                                            C ? C->begin() : nullptr, A.height,
                                                            A.width, 0, false, pProcess);
     }
     else if (B.height > 1024)
     {
-        constexpr int32 WIDTH = 1024;
+        constexpr int32 BLOCK_X = 1024;
         int32 offset = 0;
-        for (; offset < B.height - WIDTH; offset += WIDTH)
+        for (; offset < B.height - BLOCK_X; offset += BLOCK_X)
         {
-            mat_vector_mul_kernel<T, WIDTH, Identity<T>>
-                <<<A.height, WIDTH>>>( // only multi plication and addition, do not add C
+            mat_vector_mul_kernel<T, BLOCK_X, Identity<T>>
+                <<<A.height, BLOCK_X>>>( // only multi plication and addition, do not add C
                     result.begin(), A.begin(), B.begin(), nullptr, A.height, A.width, offset,
                     offset > 0);
         }
 
-        mat_vector_mul_kernel<T, WIDTH><<<A.height, WIDTH>>>( // add C and apply post process
+        mat_vector_mul_kernel<T, BLOCK_X><<<A.height, BLOCK_X>>>( // add C and apply post process
             result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width,
             offset, offset > 0, pProcess);
     }
@@ -204,7 +202,12 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
 {
     check_mmadd_sizes(result, A, B, C);
 
-    if (B.width == 1)
+    if (A.width == 1 and B.width <= 1024) // outer product (small enough to fit in one thread block)
+    {
+        outer_product<<<A.height, B.width>>>(result.begin(), A.begin(), B.begin(),
+                                             (C ? C->begin() : nullptr), A.height, B.width, false,
+                                             pProcess);
+    } else if (B.width == 1)
     {
         mvadd<T>(result, A, B, C, pProcess);
     }

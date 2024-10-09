@@ -12,20 +12,20 @@ struct Parameter
     {
         // W -= lr * G;
     }
-    Matrix<TW> W; // weight
-    Matrix<TG> G; // gradient
+    Matrix<TW> Weights;
+    Matrix<TG> Grads;
 
     Parameter(uint32_t height, uint32_t width, TW* wValues = nullptr)
-        : W(xavier_init<TW>(height, width)), G(Matrix<TG>(height, width))
+        : Weights(xavier_init<TW>(height, width)), Grads(Matrix<TG>(height, width))
     {
         reset_grad();
         if (wValues)
         {
-            fill(W, wValues);
+            fill(Weights, wValues);
         }
     }
 
-    inline void reset_grad() { cudaErrCheck(cudaMemset(G.begin(), 0, G.numels() * sizeof(TG))); }
+    inline void reset_grad() { cudaErrCheck(cudaMemset(Grads.begin(), 0, Grads.numels() * sizeof(TG))); }
 };
 
 template <typename T, typename ActivationT = IdentityActivation<T>> struct Linear
@@ -42,14 +42,14 @@ template <typename T, typename ActivationT = IdentityActivation<T>> struct Linea
 
     const Matrix<T>& forward(const Matrix<T>& x)
     {
-        mmadd<T, Forward>(this->output, W.W, x, &b.W);
+        mmadd<T, Forward>(this->output, W.Weights, x, &b.Weights);
         return this->output;
     }
 
     void backward(const Matrix<T>& x, const Matrix<T>& dy)
     {
-        mmadd<T, Backward>(W.G, dy, x, nullptr);
-        fill(b.G, dy.begin());
+        mmadd<T, Backward>(W.Grads, dy, x, nullptr);
+        fill(b.Grads, dy.begin());
     }
 
     virtual const Matrix<T>& get_output() { return output; }
@@ -60,22 +60,22 @@ template <typename T, typename ActivationT = IdentityActivation<T>> struct Linea
 
 template <typename T> struct MSE
 {
-    Matrix<T> squared_diff;
+    Matrix<T> diff;  // holds (x - y)^2 in forward and -2(y - x) in backward
     Matrix<T> output_vec; // output of reduction to 1D
     Matrix<T> output_scalar;
-    bool reduceTo1D;
+    bool reduceToScalar;
 
     MSE(uint32_t inHeight, uint32_t inWidth, bool reduce = true)
-        : squared_diff(inHeight, inWidth), output_vec(inHeight, 1), output_scalar(1, 1),
-          reduceTo1D(reduce)
+        : diff({inHeight, inWidth}), output_vec({inHeight, 1}), output_scalar({1, 1}),
+          reduceToScalar(reduce)
     {
     }
 
     const Matrix<T>& forward(const Matrix<T>& y, const Matrix<T>& target)
     {
-        binary_apply(squared_diff, y, target, DiffSq<T>());
-        reduce_mean(output_vec, squared_diff);
-        if (reduceTo1D)
+        binary_apply(diff, y, target, DiffSq<T>());
+        reduce_mean(output_vec, diff);
+        if (reduceToScalar)
         {
             reduce_mean(output_scalar, output_vec);
         }
@@ -84,10 +84,10 @@ template <typename T> struct MSE
 
     void backward(const Matrix<T>& y, const Matrix<T>& t)
     {
-        binary_apply(squared_diff, y, t, IntegerMultiplier<T, -2>()); // -2(y - t)
+        binary_apply(diff, y, t,  MultNeg2<T>());
     }
 
-    const Matrix<T>& get_output() { return reduceTo1D ? output_scalar : output_vec; }
+    const Matrix<T>& get_output() { return reduceToScalar ? output_scalar : output_vec; }
 };
 
 #endif // NODES_HPP

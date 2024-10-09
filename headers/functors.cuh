@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cuda_runtime.h>
 #include <limits>
+#include <type_traits>
 
 //////////////////////////////////////////////////////////////////////////////////////
 // Unary functors
@@ -56,6 +57,24 @@ template <typename T> struct DividebBy
     __host__ __device__ inline T operator()(T a) const { return a / divisor; }
 };
 
+template <typename T> 
+struct MultiplyBy
+{
+    T factor;
+    MultiplyBy(T factor) : factor(factor) {}
+    __host__ __device__ inline T operator()(T a) const { return a * factor; }
+};
+
+template <typename T, int32 Multiplier> struct IntegerMultiplier
+{
+    __host__ __device__ inline T operator()(const T a) const { return a * Multiplier; }
+};
+
+template <typename T, int32 Multiplier> struct IntegerDivider
+{
+    __host__ __device__ inline T operator()(T a) const { return a / Multiplier; }
+};
+
 //////////////////////////////////////////////////////////////////////////////////////
 // Binary functors
 //////////////////////////////////////////////////////////////////////////////////////
@@ -80,13 +99,13 @@ template <typename Ta, typename Tb = Ta> struct Plus
 
 template <typename T> struct Max
 {
-    static constexpr T Identity = std::numeric_limits<T>::lowest();
+    static constexpr T Identity = std::is_floating_point<T>::value ? -1e9 : std::numeric_limits<T>::lowest();
     __host__ __device__ inline T operator()(T a, T b) const { return (a > b ? a : b); }
 };
 
 template <typename T> struct Min
 {
-    static constexpr T Identity = std::numeric_limits<T>::max();
+    static constexpr T Identity = std::is_floating_point<T>::value ? 1e9 : std::numeric_limits<T>::max();
     __host__ __device__ inline T operator()(T a, T b) const { return (a <= b ? a : b); }
 };
 
@@ -174,9 +193,7 @@ using DiffSq = Composition<T, Sub<T>, Square<T>>;
 template <typename T> // sign(a - b)
 using DiffSign = Composition<T, Sub<T>, Sign<T>>;
 
-template <typename T, int32 Multiplier> struct IntegerMultiplier
-{
-    __host__ __device__ inline T operator()(T a) const { return a * Multiplier; }
-};
+template <typename T> // -2(a - b)
+using MultNeg2 = Composition<T, Sub<T>, IntegerMultiplier<T, -2>>;
 
 #endif

@@ -10,7 +10,7 @@ ALL_TARGETS := $(TARGET_MAIN) $(TARGET_TEST)
 
 # Other variables
 SOURCES := $(shell find $(SRCDIR) -type f -name "*.cpp")
-# remove "main.cpp" and "test.cpp" from SOURCES
+# remove "main.cpp" and "tests.cpp" from SOURCES
 
 OBJECTS := $(patsubst $(SRCDIR)/%,$(OBJDIR)/%,$(SOURCES:.cpp=.o))
 

@@ -29,8 +29,8 @@ FloatT run_mm_timing(const MatrixT& A, const MatrixT& B)
     auto time = timer.stop();
     uint32 num_bytes = A.height * A.height * sizeof(FloatT) * max_iters;
     FloatT bandWidth_mb = num_bytes / (time * (1 << 30));
-    LOG("Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, ": (", A.height, "x", A.height, ")", RESET,
-        " for A(", A.height, "x", A.width, ") @ B(", B.height, "x", B.width, ")");
+    LOG("MM Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, D.shape_string(), RESET,
+        " for A, B: ", A.shape_string(), " @ ", B.shape_string());
     return bandWidth_mb;
 }
 
@@ -47,11 +47,11 @@ void run_transpose_timing(const MatrixT& A)
     uint32 num_bytes = A.numels() * sizeof(FloatT);
     num_bytes *= max_iters;
     float32 bandWidth_mb = num_bytes / (time * (1 << 30));
-    LOG("Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, A.height, "x", A.height, RESET, " for A(",
-        A.height, "x", A.width, ")");
+    LOG("Transpose Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, A.shape_string());
 }
 
 // test if C(orrect) ==  D(ubious)
+// return 0 if match, -1 if mismatch
 int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
 {
     FloatT eps = 1e-2;
@@ -98,8 +98,9 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
 int main(int argc, char const* argv[])
 {
     std::string name = (argc > 1) ? argv[0] : "main";
+    // clang-format off
     std::stringstream usage("\n\nUsage: \n\t");
-    usage << name + " time_mult      h w               for timing A(h,w) * B(w, h)   \n\t"
+    usage << name + " time_mult      h w               for timing A(h,w) * B(w, h)   \n\t" 
           << name + " time_mult_2    h w h2            for timing A(h,w) * B(w, h2)  \n\t"
           << name + " time_transpose h w               for timing transpose A(h,w)   \n\t"
           << name + " test_transpose h w               for testing transpose A(h, w) \n\t"
@@ -111,9 +112,19 @@ int main(int argc, char const* argv[])
           << name + " test_mult_csv  a.csv b.csv c.csv for testing with golden files \n\t";
 
     std::map<std::string, uint32> commands = {
-        {"time_mult", 4},    {"time_mult_2", 5}, {"time_transpose", 4}, {"test_transpose", 4},
-        {"test_mult", 4},    {"test_mult_2", 5}, {"test_reduce", 4},    {"test_mult_csv", 5},
-        {"test_bin_ops", 4}, {"test_un_ops", 4}};
+        {"time_mult", 4},
+        {"time_mult_2", 5},
+        {"time_transpose", 4},
+        {"test_transpose", 4},
+        {"test_mult", 4},
+        {"test_mult_2", 5},
+        {"test_reduce", 4},
+        {"test_bin_ops", 4},
+        {"test_un_ops", 4}, 
+        {"test_mult_csv", 5}
+    };
+
+    // clang-format on
 
     if (argc <= 1 || commands.find(argv[1]) == commands.end() || argc != commands[argv[1]])
     {
@@ -126,15 +137,14 @@ int main(int argc, char const* argv[])
     auto init_argv = [&](const char** argv) { // expects argv[2] and argv[3] to be m, n
         uint32 m = strtoul(argv[2], nullptr, 10);
         uint32 n = strtoul(argv[3], nullptr, 10);
-        if (m * n > 256 * 256) xavier_init<FloatT>(m, n);
-        return normal_init<FloatT>(m, n);
+        return xavier_init<FloatT>(m, n);
     };
 
     if (argv[1] == std::string("time_mult") or argv[1] == std::string("time_mult_2"))
     {
         auto A = init_argv(argv);
         uint32 k = (argc > 4) ? strtoul(argv[4], nullptr, 10) : A.width;
-        auto B = normal_init<FloatT>(A.width, k);
+        auto B = xavier_init<FloatT>(A.width, k);
         run_mm_timing(A, B);
     }
     else if (argv[1] == std::string("time_transpose"))
@@ -190,24 +200,44 @@ int main(int argc, char const* argv[])
         auto A = init_argv(argv);
         MatrixT C = MatrixT(A.height, 1);
         MatrixT D = MatrixT(A.height, 1);
+        int32 match = 0;
 
-        reduceCPU<FloatT>(C, A, 0.f);
-        reduce<FloatT>(D, A);
-        int32 sum_match = test_match(C, D, "Sum");
+        if (match == 0)
+        {
+            reduceCPU<FloatT, Min<FloatT>>(C, A, 1e6);
+            reduce<FloatT>(D, A, Min<FloatT>(), 1e6);
+            match += test_match(C, D, "Min");
+        }
 
-        reduceCPU<FloatT, Max<FloatT>>(C, A, -1e10);
-        reduce<FloatT, Max<FloatT>>(D, A);
-        int32 max_match = test_match(C, D, "Max");
+        if (match == 0 or true)
+        {
+            reduceCPU<FloatT, Max<FloatT>>(C, A, -1e6);
+            reduce<FloatT>(D, A, Max<FloatT>(), -1e6);
+            match += test_match(C, D, "Max");
+        }
 
-        reduceCPU<FloatT, Min<FloatT>>(C, A);
-        reduce<FloatT, Min<FloatT>>(D, A);
-        int32 min_match = test_match(C, D, "Min");
+        if (match == 0 or true)
+        {
+            reduceCPU<FloatT>(C, A, 0.f);
+            reduce_sum<FloatT>(D, A);
+            match += test_match(C, D, "Sum");
+        }
 
-        reduce_meanCPU<FloatT>(C, A);
-        reduce_mean(D, A);
-        int32 mean_match = test_match(C, D, "Mean");
+        if (match == 0 or true)
+        {
+            reduce_meanCPU<FloatT>(C, A);
+            reduce_mean(D, A);
+            match += test_match(C, D, "Mean");
+        }
 
-        return sum_match + max_match + min_match + mean_match;
+        if (match == 0 or true)
+        {
+            reduceCPU<FloatT, Plus<FloatT>, Exp<FloatT>>(C, A);
+            reduce<FloatT, Plus<FloatT>, Exp<FloatT>>(D, A);
+            match += test_match(C, D, "Sum with Sigmoid");
+        }
+
+        return match;
     }
     else if (argv[1] == std::string("test_bin_ops"))
     {

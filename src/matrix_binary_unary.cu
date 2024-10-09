@@ -26,10 +26,30 @@ void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op 
 {
     // a and b's dimensions should match result dimensions either on height or
     // width or numels == 1
-    if ((A.height != res.height && A.width != res.width && A.numels() != 1) ||
-        (B.height != res.height && B.width != res.width && B.numels() != 1))
+
+    auto match_atleast_one_dim = [](uint32 rh, uint32 rw, uint32 ah, uint32 aw) -> bool {
+        if (rh != ah) return ah == 1 and rw == aw;
+        if (rw != aw) return aw == 1 and rh == ah;
+        return true;
+    };
+
+    if (B.numels() != 1 and
+        match_atleast_one_dim(res.height, res.width, B.height, B.width) == false)
     {
-        LOG(RED, "Matrix dimensions do not match for binary operation");
+        LOG(RED, "Dimension mismatch: R, B: ", res.shape_string(), " != ", B.shape_string());
+        throw std::runtime_error("Dimension mismatch");
+    }
+
+    if (A.numels() != 1 and
+        match_atleast_one_dim(res.height, res.width, A.height, A.width) == false)
+    {
+        LOG(RED, "Dimension mismatch: R, A: ", res.shape_string(), " != ", A.shape_string());
+        throw std::runtime_error("Dimension mismatch");
+    }
+
+    if (!match_atleast_one_dim(A.height, A.width, B.height, B.width))
+    {
+        LOG(RED, "Dimension mismatch: A, B: ", A.shape_string(), " != ", B.shape_string());
         throw std::runtime_error("Dimension mismatch");
     }
 
@@ -75,6 +95,12 @@ template void binary_apply<FloatT, FloatT, FloatT, Plus<FloatT, FloatT>>(Matrix<
 template void unary_apply<FloatT, FloatT, Neg<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                        Neg<FloatT>);
 
-template void binary_apply<FloatT, FloatT, FloatT, Composition<FloatT, Sub<FloatT, FloatT>, Square<FloatT>>>(
+template void
+binary_apply<FloatT, FloatT, FloatT, Composition<FloatT, Sub<FloatT, FloatT>, Square<FloatT>>>(
     Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &,
     Composition<FloatT, Sub<FloatT, FloatT>, Square<FloatT>>);
+
+template void binary_apply<FloatT, FloatT, FloatT,
+                           Composition<FloatT, Sub<FloatT, FloatT>, IntegerMultiplier<FloatT, -2>>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &,
+    Composition<FloatT, Sub<FloatT, FloatT>, IntegerMultiplier<FloatT, -2>>);
