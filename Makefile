@@ -17,16 +17,17 @@ NVCC          := nvcc -ccbin $(HOST_COMPILER)  #/usr/local/cuda/bin/nvcc
 
 # Flags
 NVCCFLAGS     := -m64  #-dc used cg::grid_group, cg::this_group
-CCFLAGS       :=
+CCFLAGS       := --std=c++0x -fPIC
 LDFLAGS       :=
 
 # Debug build flags
 ifeq ($(dbg),1)
     NVCCFLAGS += -g -G
     BUILD_TYPE := debug
+	CCFLAGS += -g -O0 -DDEBUG
 else
     BUILD_TYPE := release
-#CCFLAGS += -O3
+	CCFLAGS += -O3
 endif
 
 # Main flags
@@ -65,14 +66,8 @@ all: build
 
 build: $(TARGET)
 
-run: build
-	./$(TARGET)
-
 clean:
-	rm -fr $(OBJECTS) $(OBJECTSCU) $(TARGET)
-
-clobber:
-	rm -fr $(BUILDDIR) $(TARGETDIR)
+	rm -fr $(OBJECTS) $(OBJECTSCU) $(TARGET) *.csv
 
 $(BUILDDIR)/%.cu.o: $(SRCDIR)/%.cu
 	@mkdir -p $(BUILDDIR);

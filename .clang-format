@@ -1,0 +1,26 @@
+# EditorConfig is awesome: http://EditorConfig.org
+---
+# We'll use defaults from the LLVM style, but with 4 columns indentation.
+BasedOnStyle: LLVM
+IndentWidth: 4
+---
+Language: Cpp
+# Force pointers to the type for C++.
+IndentWidth: 4
+DerivePointerAlignment: true
+PointerAlignment: Left
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterEnum: true
+  AfterStruct: true
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  AfterCaseLabel: true
+  AfterControlStatement: Always
+  AfterFunction: true
+  BeforeElse: true
+
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+ColumnLimit: 100
+---
