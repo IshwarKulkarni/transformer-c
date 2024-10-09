@@ -46,4 +46,32 @@ struct Timer
     }
 };
 
+
+struct CudaEventTimer
+{
+    std::string name;
+    cudaEvent_t start, end;
+    CudaEventTimer(const std::string& name) : name(name)
+    {
+        cudaErrCheck(cudaEventCreate(&start));
+        cudaErrCheck(cudaEventCreate(&end));
+        cudaErrCheck(cudaEventRecord(start, 0));
+    }
+    ~CudaEventTimer()
+    {
+        float time = stop();
+        LOG(name, "took", time, "seconds");
+    }
+    float32 stop()
+    {
+        cudaErrCheck(cudaEventRecord(end, 0));
+        cudaErrCheck(cudaEventSynchronize(end));
+        float elapsed = 0;
+        cudaErrCheck(cudaEventElapsedTime(&elapsed, start, end));
+        elapsed /= 1000; // convert to seconds
+        return elapsed;
+    }
+};
+
+
 #endif

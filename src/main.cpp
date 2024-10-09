@@ -15,32 +15,33 @@ using MatrixT = Matrix<FloatT>;
 
 float32 run_mm_timing(const MatrixT& A, const MatrixT& B)
 {
-    uint32 max_iter = 5e2;
-    // Timer t("--Timing for " + std::to_string(max_iter) + " iterations");
-    Timer t("");
-    for (uint32 i = 0; i < max_iter; i++)
+    uint32 max_iters = 100;
+    CudaEventTimer timer("Timing for " + std::to_string(max_iters) + " iterations");
+    for (uint32 i = 0; i < max_iters; i++)
     {
-        MatrixT D = madd<FloatT>(A, B, nullptr);
+        MatrixT D = mmadd<FloatT>(A, B, nullptr);
     }
-    uint32 num_bytes = A.height * A.height * sizeof(FloatT) * max_iter;
-    float32 bandWidth_mb = num_bytes / (t.get_duration() * (1 << 20));
-    LOG("Bandwidth: ", BLUE, bandWidth_mb, " MB/s", RED, A.height, "x", A.height, RESET,
-        " for A", A.height, A.width, "x B", B.height, B.width);
+    float time = timer.stop();
+    uint32 num_bytes = A.height * A.height * sizeof(FloatT) * max_iters;
+    float32 bandWidth_mb = num_bytes/ (time * (1 << 30));
+    LOG("Bandwidth: ", BLUE, bandWidth_mb, "GB/s", RED, A.height, "x", A.height, RESET, " for A",
+        A.height, A.width, "x B", B.height, B.width);
     return bandWidth_mb;
 }
 
 void run_transpose_timing(const MatrixT& A, const MatrixT& B)
 {
-    uint32 max_iter = 5e2;
-    Timer t("--Timing for " + std::to_string(max_iter) + " iterations");
-    for (uint32 i = 0; i < max_iter; i++)
+    uint32 max_iters = 100;
+    CudaEventTimer timer("Timing for " + std::to_string(max_iters) + " iterations");
+    for (uint32 i = 0; i < max_iters; i++)
     {
         MatrixT D = transpose(A);
     }
+    float time = timer.stop();
     uint32 num_bytes = A.numels() * sizeof(FloatT);
-    num_bytes *= max_iter;
-    float32 bandWidth_mb = num_bytes / (t.get_duration() * (1 << 20));
-    LOG("Bandwidth: ", BLUE, bandWidth_mb, " MB/s", RED, A.height, "x", A.height, RESET,
+    num_bytes *= max_iters;
+    float32 bandWidth_mb = num_bytes/ (time * (1 << 30));
+    LOG("Bandwidth: ", BLUE, bandWidth_mb, "GB/s", RED, A.height, "x", A.height, RESET,
         " for AhxAw", A.height, A.width, "x BhBw", B.height, B.width);
 }
 
@@ -48,6 +49,7 @@ void run_transpose_timing(const MatrixT& A, const MatrixT& B)
 int32 test_match(const Matrix<FloatT>& C, const Matrix<FloatT>& D)
 {
     FloatT eps = 1e-2;
+    cudaErrCheck(cudaDeviceSynchronize());
 
     // check sizes match
     if (C.height != D.height || C.width != D.width)
@@ -91,7 +93,8 @@ int main(int argc, char const* argv[])
     std::string name = (argc > 1) ? argv[0] : "main";
     std::string usage("\n\nUsage: \n\t");
     usage +=
-        (name + " time_mult height width <height2>         for time_mult mutliplication  \n\t" +
+        (name + " time_mult height width                   for time_mult mutliplication  \n\t" +
+         name + " time_mult_2 height width height2         for time_mult mutliplication  \n\t" +
          name + " time_transpose height width              for timing mutliplication     \n\t" +
          name + " test_transpose height width              for testing transpose         \n\t" +
          name +
@@ -145,7 +148,7 @@ int main(int argc, char const* argv[])
         auto A = read_csv<FloatT>(argv[2]);
         auto B = read_csv<FloatT>(argv[3]);
         auto C = read_csv<FloatT>(argv[4]);
-        auto D = madd<FloatT>(A, B, nullptr);
+        auto D = mmadd<FloatT>(A, B, nullptr);
         return test_match(C, D);
     }
 

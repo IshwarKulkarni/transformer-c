@@ -24,9 +24,9 @@ template <typename T> bool same(const Matrix<T> &A, const Matrix<T> &B, float ep
 }
 
 template <typename T>
-void madd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C);
+void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C);
 
-template <typename T> Matrix<T> madd(const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C);
+template <typename T> Matrix<T> mmadd(const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C);
 
 template <typename T> Matrix<T> transpose(const Matrix<T> &A);
 
@@ -65,7 +65,7 @@ xavier_init(uint32 height, uint32 width)
 }
 
 template <typename Tr, typename Ta, typename Tb, typename Tc>
-bool check_madd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B,
+bool check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B,
                       const Matrix<Tc> *C)
 {
     if (A.width != B.height || A.height != result.height || B.width != result.width)

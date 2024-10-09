@@ -23,7 +23,7 @@ namespace Log {
 struct Location
 {
     const char* file;
-    const uint32 line;
+    const uint32_t line;
 };
 
 inline std::ostream& operator<<(std::ostream& strm, const Location& loc)

@@ -65,7 +65,7 @@ def mult_tests():
         args += write_sample_mult_data(m, n, k)
         run_main(args)
 
-    sizes = [(12, 12), (24, 24), (1024, 1024), (300, 400, 20)]
+    sizes = [(12, 12), (24, 24), (1024, 1024), (300, 400, 20), (64, 512, 1), (64, 1200, 1)]
     for size in sizes:
         test_csv_size(*size)
 
@@ -80,17 +80,16 @@ def transpose_tests():
 
 def mult_timing():
     print("Running matrix multiplication timing")
-    sizes = [(512, 256, 7), (512, 512), (2048, 512), (2048, 2048), (2048, 1024, 40) ,(4096, 4096)]
+    sizes = [(512, 256, 7), (512, 512), (2048, 512), (2048, 2048), (2048, 1024, 40), (64, 1200, 1) , (4096, 4096)]
     for sizes in sizes:
-        run_main(["time_mult"] + list(sizes))
-    print( term_colors["green"] ,  "Matrix multiplication timing tests passed", term_colors["end"])
+        selc = ["time_mult"] if len(sizes) == 2 else ["time_mult_2"]
+        run_main(selc + list(sizes))
 
 def transpose_timing():
     print("Running transpose timing")
     sizes = [(512, 20), (512, 512), (2048, 512)]
     for sizes in sizes:
         run_main(["time_transpose"] + list(sizes))
-    print( term_colors["green"] ,  "Transpose timing tests passed", term_colors["end"])
 
 test_time_functions = {
     "time_mult": mult_timing,
@@ -106,9 +105,14 @@ def main():
     if memcheck:
         program = ["cuda-memcheck", "--leak-check full", "bin/main"]
     build(debug=memcheck)
+   
+    if "all" in args:
+        for func in test_time_functions.values():
+            func()
+        return
 
     allowed_args = ["tests", "time", "transpose", "mult"]
-    args = allowed_args if "all" in args else [x for x in args if x in allowed_args]
+    args = [x for x in args if x in allowed_args]
     for arg in args:
         for name, func in test_time_functions.items():
             if arg in name:
