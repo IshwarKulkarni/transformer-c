@@ -2,14 +2,21 @@
 SRCDIR := src
 INCDIR := include
 BUILDDIR := bin
-TARGET := bin/main
+TARGET_MAIN := bin/main
+TARGET_TEST := bin/test
 
 # Other variables
 SOURCES := $(shell find $(SRCDIR) -type f -name "*.cpp")
+# remove "main.cpp" and "test.cpp" from SOURCES
+
 OBJECTS := $(patsubst $(SRCDIR)/%,$(BUILDDIR)/%,$(SOURCES:.cpp=.o))
+
+OBJECTS_MAIN := $(filter-out $(BUILDDIR)/tests.o, $(OBJECTS))
+OBJECTS_TEST := $(filter-out $(BUILDDIR)/main.o, $(OBJECTS))
+
 SOURCESCU := $(shell find $(SRCDIR) -type f -name "*.cu")
 OBJECTSCU := $(patsubst $(SRCDIR)/%,$(BUILDDIR)/%,$(SOURCESCU:.cu=.cu.o))
-TARGETDIR = `dirname $(TARGET)`
+TARGETDIR = `dirname $(BUILDDIR)`
 
 # Compilers
 HOST_COMPILER := g++
@@ -64,7 +71,7 @@ endif
 # Target rules
 all: build
 
-build: $(TARGET)
+build: $(TARGET_MAIN) $(TARGET_TEST)
 
 clean:
 	rm -fr $(OBJECTS) $(OBJECTSCU) $(TARGET) *.csv
@@ -77,6 +84,10 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp
 	@mkdir -p $(BUILDDIR);
 	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -shared -c $< -o $@
 
-$(TARGET): $(OBJECTS) $(OBJECTSCU)
+$(TARGET_MAIN): $(OBJECTS_MAIN) $(OBJECTSCU)
+	@mkdir -p $(TARGETDIR);
+	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@ 
+
+$(TARGET_TEST): $(OBJECTS_TEST) $(OBJECTSCU)
 	@mkdir -p $(TARGETDIR);
 	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@ 

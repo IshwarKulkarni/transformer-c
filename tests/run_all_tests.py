@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import subprocess
 
-program = ["bin/main"]
+program = ["bin/test"]
 
 term_colors = {
     "red": "\033[91m",
@@ -152,7 +152,7 @@ def tests_timing():
     global program
     memcheck = "memcheck" in args
     if memcheck:
-        program = ["cuda-memcheck", "--leak-check full", "bin/main"]
+        program = ["cuda-memcheck", "--leak-check full", "bin/test"]
     build(debug=memcheck)
 
     if "all" in args or len(args) == 1:
