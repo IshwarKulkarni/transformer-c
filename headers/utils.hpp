@@ -11,7 +11,7 @@
 template <typename FloatT> Matrix<FloatT> read_csv(const std::string& filename)
 {
     std::ifstream file(filename, std::ios::in);
-    uint32_t m, n;
+    uint32 m, n;
     file >> m >> n;
     std::vector<FloatT> data(m * n);
     std::copy(std::istream_iterator<float>(file), std::istream_iterator<float>(), data.begin());

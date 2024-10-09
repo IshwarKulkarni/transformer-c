@@ -1,34 +1,34 @@
 #ifndef MATRIX_CUH
 #define MATRIX_CUH
 
+#include "logger.hpp"
 #include "types"
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 #include <iomanip>
-#include <memory>
+#include <ios>
 #include <string>
-#include "logger.hpp"
 
-uint32_t getMatrixId();
+uint32 getMatrixId();
 
 #define cudaErrCheck(err)                                                                          \
     {                                                                                              \
         cudaErrCheck_((err), __FILE__, __LINE__);                                                  \
     }
-inline void cudaErrCheck_(cudaError_t code, const char* file, uint32_t line, bool abort = true)
+inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool abort = true)
 {
-    if (code == cudaSuccess)
-        return;
-    LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at", Log::Location{file, line});
+    if (code == cudaSuccess) return;
+    LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at",
+        Log::Location{file, line});
     throw std::runtime_error("CUDA ERROR");
 }
 
 template <typename T> struct Matrix
 {
-    const uint32_t id;
-    const uint32_t height;
-    const uint32_t width;
+    const uint32 id;
+    const uint32 height;
+    const uint32 width;
 
     struct CudaDeleter
     {
@@ -46,24 +46,28 @@ template <typename T> struct Matrix
 
     CudaPtr data;
 
-    Matrix(uint32_t height, uint32_t width, const T* values = nullptr)
+    Matrix(uint32 height, uint32 width, const T* values = nullptr)
         : height(height), width(width), id(getMatrixId()), data(CudaAllocator(height * width))
     {
         if (values)
         {
             std::copy(values, values + height * width, data.get());
         }
+        moveToDevice(0);
     }
 
-    Matrix(Matrix<T>&& m) : id(m.id), height(m.height), width(m.width), data(std::move(m.data)) {}
+    Matrix(Matrix<T>&& m) : id(m.id), height(m.height), width(m.width), data(std::move(m.data))
+    {
+        m.data = nullptr;
+    }
 
-    T& operator()(uint32_t x, uint32_t y)
+    T& operator()(uint32 x, uint32 y)
     {
         bounds_and_ptr(x, y);
         return data.get()[x + y * width];
     }
 
-    T operator()(uint32_t x, uint32_t y) const
+    T operator()(uint32 x, uint32 y) const
     {
         bounds_and_ptr(x, y);
         return data.get()[x + y * width];
@@ -84,39 +88,44 @@ template <typename T> struct Matrix
 
     inline const T* end() const { return data.get() + height * width; }
 
-    uint32_t numels() const { return height * width; }
-
-    friend std::ostream& operator<<(std::ostream& os, const Matrix& m)
-    {
-        os << m.get_name() << "\n" << std::setfill(' ');
-        for (uint32_t i = 0; i < m.height; i++)
-        {
-            for (uint32_t j = 0; j < m.width; j++)
-            {
-                typename AccumT<T>::type val = m(i, j);
-                os << std::setw(10) << std::setprecision(7) << std::fixed << std::setfill(' ')
-                   << val << ' ';
-            }
-            os << "\n";
-        }
-        os << std::endl;
-        return os;
-    }
+    uint32 numels() const { return height * width; }
 
   private:
-    inline void bounds_and_ptr(uint32_t x, uint32_t y) const
+    inline void bounds_and_ptr(uint32 x, uint32 y) const
     {
         if (data == nullptr)
         {
             throw std::runtime_error("Matrix data is null");
         }
-        if (x >= height || y >= width)
+        if (x >= width || y >= height)
         {
             throw std::out_of_range("Matrix index out of range: " + std::to_string(x) + " " +
                                     std::to_string(y));
         }
     }
+    void moveToDevice(int32_t device = 0)
+    {
+        cudaErrCheck(cudaMemAdvise(data.get(), height * width * sizeof(T),
+                                   cudaMemAdviseSetPreferredLocation, device));
+        cudaErrCheck(cudaMemAdvise(data.get(), height * width * sizeof(T),
+                                   cudaMemAdviseSetAccessedBy, device));
+        cudaErrCheck(cudaMemPrefetchAsync(data.get(), height * width * sizeof(T), device));
+    }
 };
+
+template <typename T> std::ostream& operator<<(std::ostream& os, const Matrix<T>& m)
+{
+    os << m.get_name() << std::setprecision(6) << std::fixed << std::setfill(' ');
+    for (uint32 y = 0; y < m.height; y++)
+    {
+        os << std::endl;
+        for (uint32 x = 0; x < m.width; x++)
+        {
+            os << std::setw(10) << m(x, y) << " ";
+        }
+    }
+    return os;
+}
 
 typedef Matrix<float32> Matrixf;
 typedef Matrix<float16> Matrixf16;

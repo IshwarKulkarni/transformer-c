@@ -23,7 +23,7 @@ namespace Log {
 struct Location
 {
     const char* file;
-    const uint32_t line;
+    const uint32 line;
 };
 
 inline std::ostream& operator<<(std::ostream& strm, const Location& loc)
@@ -55,10 +55,7 @@ class Logger {
         return (strm << arg1);
     }
 
-    inline std::ostream& log_v(std::ostream& strm)
-    {
-        return strm;
-    }
+    inline std::ostream& log_v(std::ostream& strm) { return strm; }
 
     template <typename... Args>
     inline std::ostream& log_v(std::ostream& strm, const Location& arg1, const Args&... args)
