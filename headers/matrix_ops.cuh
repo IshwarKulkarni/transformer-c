@@ -1,6 +1,7 @@
 #ifndef MATRIX_OPS_CUH
 #define MATRIX_OPS_CUH
 
+#include "functors.cuh"
 #include "matrix.cuh"
 #include "types"
 #include "utils.hpp"
@@ -12,77 +13,35 @@
 
 inline __device__ __host__ uint32 iDivUp(uint32 a, uint32 b) { return (a + b - 1) / b; }
 
-template <typename Tr, typename Ta, typename Tb, typename Tc>
-void mvadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Matrix<Tc> *C);
+//////////////////////////////////////////////////////////////////////////////////////
+// Matrix ops
+//////////////////////////////////////////////////////////////////////////////////////
 
-template <typename Tr, typename Ta, typename Tb, typename Tc>
-void mmadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Matrix<Tc> *C);
+// reduces along width, identity is identity scalar under that operation, PostProcess is unary
+// functor applied to final result
+template <typename T, typename ReduceOp = Plus<T>, typename PostProcess = Identity<T>>
+void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduction = ReduceOp(),
+            T identity = ReduceOp::Identity, PostProcess process = PostProcess());
+
+template <typename T, typename PostProcess = Identity<T>>
+void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
+           PostProcess process = PostProcess());
+
+template <typename T, typename PProcess = Identity<T>>
+void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
+           PProcess process = PProcess());
 
 template <typename T> void transpose(Matrix<T> &res, const Matrix<T> &A);
-
-// reduces along width, identity is identity under that operation
-template <typename T, typename Op>
-void reduce(Matrix<T> &result, const Matrix<T> &A, const Op &op = Op(), T identity = Op::Identity);
-
-template <typename T> inline void fill(Matrix<T> &A, const T *values)
-{
-    cudaMemcpy(A.begin(), values, A.numels() * sizeof(T), cudaMemcpyDefault);
-}
-
-template <typename Ta, typename Tb = Ta> struct Plus
-{
-    static constexpr Ta Identity = 0;
-    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a + b; }
-};
-
-template <typename T> struct Max
-{
-    static constexpr T Identity = std::numeric_limits<T>::lowest();
-    __host__ __device__ inline T operator()(T a, T b) const { return (a > b ? a : b); }
-};
-
-template <typename T> struct Min
-{
-    static constexpr T Identity = std::numeric_limits<T>::max();
-    __host__ __device__ inline T operator()(T a, T b) const { return (a <= b ? a : b); }
-};
-
-template <typename Ta, typename Tb = Ta> struct Sub
-{
-    static constexpr Ta Identity = 0;
-    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a - b; }
-};
-
-template <typename Ta, typename Tb = Ta> struct Mul
-{
-    static constexpr Ta Identity = 1;
-    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a * b; }
-};
-
-template <typename T> void reduce_sum(Matrix<T> &res, const Matrix<T> &A)
-{
-    reduce<T, Plus<T>>(res, A);
-}
-template <typename T> void reduce_max(Matrix<T> &res, const Matrix<T> &A)
-{
-    reduce<T, Max<T>>(res, A);
-}
-
-template <typename T> void reduce_min(Matrix<T> &res, const Matrix<T> &A)
-{
-    reduce<T, Min<T>>(res, A);
-}
-
-template <typename T> struct Neg
-{
-    inline __host__ __device__ T operator()(const T x) { return -x; }
-};
 
 template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Op>
 void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op);
 
 template <typename Ta, typename Tr = Ta, typename Op>
 void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op);
+
+//////////////////////////////////////////////////////////////////////////////////////
+// Matrix initializations
+//////////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
 inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type>
@@ -104,6 +63,28 @@ xavier_init(uint32 height, uint32 width)
 {
     return normal_init<T>(height, width, 0.f, std::sqrt(2.0 / (height + width)));
 }
+
+template <typename T> inline void fill(Matrix<T> &A, const T *values)
+{
+    cudaMemcpy(A.begin(), values, A.numels() * sizeof(T), cudaMemcpyDefault);
+}
+//////////////////////////////////////////////////////////////////////////////////////
+// Specialized calls to above functions
+//////////////////////////////////////////////////////////////////////////////////////
+
+template <typename T> void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
+{
+    reduce(result, A, Plus<T>(), T(0), DividebBy<T>(A.width));
+}
+
+template <typename T> void reduce_sum(Matrix<T> &result, const Matrix<T> &A)
+{
+    reduce(result, A, Plus<T>(), T(0));
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+// Size checks
+//////////////////////////////////////////////////////////////////////////////////////
 
 template <typename Tr, typename Ta, typename Tb, typename Tc>
 bool check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B,

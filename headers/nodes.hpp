@@ -1,23 +1,9 @@
 #ifndef NODES_HPP
 #define NODES_HPP
 
+#include "functors.cuh"
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
-#include <cstddef>
-
-template <typename T> struct Layer
-{
-    virtual void forward(const Matrix<T>& x) = 0;
-    virtual void backward(const Matrix<T>& x, const Matrix<T>& dy) = 0;
-    virtual const Matrix<T>& get_output() { return output; }
-
-  protected:
-    Layer(uint32_t height, uint32_t width) : output(height, width)
-    {
-        cudaErrCheck(cudaMemset(output.begin(), 0, output.numels() * sizeof(T)));
-    }
-    Matrix<T> output;
-};
 
 template <typename TW, typename TG = TW> // weight and gradient
 struct Parameter
@@ -42,49 +28,66 @@ struct Parameter
     inline void reset_grad() { cudaErrCheck(cudaMemset(G.begin(), 0, G.numels() * sizeof(TG))); }
 };
 
-template <typename T, typename Tg = T> struct Linear : public Layer<T>
+template <typename T, typename ActivationT = IdentityActivation<T>> struct Linear
 {
     Parameter<T, T> W;
     Parameter<T, T> b;
+    using Forward = typename ActivationT::forward;
+    using Backward = typename ActivationT::backward;
 
     Linear(uint32 in, uint32 out, T* wValues = nullptr, T* bValues = nullptr)
-        : Layer<T>(out, 1), W(out, in, wValues), b(out, 1, bValues)
+        : output(out, 1), W(out, in, wValues), b(out, 1, bValues)
     {
     }
 
-    void forward(const Matrix<T>& x) { mmadd(this->output, W.W, x, &b.W); }
+    const Matrix<T>& forward(const Matrix<T>& x)
+    {
+        mmadd<T, Forward>(this->output, W.W, x, &b.W);
+        return this->output;
+    }
 
-    // x is input, ey is error from the next layer
     void backward(const Matrix<T>& x, const Matrix<T>& dy)
     {
-        mmadd<T, T, T, T>(W.G, dy, x, nullptr);
+        mmadd<T, Backward>(W.G, dy, x, nullptr);
         fill(b.G, dy.begin());
     }
+
+    virtual const Matrix<T>& get_output() { return output; }
+
+  private:
+    Matrix<T> output;
 };
 
-template <typename T, typename Tg = T> struct MSE : public Layer<T>
+template <typename T> struct MSE
 {
-    Matrix<T> difference;
+    Matrix<T> squared_diff;
+    Matrix<T> output_vec; // output of reduction to 1D
+    Matrix<T> output_scalar;
+    bool reduceTo1D;
 
-    MSE(uint32_t height, uint32_t width) : Layer<T>(height, width), difference(height, width) {}
-
-    void forward(const Matrix<T>& y, const Matrix<T>& t)
+    MSE(uint32_t inHeight, uint32_t inWidth, bool reduce = true)
+        : squared_diff(inHeight, inWidth), output_vec(inHeight, 1), output_scalar(1, 1),
+          reduceTo1D(reduce)
     {
-        // binary_apply<T>(difference, y, t, [](T a, T b) { return (a - b) *(a - b); });
-        // Matrix<T> sq(y.height, y.width);
-        // square(sq, diff);
-        // sum(this->output, sq);
+    }
+
+    const Matrix<T>& forward(const Matrix<T>& y, const Matrix<T>& target)
+    {
+        binary_apply(squared_diff, y, target, DiffSq<T>());
+        reduce_mean(output_vec, squared_diff);
+        if (reduceTo1D)
+        {
+            reduce_mean(output_scalar, output_vec);
+        }
+        return get_output();
     }
 
     void backward(const Matrix<T>& y, const Matrix<T>& t)
     {
-        // Matrix<T> diff(y.height, y.width);
-        // sub(diff, y, t);
-        // mmadd<T, T, T, T>(this->grad, diff, diff, nullptr);
+        binary_apply(squared_diff, y, t, IntegerMultiplier<T, -2>()); // -2(y - t)
     }
 
-    Matrix<T> output;
-    Matrix<Tg> grad;
+    const Matrix<T>& get_output() { return reduceTo1D ? output_scalar : output_vec; }
 };
 
 #endif // NODES_HPP

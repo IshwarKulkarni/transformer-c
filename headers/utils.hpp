@@ -1,8 +1,11 @@
 #ifndef UTILS_HPP
 #define UTILS_HPP
 
+#include "functors.cuh"
 #include "logger.hpp"
 #include "matrix.cuh"
+#include "matrix_ops.cuh"
+#include "types"
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -14,7 +17,8 @@ template <typename FloatT> Matrix<FloatT> read_csv(const std::string& filename)
     uint32 m, n;
     file >> m >> n;
     std::vector<FloatT> data(m * n);
-    std::copy(std::istream_iterator<float>(file), std::istream_iterator<float>(), data.begin());
+    using readT = typename AccumT<FloatT>::type;
+    std::copy(std::istream_iterator<readT>(file), std::istream_iterator<readT>(), data.begin());
     Matrix<FloatT> matrix(m, n, data.data());
     return matrix;
 }
@@ -58,14 +62,14 @@ struct CudaEventTimer
     }
     ~CudaEventTimer()
     {
-        float time = stop();
+        float32 time = stop();
         LOG(name, " took ", time, " seconds ");
     }
     float32 stop()
     {
         cudaErrCheck(cudaEventRecord(end, 0));
         cudaErrCheck(cudaEventSynchronize(end));
-        float elapsed = 0;
+        float32 elapsed = 0;
         cudaErrCheck(cudaEventElapsedTime(&elapsed, start, end));
         elapsed /= 1000; // convert to seconds
         return elapsed;

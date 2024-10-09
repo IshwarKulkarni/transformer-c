@@ -24,7 +24,8 @@ __global__ void binary_apply_kernel(Tr *__restrict__ result, const Ta *__restric
 template <typename Ta, typename Tb, typename Tr, typename Op>
 void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op)
 {
-    // a and b's dimensions should match result dimensions either on height or width or numels == 1
+    // a and b's dimensions should match result dimensions either on height or
+    // width or numels == 1
     if ((A.height != res.height && A.width != res.width && A.numels() != 1) ||
         (B.height != res.height && B.width != res.width && B.numels() != 1))
     {
@@ -65,10 +66,15 @@ void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op)
         <<<grid, block>>>(res.begin(), A.begin(), res.height, res.width, A.height, A.width, op);
 }
 
-template void binary_apply<float, float, float, Plus<float, float>>(Matrix<float> &,
-                                                                    Matrix<float> const &,
-                                                                    Matrix<float> const &,
-                                                                    Plus<float, float>);
+using FloatT = float32;
+template void binary_apply<FloatT, FloatT, FloatT, Plus<FloatT, FloatT>>(Matrix<FloatT> &,
+                                                                         Matrix<FloatT> const &,
+                                                                         Matrix<FloatT> const &,
+                                                                         Plus<FloatT, FloatT>);
 
-template void unary_apply<float, float, Neg<float>>(Matrix<float> &, Matrix<float> const &,
-                                                    Neg<float>);
+template void unary_apply<FloatT, FloatT, Neg<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                       Neg<FloatT>);
+
+template void binary_apply<FloatT, FloatT, FloatT, Composition<FloatT, Sub<FloatT, FloatT>, Square<FloatT>>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &,
+    Composition<FloatT, Sub<FloatT, FloatT>, Square<FloatT>>);

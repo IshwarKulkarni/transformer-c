@@ -2,6 +2,7 @@
 SRCDIR := src
 INCDIR := include
 BUILDDIR := bin
+OBJDIR := $(BUILDDIR)/obj
 TARGET_MAIN := bin/main
 TARGET_TEST := bin/test
 
@@ -11,14 +12,14 @@ ALL_TARGETS := $(TARGET_MAIN) $(TARGET_TEST)
 SOURCES := $(shell find $(SRCDIR) -type f -name "*.cpp")
 # remove "main.cpp" and "test.cpp" from SOURCES
 
-OBJECTS := $(patsubst $(SRCDIR)/%,$(BUILDDIR)/%,$(SOURCES:.cpp=.o))
+OBJECTS := $(patsubst $(SRCDIR)/%,$(OBJDIR)/%,$(SOURCES:.cpp=.o))
 
 # remove "main.o" from test objects and "test.o" from main objects
-OBJECTS_MAIN := $(filter-out $(BUILDDIR)/tests.o, $(OBJECTS))  
-OBJECTS_TEST := $(filter-out $(BUILDDIR)/main.o, $(OBJECTS))
+OBJECTS_MAIN := $(filter-out $(OBJDIR)/tests.o, $(OBJECTS))  
+OBJECTS_TEST := $(filter-out $(OBJDIR)/main.o, $(OBJECTS))
 
 SOURCESCU := $(shell find $(SRCDIR) -type f -name "*.cu")
-OBJECTSCU := $(patsubst $(SRCDIR)/%,$(BUILDDIR)/%,$(SOURCESCU:.cu=.cu.o))
+OBJECTSCU := $(patsubst $(SRCDIR)/%,$(OBJDIR)/%,$(SOURCESCU:.cu=.cu.o))
 TARGETDIR = `dirname $(BUILDDIR)`
 
 # Compilers
@@ -77,14 +78,14 @@ all: build
 build: $(ALL_TARGETS)
 
 clean:
-	rm -fr $(OBJECTS) $(OBJECTSCU) $(ALL_TARGETS) *.csv
+	rm -fr $(OBJDIR) $(OBJECTSCU) $(ALL_TARGETS) *.csv temp/*
 
-$(BUILDDIR)/%.cu.o: $(SRCDIR)/%.cu
-	@mkdir -p $(BUILDDIR);
+$(OBJDIR)/%.cu.o: $(SRCDIR)/%.cu
+	@mkdir -p $(OBJDIR);
 	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -shared -c $< -o $@ 
 
-$(BUILDDIR)/%.o: $(SRCDIR)/%.cpp
-	@mkdir -p $(BUILDDIR);
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
+	@mkdir -p $(OBJDIR);
 	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -shared -c $< -o $@
 
 $(TARGET_MAIN): $(OBJECTS_MAIN) $(OBJECTSCU)
@@ -94,5 +95,5 @@ $(TARGET_MAIN): $(OBJECTS_MAIN) $(OBJECTSCU)
 
 $(TARGET_TEST): $(OBJECTS_TEST) $(OBJECTSCU)
 	@mkdir -p $(TARGETDIR);
-	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@ 
+	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@
 	@echo "\033[1;32mBuild complete for $(TARGET_TEST) \033[0m "
