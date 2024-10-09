@@ -1,0 +1,52 @@
+#include <functional>
+#include <type_traits>
+#include <cuda_fp16.h>
+
+using float16 = half;
+using float32 = float;
+using float64 = double;
+
+using uint32 = unsigned int;
+using int32 = int;
+using int16 = short;
+
+using uint64 = unsigned long long;
+using int64 = long long;
+using uint16 = unsigned short;
+
+static_assert(sizeof(uint32) == 4, "Not 4 bytes" );
+static_assert(sizeof(uint64) == 8, "Not 8 bytes" );
+static_assert(sizeof(int32) == 4, "Not 4 bytes" );
+static_assert(sizeof(int64) == 8, "Not 8 bytes" );
+
+template<class T, class Enable = void>
+struct is_floating_point {
+    static const bool value = false;
+};
+
+template<class T>
+struct is_floating_point<T, typename std::enable_if<std::is_floating_point<T>::value || std::is_same<T, float16>::value>::type>{
+    static const bool value = true;
+    using type = T;
+}; 
+
+template <typename T>
+struct Fp32Accum : std::enable_if<(sizeof(T)<=4 && is_floating_point<T>::value), float32>{};
+
+template <typename T>
+struct Uint32Accum: std::enable_if< (sizeof(T)<=4 && std::is_unsigned<T>::value), uint32> {};
+
+template <typename T>
+struct Fp64AccumT : std::enable_if< (sizeof(T)<=8 && is_floating_point<T>::value), float64> {};
+
+template <typename T>
+struct Uint64Accum : std::enable_if<sizeof(T)<=8 && std::is_unsigned<T>::value, uint64> {};
+
+template<typename T>
+using Accum32T = typename std::conditional<is_floating_point<T>::value, Fp32Accum<T>, Uint32Accum<T>>::type;
+
+template<typename T>
+using Accum64T = typename std::conditional<is_floating_point<T>::value, Fp64AccumT<T>, Uint64Accum<T>>::type;
+
+template<typename T>
+using AccumT = typename std::conditional<sizeof(T)<=4, Accum32T<T>, Accum64T<T>>::type;

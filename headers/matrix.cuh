@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <cuda_fp16.h>
 
 #define DEBUG 1
 
@@ -87,13 +88,13 @@ struct Matrix {
         return name;
     }
 
-    inline float* begin() { return data.get(); }
+    inline T* begin() { return data.get(); }
 
-    inline const float* begin() const { return data.get();}
+    inline const T* begin() const { return data.get();}
 
-    inline float* end() { return data.get() + height * width; }
+    inline T* end() { return data.get() + height * width; }
 
-    inline const float* end() const { return data.get() + height * width; }
+    inline const T* end() const { return data.get() + height * width; }
 
     uint32_t numels() const { return height * width; }
 
@@ -104,7 +105,8 @@ struct Matrix {
         {
             for(uint32_t j = 0; j < m.width; j++)
             {
-                os << m(i, j) << "  ";
+                T val = m(i, j);
+                os << (std::is_floating_point<T>::value ? float(val) : val) << "  ";
             }
             os << "\n\t";
         }
@@ -114,5 +116,6 @@ struct Matrix {
 };
 
 typedef Matrix<float> Matrixf;
+typedef Matrix<half> Matrixf16;
 
 #endif // MATRIX_CUH

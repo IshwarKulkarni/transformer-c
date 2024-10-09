@@ -1,20 +1,27 @@
-#include <iostream>
 #include "../headers/matrix_ops.cuh"
+#include "../headers/types"
+#include <iostream>
 #include <iostream>
 #include <fstream>
 #include <iterator>
+#include <type_traits>
 #include <vector>
 #include <iomanip>
 #include <chrono>
 
-Matrixf read_csv(const std::string& filename)
+#include <typeinfo>
+
+using FloatT = float32;
+using MatrixT = Matrix<FloatT>;
+
+MatrixT read_csv(const std::string& filename)
 {
     std::ifstream file(filename, std::ios::in);
     uint32_t m, n;
     file >> m >> n;
-    std::vector<float> data(m * n);
+    std::vector<FloatT> data(m * n);
     std::copy(std::istream_iterator<float>(file), std::istream_iterator<float>(), data.begin());
-    Matrixf matrix(m, n, data.data());
+    MatrixT matrix(m, n, data.data());
     return matrix;
 }
 
@@ -35,36 +42,24 @@ struct Timer
     }
 };
 
-void run_timing(Matrixf& A, Matrixf& B)
+void run_timing(const MatrixT& A, const MatrixT& B)
 {
-    Timer t("10000 madd");
-    for (int i = 0; i < 10000; i++)
+    Timer t("1000 madd");
+    for (int i = 0; i < 1000; i++)
     {
-        Matrixf D = madd<float>(A, B, nullptr);
+        MatrixT D = madd<FloatT>(A, B, nullptr);
     }
 }
 
-
-int main()
+void run_test(const MatrixT &D, const MatrixT &C)
 {
-    Matrixf A = read_csv("data/a.csv");
-    Matrixf B = read_csv("data/b.csv");
-    Matrixf C = read_csv("data/c.csv");
-    cudaErrCheck(cudaDeviceSynchronize());    
-
-    std::cout << " Matrix A: " << A.get_name() << std::endl
-              << " Matrix B: " << B.get_name() << std::endl
-              << " Matrix C: " << C.get_name() << std::endl;  
-
-    Matrixf D = madd<float>(A, B, nullptr);
-
-    float eps = 1e-5;
+    FloatT eps = (sizeof(FloatT) == 4 ? 1e-8 * D.numels() : 1e-5  * D.numels());
     bool match = same(D, C, eps);
     std::ofstream d_file("d.csv");
     if (!match)
     {
         // print where D is different from C
-        d_file << std::setprecision(8) ;// <<  D << "\n\n";
+        d_file << std::setprecision(8); // <<  D << "\n\n";
         for (int i = 0; i < D.width; i++)
         {
             for (int j = 0; j < D.height; j++)
@@ -77,10 +72,25 @@ int main()
                 }
             }
         }
-    }   
-    std::cout << (match ? "Match" : "Failed! " ) << std::endl;
+    }
+    std::cout << (match ? "Match" : "Failed! ") << " at eps: " << eps << std::endl;
+}
 
-    
+int main()
+{
+    MatrixT A = read_csv("data/a.csv");
+    MatrixT B = read_csv("data/b.csv");
+    MatrixT C = read_csv("data/c.csv");
+    cudaErrCheck(cudaDeviceSynchronize());
+
+    std::cout << " Matrix A: " << A.get_name() << std::endl
+              << " Matrix B: " << B.get_name() << std::endl
+              << " Matrix C: " << C.get_name() << std::endl;  
+
+    MatrixT D = madd<FloatT>(A, B, nullptr);
+
+    run_test(D, C);
+    //run_timing(A, B);
     return 0;
 }
 

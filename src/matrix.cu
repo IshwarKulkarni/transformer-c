@@ -1,4 +1,7 @@
 #include "../headers/matrix_ops.cuh"
+#include <cuda_fp16.h>
+#include <type_traits>
+#include "../headers/types"
 
 uint32_t getMatrixId() {
     static uint32_t id = 0;
@@ -9,34 +12,37 @@ inline __device__ __host__ uint32_t iDivUp(uint32_t a, uint32_t b){return (a + b
 
 constexpr uint32_t BLOCK_SIZE_X = 16;
 
-template<typename T> __global__
-void tiled_madd_shmem(const T *A, uint32_t aH, uint32_t aW, const T *B, const T *C, T *result)
+ // AccumNative => internal accumulation is done in Tr, else 32bit(T) if sizeof(T) < 4 else 64bit(T)
+template<bool AccumNative=false, typename Ta, typename Tb, typename Tc, typename Tr> __global__ 
+void tiled_madd_shmem(const Ta *A, uint32_t aH, uint32_t aW, const Tb *B, const Tc *C, Tr *result)
 {
     uint32_t row = blockIdx.x * BLOCK_SIZE_X + threadIdx.x;
     uint32_t col = blockIdx.y * BLOCK_SIZE_X + threadIdx.y;
 
-    T sum = 0;
-    __shared__ T As[BLOCK_SIZE_X][BLOCK_SIZE_X];
-    __shared__ T Bs[BLOCK_SIZE_X][BLOCK_SIZE_X];
+    using SumType = typename std::conditional<AccumNative, Tr, typename AccumT<Tr>::type>::type;
+    SumType sum = 0.0;
+
+    __shared__ float As[BLOCK_SIZE_X][BLOCK_SIZE_X];
+    __shared__ float Bs[BLOCK_SIZE_X][BLOCK_SIZE_X];
 
     #pragma unroll
     for (uint32_t k = 0; k < iDivUp(aW, BLOCK_SIZE_X) * BLOCK_SIZE_X; k += BLOCK_SIZE_X)
     {
         uint32_t aoffset = row * aW + k + threadIdx.y;
         uint32_t boffset = (k + threadIdx.x) * aH + col;
-        As[threadIdx.x][threadIdx.y] = k + threadIdx.y < aW ? A[aoffset] : 0.f;
-        Bs[threadIdx.x][threadIdx.y] = k + threadIdx.x < aW ? B[boffset] : 0.f;
+        As[threadIdx.x][threadIdx.y] = k + threadIdx.y < aW ? A[aoffset] : Ta(0);
+        Bs[threadIdx.x][threadIdx.y] = k + threadIdx.x < aW ? B[boffset] : Tb(0);
         __syncthreads();
         #pragma unroll
         for (uint32_t kk = 0; kk < BLOCK_SIZE_X; kk++)
         {
-            sum += As[threadIdx.x][kk] * Bs[kk][threadIdx.y];
+            sum += SumType(As[threadIdx.x][kk] * Bs[kk][threadIdx.y]);
         }
         __syncthreads();
     }
     if (row < aH && col < aH)
     {
-        sum += (C ? C[row * aH + col] : 0);
+        sum += SumType(C ? Tc(C[row * aH + col]) : Tc(0));
         result[row * aH + col] = sum;
     }
 }
@@ -55,12 +61,12 @@ void madd_kernel(const T *A, uint32_t ak, uint32_t al, const T *B, uint32_t bm, 
         {
             sum += A[i * al + k] * B[k * bm + j];
         }
-        result[i * bm + j] = sum + (C ? C[i * bm + j] : 0);
+        result[i * bm + j] = sum + (C ? C[i * bm + j] : T(0));
     }
 }
 
-template<typename T>
-void madd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C)
+template<typename Tr, typename Ta, typename Tb, typename Tc>
+void madd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Matrix<Tc> *C)
 {
     if (A.width != B.height || A.height != result.height || B.width != result.width)
     {
@@ -82,11 +88,8 @@ void madd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matri
     {
         dim3 blockDim(BLOCK_SIZE_X, BLOCK_SIZE_X);
         dim3 gridDim( (A.height + BLOCK_SIZE_X-1) / BLOCK_SIZE_X, (B.width + BLOCK_SIZE_X-1) / BLOCK_SIZE_X);
-        std::cout << "Matrix dimensions " << result.height << "x" << result.width << " performing madd with 2D grid " << gridDim.x << ", " << gridDim.y << std::endl;
-        tiled_madd_shmem<<<gridDim, blockDim>>>(A.begin(), A.height, A.width, B.begin(), C ? C->begin() : nullptr, result.begin());
+        tiled_madd_shmem<true, Tr, Ta, Tb, Tc><<<gridDim, blockDim>>>(A.begin(), A.height, A.width, B.begin(), C ? C->begin() : nullptr, result.begin());
     }
-
-    madd_kernel<<<1, dim3(A.height, B.width)>>>(A.begin(), A.height, A.width, B.begin(), B.width, C ? C->begin() : nullptr, result.begin());
     cudaErrCheck(cudaDeviceSynchronize());
 }
 
@@ -107,10 +110,13 @@ Matrix<T> madd(const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C)
 {
     Matrix<T> result(A.height, B.width);
     fill(result, 0.0f);
-    madd(result, A, B, C);
+    madd<T, T, T,T>(result, A, B, C);
     return result;
 }
 
 
-template void madd(Matrix<float> &result, const Matrix<float> &A, const Matrix<float> &B, const Matrix<float> *C);
+template void madd<float, float, float>(Matrix<float> &result, const Matrix<float> &A, const Matrix<float> &B, const Matrix<float> *C);
 template Matrix<float> madd(const Matrix<float> &A, const Matrix<float> &B, const Matrix<float> *C);
+
+template void madd<float16, float16, float16, float16>(Matrix<float16> &result, const Matrix<float16> &A, const Matrix<float16> &B, const Matrix<float16> *C);
+template Matrix<half> madd(const Matrix<half> &A, const Matrix<half> &B, const Matrix<half> *C);
