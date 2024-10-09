@@ -1,7 +1,7 @@
-#include "../headers/matrix_ops.cuh"
-#include "../headers/types"
 #include <cuda_fp16.h>
 #include <type_traits>
+#include "../headers/matrix_ops.cuh"
+#include "../headers/types"
 
 uint32 getMatrixId()
 {
@@ -46,7 +46,7 @@ __global__ void tiled_mmadd_shmem(T *__restrict__ result, const T *__restrict__ 
     {
         uint32 offset = row * bW + col;
         sum += SumType(C ? T(C[offset]) : T(0));
-        result[offset] = pprocess(sum);
+        result[offset] = pprocess(row, col, sum);
     }
 }
 
@@ -65,7 +65,7 @@ __global__ void mmadd_kernel(T *__restrict__ result, const T *__restrict__ A, ui
         {
             sum += A[i * aW + k] * B[k * bW + j];
         }
-        result[i * bW + j] = pprocess(sum + (C ? C[i * bW + j] : T(0)));
+        result[i * bW + j] = pprocess(i, j, sum + (C ? C[i * bW + j] : T(0)));
     }
 }
 
@@ -109,7 +109,7 @@ __global__ void mat_vector_mul_kernel(T *result, const T *A, const T *B, const T
     __syncthreads();
     if (x == 0 and blockIdx.x < height)
     {
-        result[blockIdx.x] = pProcess(vAs[0] + c + r);
+        result[blockIdx.x] = pProcess(y, x, vAs[0] + c + r);
     }
 }
 
@@ -125,7 +125,7 @@ __global__ void outer_product(T *result, const T *A, const T *B, const T *C, uin
     {
         T c = (C ? C[y * rwidth + x] : T(0));
         T r = (addToresult ? result[y * rwidth + x] : T(0));
-        result[y * rwidth + x] = pProcess(T(A[y] * B[x]) + c + r);
+        result[y * rwidth + x] = pProcess(y, x, T(A[y] * B[x]) + c + r);
     }
 }
 
@@ -173,7 +173,7 @@ void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     }
     else if (B.height <= 1024)
     {
-        LOG("Using mat_vector_mul_kernel, A, B: ", A.shape_string(), " ", B.shape_string());
+        LOG("Using mat_vector_mul_kernel, A, B: ", A.shape_str, " ", B.shape_str);
         mat_vector_mul_kernel<T, 1024><<<A.height, 1024>>>(result.begin(), A.begin(), B.begin(),
                                                            C ? C->begin() : nullptr, A.height,
                                                            A.width, 0, false, pProcess);
@@ -185,12 +185,12 @@ void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
         for (; offset < B.height - BLOCK_X; offset += BLOCK_X)
         {
             mat_vector_mul_kernel<T, BLOCK_X, Identity<T>>
-                <<<A.height, BLOCK_X>>>( // only multi plication and addition, do not add C
+                <<<A.height, BLOCK_X>>>(  // only multi plication and addition, do not add C
                     result.begin(), A.begin(), B.begin(), nullptr, A.height, A.width, offset,
                     offset > 0);
         }
 
-        mat_vector_mul_kernel<T, BLOCK_X><<<A.height, BLOCK_X>>>( // add C and apply post process
+        mat_vector_mul_kernel<T, BLOCK_X><<<A.height, BLOCK_X>>>(  // add C and apply post process
             result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width,
             offset, offset > 0, pProcess);
     }
@@ -202,7 +202,8 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
 {
     check_mmadd_sizes(result, A, B, C);
 
-    if (A.width == 1 and B.width <= 1024) // outer product (small enough to fit in one thread block)
+    if (A.width == 1 and
+        B.width <= 1024)  // outer product (small enough to fit in one thread block)
     {
         outer_product<<<A.height, B.width>>>(result.begin(), A.begin(), B.begin(),
                                              (C ? C->begin() : nullptr), A.height, B.width, false,
@@ -212,7 +213,7 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     {
         mvadd<T>(result, A, B, C, pProcess);
     }
-    else if (result.numels() <= 1024) // small matrices
+    else if (result.numels() <= 1024)  // small matrices
     {
         // LOG("Using mmadd_kernel: ", result.numels());
         mmadd_kernel<T><<<1, dim3(A.height, B.width)>>>(result.begin(), A.begin(), A.height,
@@ -258,11 +259,13 @@ __global__ void transpose_kernel(T *__restrict__ result, const T *__restrict__ A
     if (y < width && x < height) result[y * height + x] = tile[threadIdx.x][threadIdx.y];
 }
 
-template <typename T> void transpose(Matrix<T> &res, const Matrix<T> &A)
+template <typename T>
+void transpose(Matrix<T> &res, const Matrix<T> &A)
 {
     if (A.height != res.width || A.width != res.height)
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for transpose operation");
+        LOG(BOLD, RED, "Matrix dimensions do not match for transpose operation: ", A.shape_str,
+            " -> ", res.shape_str);
         throw std::runtime_error("Dimension mismatch");
     }
 
@@ -282,7 +285,7 @@ template <typename T> void transpose(Matrix<T> &res, const Matrix<T> &A)
     cudaErrCheck(cudaGetLastError());
 }
 
-using FloatT = float32;
+using FloatT = float64;
 template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                        Matrix<FloatT> const &,
                                                        Matrix<FloatT> const *,
@@ -291,6 +294,11 @@ template void mmadd<FloatT, Identity<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> c
                                               Matrix<FloatT> const &, Matrix<FloatT> const *,
                                               Identity<FloatT>);
 template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A);
-template void mmadd<FloatT, Loge<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
-                                          Matrix<FloatT> const &, Matrix<FloatT> const *,
-                                          Loge<FloatT>);
+
+template void mmadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                 Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                                 Relu<FloatT>::ReluF);
+
+template void mmadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                 Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                                 TanH<FloatT>::TanhF);

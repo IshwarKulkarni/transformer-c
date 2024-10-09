@@ -17,31 +17,32 @@ void mmaddCPU(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const M
             T value = 0;
             for (uint32 k = 0; k < A.width; k++)
             {
-                value += A(k, y) * B(x, k);
+                value += A(y, k) * B(k, x);
             }
             if (C)
             {
-                value += C->operator()(x, y);
+                value += (*C)(y, x);
             }
-            result(x, y) = unary(value);
+            result(y, x) = unary(y, x, value);
         }
     }
 }
 
-template <typename T> void transposeCPU(Matrix<T> &res, const Matrix<T> &A)
+template <typename T>
+void transposeCPU(Matrix<T> &res, const Matrix<T> &A)
 {
     for (uint32 y = 0; y < A.height; y++)
     {
         for (uint32 x = 0; x < A.width; x++)
         {
-            res(y, x) = A(x, y);
+            res(x, y) = A(y, x);
         }
     }
 }
 
 template <typename T, typename Op = Plus<T>, typename PostProcess = Identity<T>>
-void reduceCPU(Matrix<T> &result, const Matrix<T> &A, T identity = Op::Identity,
-               const Op &op = Op(), PostProcess unary = PostProcess())
+void reduceCPU(Matrix<T> &result, const Matrix<T> &A, const Op &op = Op(),
+               T identity = Op::Identity, PostProcess pProcess = PostProcess())
 {
     if (result.height != A.height || result.width != 1)
     {
@@ -53,31 +54,34 @@ void reduceCPU(Matrix<T> &result, const Matrix<T> &A, T identity = Op::Identity,
         T value = identity;
         for (uint32 x = 0; x < A.width; x++)
         {
-            value = op(value, A(x, y));
+            value = op(y, x, value, A(y, x));
         }
-        result(0, y) = unary(value);
+        result(y, 0) = pProcess(y, 0, value);
     }
 }
 
-template <typename T> void reduce_meanCPU(Matrix<T> &result, const Matrix<T> &A)
+template <typename T>
+void reduce_meanCPU(Matrix<T> &result, const Matrix<T> &A)
 {
     for (uint32 y = 0; y < A.height; y++)
     {
         T value = 0;
         for (uint32 x = 0; x < A.width; x++)
         {
-            value += A(x, y);
+            value += A(y, x);
         }
-        result(0, y) = value / A.width;
+        result(y, 0) = value / A.width;
     }
 }
 
-template <typename T> inline void fillCPU(Matrix<T> &A, const T &value)
+template <typename T>
+inline void fillCPU(Matrix<T> &A, T value)
 {
     std::fill(A.begin(), A.end(), value);
 }
 
-template <typename T> bool sameCPU(const Matrix<T> &A, const Matrix<T> &B, float32 eps = 1e-5)
+template <typename T>
+bool sameCPU(const Matrix<T> &A, const Matrix<T> &B, float32 eps = 1e-5)
 {
     return std::equal(A.begin(), A.end(), B.begin(),
                       [eps](T a, T b) { return std::abs(a - b) < eps; });
@@ -106,7 +110,7 @@ inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<T
             uint32 bx = B.width > 1 ? x : 0;
             uint32 by = B.height > 1 ? y : 0;
 
-            res(x, y) = op(A(ax, ay), B(bx, by));
+            res(x, y) = op(y, x, A(ay, ax), B(by, by));
         }
     }
 }
@@ -120,7 +124,7 @@ void unary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, Op op)
         {
             uint32 ax = A.width > 1 ? x : 0;
             uint32 ay = A.height > 1 ? y : 0;
-            res(x, y) = op(A(ax, ay));
+            res(y, x) = op(ay, ax, A(ay, ax));
         }
     }
 }

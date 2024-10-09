@@ -1,20 +1,21 @@
 #ifndef MATRIX_CUH
 #define MATRIX_CUH
 
-#include "logger.hpp"
-#include "types"
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 #include <iomanip>
 #include <ios>
 #include <string>
+#include <typeinfo>
+#include "logger.hpp"
+#include "types"
 
 uint32 getMatrixId();
 
-#define cudaErrCheck(err)                                                                          \
-    {                                                                                              \
-        cudaErrCheck_((err), __FILE__, __LINE__);                                                  \
+#define cudaErrCheck(err)                         \
+    {                                             \
+        cudaErrCheck_((err), __FILE__, __LINE__); \
     }
 inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool abort = true)
 {
@@ -24,11 +25,14 @@ inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool 
     throw std::runtime_error("CUDA ERROR");
 }
 
-template <typename T> struct Matrix
+template <typename T>
+struct Matrix
 {
     const uint32 id;
     const uint32 height;
     const uint32 width;
+    const std::string shape_str;
+    const std::string name;
 
     struct CudaDeleter
     {
@@ -47,7 +51,13 @@ template <typename T> struct Matrix
     CudaPtr data;
 
     Matrix(uint32 height, uint32 width, const T* values = nullptr)
-        : height(height), width(width), id(getMatrixId()), data(CudaAllocator(height * width))
+        : height(height),
+          width(width),
+          id(getMatrixId()),
+          data(CudaAllocator(height * width)),
+          shape_str('[' + std::to_string(height) + "x" + std::to_string(width) + ']'),
+          name("Matrix-" + std::string(typeid(T).name()) + '{' + std::to_string(id) + '}' +
+               shape_str)
     {
         if (values)
         {
@@ -61,28 +71,16 @@ template <typename T> struct Matrix
         m.data = nullptr;
     }
 
-    T& operator()(uint32 x, uint32 y) // opposite of convention, but I like it
+    const T& operator()(uint32 y, uint32 x) const
     {
-        bounds_and_ptr(x, y);
-        return data.get()[x + y * width];
+        bounds_and_ptr(y, x);
+        return data[y * width + x];
     }
 
-    T operator()(uint32 x, uint32 y) const
+    T& operator()(uint32 y, uint32 x)
     {
-        bounds_and_ptr(x, y);
-        return data.get()[x + y * width];
-    }
-
-    std::string get_name() const
-    {
-        char name[64];
-        snprintf(name, 64, "Matrix{%d}[%dx%d]@0x%lx", id, height, width, uint64_t(data.get()));
-        return name;
-    }
-
-    std::string shape_string() const
-    {
-        return "[" + std::to_string(height) + "x" + std::to_string(width) + "]";
+        bounds_and_ptr(y, x);
+        return data[y * width + x];
     }
 
     inline T* begin() { return data.get(); }
@@ -95,8 +93,8 @@ template <typename T> struct Matrix
 
     uint32 numels() const { return height * width; }
 
-  private:
-    inline void bounds_and_ptr(uint32 x, uint32 y) const
+ private:
+    inline void bounds_and_ptr(uint32 y, uint32 x) const
     {
         if (data == nullptr)
         {
@@ -119,23 +117,23 @@ template <typename T> struct Matrix
 };
 
 template <typename T>
-std::ostream& operator<<(std::ostream& os, const Matrix<T>& m) // usable to paste in torch ()
+std::ostream& operator<<(std::ostream& os, const Matrix<T>& m)  // usable to paste in torch ()
 {
-    os << m.get_name() << std::setprecision(6) << std::fixed << std::setfill(' ');
+    os << m.name << std::setprecision(12) << std::fixed << std::setfill(' ') << '[';
     for (uint32 y = 0; y < m.height; y++)
     {
         os << "\n[";
         for (uint32 x = 0; x < m.width; x++)
         {
-            os << std::setw(10) << m(x, y) << ", ";
+            os << std::setw(15) << m(y, x) << (x == m.width - 1 ? "" : ", ");
         }
-        os << "],";
+        os << ']' << (y == m.height - 1 ? "" : ",");
     }
-    os << "\n";
+    os << "]\n";
     return os;
 }
 
-typedef Matrix<float32> Matrixf;
-typedef Matrix<float16> Matrixf16;
+using FloatT = float64;
+typedef Matrix<FloatT> Matrixf;
 
-#endif // MATRIX_CUH
+#endif  // MATRIX_CUH

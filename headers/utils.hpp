@@ -1,17 +1,18 @@
 #ifndef UTILS_HPP
 #define UTILS_HPP
 
+#include <chrono>
+#include <fstream>
+#include <iterator>
+#include <vector>
 #include "functors.cuh"
 #include "logger.hpp"
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
 #include "types"
-#include <chrono>
-#include <fstream>
-#include <iterator>
-#include <vector>
 
-template <typename FloatT> Matrix<FloatT> read_csv(const std::string& filename)
+template <typename FloatT>
+Matrix<FloatT> read_csv(const std::string& filename)
 {
     std::ifstream file(filename, std::ios::in);
     uint32 m, n;
@@ -71,7 +72,7 @@ struct CudaEventTimer
         cudaErrCheck(cudaEventSynchronize(end));
         float32 elapsed = 0;
         cudaErrCheck(cudaEventElapsedTime(&elapsed, start, end));
-        elapsed /= 1000; // convert to seconds
+        elapsed /= 1000;  // convert to seconds
         return elapsed;
     }
 };

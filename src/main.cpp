@@ -1,45 +1,41 @@
-#include "../headers/functors.cuh"
+#include <cstdlib>
+#include <iostream>
 #include "../headers/matrix.cuh"
 #include "../headers/matrix_ops.hpp"
 #include "../headers/nodes.hpp"
 #include "../headers/types"
-#include <cuda_device_runtime_api.h>
-#include <iostream>
 
-using FloatT = float32;
+using FloatT = float64;
 
 int main(int argc, char const* argv[])
 {
-    // clang-format off
-    FloatT wv[] = {0.254053,  -0.247817, -0.427396,
-                   -0.014449,  0.147829,   0.929250,
-                   -0.807114,  -0.068262,  0.218884, 
-                   -0.453263,  0.800626,  -0.321338};
+    uint32 _in = 5;
+    uint32 _out = 3;
 
-    FloatT bv[] = {-0.118935, -0.542531, 0.981391, -1.293095};
-    // clang-format off
+    Matrixf x(_in, 1);
+    LinearIdentityF L(_in, _out);
+    SoftmaxF S(_out, 1, &L);
+    L2ErrorF mse(_out, 1, &S);
 
-    Matrix<FloatT> x(3 , 1); 
-    Matrix<FloatT> target(4, 1);
-    fillCPU(x, 1.f);
-    fillCPU(target, 1.f);
+    fillCPU(x, (FloatT)(1));
+    fillCPU(L.W.Weights, FloatT(0.1));
+    fillCPU(L.b.Weights, FloatT(0.1));
 
-    Linear<FloatT, Sigmoid<FloatT>> l(3, 4, wv, bv);
-    MSE<FloatT> mse(4, 1, true); 
+    const auto& y = L.forward(x);
 
-    const auto& y = l.forward(x);
+    Matrixf t(_out, 1);
+    const auto& e = mse.forward(y, t);
+    fillCPU(t, FloatT(0.7));
+
     cudaErrCheck(cudaDeviceSynchronize());
-    const auto& err = mse.forward(y, target);
+    std::cout << "lin out: " << L.get_output() << std::endl
+              << "sm exps: " << S.exps << std::endl
+              << "sm sum_0d: " << S.temp0d << std::endl
+              << "softmax out: " << S.get_output() << std::endl
+              << "y: " << y << std::endl
+              << "mse out: " << mse.get_output() << std::endl;
+
+    mse.backward(e);
     cudaErrCheck(cudaDeviceSynchronize());
-
-    std::cout << "y: " << y << std::endl;
-    std::cout << "err_vec: " << mse.output_vec << std::endl;
-    std::cout << "err: " << err << std::endl;
-
-    mse.backward(err, target);
-
-    //std::cout << "l.W.G" << l.W.G << std::endl;
-    //std::cout << "l.b.G" << l.b.G << std::endl; 
-
-    return 0;
+    std::cout << L.W.Weights << std::endl << L.W.Grads << std::endl;
 }

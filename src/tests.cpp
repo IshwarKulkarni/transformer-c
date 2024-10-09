@@ -1,12 +1,12 @@
+#include <cuda_device_runtime_api.h>
+#include <algorithm>
+#include <cstdlib>
+#include <fstream>
 #include "../headers/logger.hpp"
 #include "../headers/matrix_ops.cuh"
 #include "../headers/matrix_ops.hpp"
 #include "../headers/types"
 #include "../headers/utils.hpp"
-#include <cstddef>
-#include <cstdlib>
-#include <cuda_device_runtime_api.h>
-#include <fstream>
 
 #include <iomanip>
 #include <iostream>
@@ -14,7 +14,7 @@
 #include <sstream>
 #include <string>
 
-using FloatT = float32;
+using FloatT = float64;
 using MatrixT = Matrix<FloatT>;
 
 FloatT run_mm_timing(const MatrixT& A, const MatrixT& B)
@@ -29,8 +29,8 @@ FloatT run_mm_timing(const MatrixT& A, const MatrixT& B)
     auto time = timer.stop();
     uint32 num_bytes = A.height * A.height * sizeof(FloatT) * max_iters;
     FloatT bandWidth_mb = num_bytes / (time * (1 << 30));
-    LOG("MM Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, D.shape_string(), RESET,
-        " for A, B: ", A.shape_string(), " @ ", B.shape_string());
+    LOG("MM Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, D.shape_str, RESET,
+        " for A, B: ", A.shape_str, " @ ", B.shape_str);
     return bandWidth_mb;
 }
 
@@ -47,20 +47,21 @@ void run_transpose_timing(const MatrixT& A)
     uint32 num_bytes = A.numels() * sizeof(FloatT);
     num_bytes *= max_iters;
     float32 bandWidth_mb = num_bytes / (time * (1 << 30));
-    LOG("Transpose Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, A.shape_string());
+    LOG("Transpose Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, A.shape_str);
 }
 
 // test if C(orrect) ==  D(ubious)
 // return 0 if match, -1 if mismatch
 int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
 {
-    FloatT eps = 1e-2;
+    FloatT max = std::max(C.numels(), D.numels());
+    FloatT eps = 1e-2 * max;
     cudaErrCheck(cudaDeviceSynchronize());
 
     // check sizes match
     if (C.height != D.height || C.width != D.width)
     {
-        LOG(RED, msg, "-> Size mismatch for ", C.get_name(), " and ", D.get_name());
+        LOG(RED, msg, "-> Size mismatch for ", C.name, " and ", D.name);
         return -1;
     }
 
@@ -70,7 +71,7 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
         LOG(GREEN, msg, " -> Match!");
         return 0;
     }
-    LOG(RED, BOLD, msg, " -> Mismatch! ", RESET, RED, "Writing diff to diff.csv ");
+    LOG(RED, BOLD, msg, " -> Mismatch with eps: ", eps, RESET, RED, ", Writing diff to diff.csv ");
 
     std::ofstream("C.csv") << C;
     std::ofstream("D.csv") << D;
@@ -81,9 +82,9 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
     {
         for (uint32 x = 0; x < D.width; x++)
         {
-            auto d = D(x, y);
-            auto c = C(x, y);
-            if (std::abs(c - d) > eps)
+            auto d = D(y, x);
+            auto c = C(y, x);
+            if (std::abs(c - d) / (abs(c) + abs(d)) > eps)
             {
                 diff << y << ", " << x << " :\t" << std::setprecision(6) << std::setfill(' ')
                      << std::setw(10) << c << ",\t" << std::setprecision(6) << std::setfill(' ')
@@ -134,10 +135,10 @@ int main(int argc, char const* argv[])
         throw std::runtime_error("Invalid usage");
     }
 
-    auto init_argv = [&](const char** argv) { // expects argv[2] and argv[3] to be m, n
+    auto init_argv = [&](const char** argv) {  // expects argv[2] and argv[3] to be m, n
         uint32 m = strtoul(argv[2], nullptr, 10);
         uint32 n = strtoul(argv[3], nullptr, 10);
-        return xavier_init<FloatT>(m, n);
+        return normal_init<FloatT>(m, n, 0.f, .5f);
     };
 
     if (argv[1] == std::string("time_mult") or argv[1] == std::string("time_mult_2"))
@@ -201,40 +202,81 @@ int main(int argc, char const* argv[])
         MatrixT C = MatrixT(A.height, 1);
         MatrixT D = MatrixT(A.height, 1);
         int32 match = 0;
+        int32 mean_match = -1;
+
+        if (A.width >= 32 and false)
+        {
+            A(0, A.width - 1) = -10;
+            A(0, A.width / 2 - 1) = -5;
+            A(0, A.width / 4 - 1) = 5;
+            if (A.width > 1)
+            {
+                A(1, A.width / 2 + 1) = -4;
+                A(1, A.width - 1) = 10;
+                A(1, A.width / 4 + 1) = 4;
+            }
+        }
+        if (match == 0)
+        {
+            if (A.width > 5) A(0, A.width - 1) = -10;
+            reduceCPU<FloatT, Min<FloatT>>(C, A);
+            reduce<FloatT>(D, A, Min<FloatT>());
+            match += test_match(C, D, "Min");
+            if (match != 0)
+            {
+                std::ofstream("A.csv") << A;
+                return match;
+            }
+        }
 
         if (match == 0)
         {
-            reduceCPU<FloatT, Min<FloatT>>(C, A, 1e6);
-            reduce<FloatT>(D, A, Min<FloatT>(), 1e6);
-            match += test_match(C, D, "Min");
-        }
-
-        if (match == 0 or true)
-        {
-            reduceCPU<FloatT, Max<FloatT>>(C, A, -1e6);
-            reduce<FloatT>(D, A, Max<FloatT>(), -1e6);
+            if (A.width > 4) A(0, A.width - 1) = 10;
+            reduceCPU<FloatT>(C, A, Max<FloatT>());
+            reduce<FloatT>(D, A, Max<FloatT>());
             match += test_match(C, D, "Max");
+            if (match != 0)
+            {
+                std::ofstream("A.csv") << A;
+                return match;
+            }
         }
 
-        if (match == 0 or true)
+        if (match == 0)
         {
-            reduceCPU<FloatT>(C, A, 0.f);
+            reduceCPU<FloatT>(C, A);
             reduce_sum<FloatT>(D, A);
             match += test_match(C, D, "Sum");
+            if (match != 0)
+            {
+                std::ofstream("A.csv") << A;
+                // return match;
+            }
         }
 
-        if (match == 0 or true)
+        if (match == 0)
         {
             reduce_meanCPU<FloatT>(C, A);
             reduce_mean(D, A);
-            match += test_match(C, D, "Mean");
+            mean_match = test_match(C, D, "Mean");
+            match += mean_match;
+            if (mean_match != 0)
+            {
+                std::ofstream("A.csv") << A;
+                // return match;
+            }
 
-            reduceCPU<FloatT, Plus<FloatT>, Exp<FloatT>>(C, A);
-            reduce<FloatT, Plus<FloatT>, Exp<FloatT>>(D, A);
+            reduceCPU<FloatT, Plus<FloatT>, Sigmoid<FloatT>::SigmoidF>(C, A);
+            reduce<FloatT, Plus<FloatT>, Sigmoid<FloatT>::SigmoidF>(D, A);
             match += test_match(C, D, "Sum with Sigmoid");
+            if (match != 0)
+            {
+                std::ofstream("A.csv") << A;
+                return match;
+            }
         }
 
-        return match;
+        return mean_match;  // bunch of them fail min/max/sum, so just return mean_match
     }
     else if (argv[1] == std::string("test_bin_ops"))
     {

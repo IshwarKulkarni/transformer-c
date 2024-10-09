@@ -27,7 +27,7 @@ struct Location
     const uint32_t line;
 };
 
-enum class LogLevel // not used
+enum class LogLevel  // not used
 {
     LOG_LEVEL = 0,
     DEBUG_LEVEL = 1,
@@ -36,8 +36,9 @@ enum class LogLevel // not used
     ERROR_LEVEL = 4,
 };
 
-class Logger {
-  public:
+class Logger
+{
+ public:
     void inline tee(const std::string& filename)
     {
         if (!file.is_open())
@@ -46,7 +47,8 @@ class Logger {
         }
     }
 
-    template <typename First> inline std::ostream& log_v(std::ostream& strm, const First& arg1)
+    template <typename First>
+    inline std::ostream& log_v(std::ostream& strm, const First& arg1)
     {
         return (strm << arg1);
     }
@@ -68,7 +70,8 @@ class Logger {
         return this->log_v((strm << arg1), args...);
     }
 
-    template <typename... Args> inline void log(const Args&... args)
+    template <typename... Args>
+    inline void log(const Args&... args)
     {
         this->log_v(std::cout, args...) << RESET << std::endl;
     }
@@ -85,15 +88,15 @@ class Logger {
 
     ~Logger() = default;
 
-  private:
+ private:
     std::ofstream file;
     std::set<std::string> disabled_files;
     Logger() = default;
 };
 
-} // namespace Log
+}  // namespace Log
 #define DISABLE_LOG_FOR_FILE Log::Logger::get().disable(__FILE__);
 #define ENABLE_LOG_FOR_FILE Log::Logger::get().enable(__FILE__);
 #define LOG(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, __VA_ARGS__)
 
-#endif // LOGGER_H
+#endif  // LOGGER_H

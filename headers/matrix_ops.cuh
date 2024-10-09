@@ -1,15 +1,15 @@
 #ifndef MATRIX_OPS_CUH
 #define MATRIX_OPS_CUH
 
+#include <cuda_runtime.h>
+#include <algorithm>
+#include <functional>
+#include <random>
+#include <vector>
 #include "functors.cuh"
 #include "matrix.cuh"
 #include "types"
 #include "utils.hpp"
-#include <algorithm>
-#include <cuda_runtime.h>
-#include <functional>
-#include <random>
-#include <vector>
 
 inline __device__ __host__ uint32 iDivUp(uint32 a, uint32 b) { return (a + b - 1) / b; }
 
@@ -36,7 +36,8 @@ template <typename T, typename PProcess = Identity<T>>
 void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
            PProcess process = PProcess());
 
-template <typename T> void transpose(Matrix<T> &res, const Matrix<T> &A);
+template <typename T>
+void transpose(Matrix<T> &res, const Matrix<T> &A);
 
 template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Op>
 void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op);
@@ -49,8 +50,8 @@ void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op);
 //////////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
-inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type>
-normal_init(uint32 height, uint32 width, float32 mean = 0.f, float32 std = 1.f)
+inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> normal_init(
+    uint32 height, uint32 width, float32 mean = 0.f, float32 std = 1.f)
 {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -63,40 +64,54 @@ normal_init(uint32 height, uint32 width, float32 mean = 0.f, float32 std = 1.f)
 }
 
 template <class T>
-inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type>
-xavier_init(uint32 height, uint32 width)
+inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> xavier_init(
+    uint32 height, uint32 width)
 {
     return normal_init<T>(height, width, 0.f, std::sqrt(2.0 / (height + width)));
 }
 
-template <typename T> inline void fill(Matrix<T> &A, const T *values)
+template <typename T>
+inline void fill(Matrix<T> &A, const T *values)
 {
     cudaMemcpy(A.begin(), values, A.numels() * sizeof(T), cudaMemcpyDefault);
+}
+
+template <typename T>
+inline void fill(Matrix<T> &A, const Matrix<T> &B)
+{
+    if (A.height != B.height or A.width != B.width)
+    {
+        LOG(RED, "Dimension mismatch: A, B: ", A.shape_str, " != ", B.shape_str);
+        throw std::runtime_error("Dimension mismatch");
+    }
+    fill(A, B.begin());
 }
 //////////////////////////////////////////////////////////////////////////////////////
 // Specialized calls to above functions
 //////////////////////////////////////////////////////////////////////////////////////
 
-template <typename T> void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
+template <typename T>
+void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
 {
     if (A.width > 1)
         reduce(result, A, Plus<T>(), T(0), DividebBy<T>(A.width));
     else if (A.height > 1 and A.width == 1 and result.width == 1)
         reduce_column_vec(result, A, Plus<T>(), T(0), DividebBy<T>(A.height));
     else
-        throw std::runtime_error("Invalid dimensions for mean reduction " + A.shape_string() +
-                                 " to " + result.shape_string());
+        throw std::runtime_error("Invalid dimensions for mean reduction " + A.shape_str + " to " +
+                                 result.shape_str);
 }
 
-template <typename T> void reduce_sum(Matrix<T> &result, const Matrix<T> &A)
+template <typename T>
+void reduce_sum(Matrix<T> &result, const Matrix<T> &A)
 {
     if (A.width > 1)
         reduce(result, A, Plus<T>(), T(0));
     else if (A.height > 1 and A.width == 1 and result.width == 1)
-        reduce_column_vec(result, A, Plus<T>(), T(0));
+        reduce_column_vec(result, A, Plus<T>(), T(0), Identity<T>());
     else
-        throw std::runtime_error("Invalid dimensions for sum reduction " + A.shape_string() +
-                                 " to " + result.shape_string());
+        throw std::runtime_error("Invalid dimensions for sum reduction " + A.shape_str + " to " +
+                                 result.shape_str);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -109,23 +124,41 @@ bool check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb>
 {
     if (A.width != B.height || A.height != result.height || B.width != result.width)
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for A ", A.get_name(), " and B ",
-            B.get_name(), " and result ", result.get_name());
+        LOG(BOLD, RED, "Matrix dimensions do not match for A ", A.name, " and B ", B.name,
+            " and result ", result.name);
         throw std::runtime_error("Dimension mismatch");
     }
     if (result.height != A.height || result.width != B.width)
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for result ", result.get_name(), " and A ",
-            A.get_name(), " and B ", B.get_name());
+        LOG(BOLD, RED, "Matrix dimensions do not match for result ", result.name, " and A ", A.name,
+            " and B ", B.name);
         throw std::runtime_error("Dimension mismatch");
     }
     if (C and (C->height != A.height or C->width != B.width))
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for C ", C->get_name(), " and A ",
-            A.get_name(), " and B ", B.get_name());
+        LOG(BOLD, RED, "Matrix dimensions do not match for C ", C->name, " and A ", A.name,
+            " and B ", B.name);
         throw std::runtime_error("Dimension mismatch");
     }
     return true;
 }
 
-#endif // MATRIX_OPS_CUH
+template <typename T>
+void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B)
+{
+    if (B.numels() != 1 and (res.height != B.height and res.width != B.width))
+    {
+        LOG(RED, "Dimension mismatch in Broadcating Binary Op: R, B: ", res.shape_str,
+            " != ", B.shape_str);
+        throw std::runtime_error("Dimension mismatch");
+    }
+
+    if (A.numels() != 1 and (res.height != A.height and res.width != A.width))
+    {
+        LOG(RED, "Dimension mismatch in Broadcating Binary Op: R, A: ", res.shape_str,
+            " != ", A.shape_str);
+        throw std::runtime_error("Dimension mismatch");
+    }
+}
+
+#endif  // MATRIX_OPS_CUH
