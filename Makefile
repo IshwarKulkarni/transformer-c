@@ -1,6 +1,6 @@
 # Main variables
 SRCDIR := src
-INCDIR := include
+INCDIR := headers
 BUILDDIR := bin
 OBJDIR := $(BUILDDIR)/obj
 TARGET_MAIN := bin/main
@@ -28,7 +28,7 @@ NVCC          := nvcc -ccbin $(HOST_COMPILER)  #/usr/local/cuda/bin/nvcc
 
 # Flags
 NVCCFLAGS     := -m64  #-dc used cg::grid_group, cg::this_group
-CCFLAGS       := --std=c++0x -fPIC
+CCFLAGS       := --std=c++0x -fPIC -rdynamic
 LDFLAGS       :=
 
 # Debug build flags

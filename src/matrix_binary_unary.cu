@@ -2,9 +2,8 @@
 #include "../headers/matrix_ops.cuh"
 
 template <typename Ta, typename Tb, typename Tr, typename Op>
-__global__ void binary_apply_kernel(Tr *__restrict__ result, const Ta *__restrict__ A,
-                                    const Tb *__restrict__ B, uint32 resH, uint32 resW, uint32 aH,
-                                    uint32 aW, uint32 bH, uint32 bW, Op op)
+__global__ void binary_apply_kernel(Tr *result, const Ta *A, const Tb *B, uint32 resH, uint32 resW,
+                                    uint32 aH, uint32 aW, uint32 bH, uint32 bW, Op op)
 {
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -19,7 +18,9 @@ __global__ void binary_apply_kernel(Tr *__restrict__ result, const Ta *__restric
     if (bW == 1) Bxy[0] = 0;
     if (bH == 1) Bxy[1] = 0;
 
-    result[y * resW + x] = op(y, x, A[Axy[0] + aW * Axy[1]], B[Bxy[0] + bW * Bxy[1]]);
+    Tr out = op(y, x, A[Axy[0] + aW * Axy[1]], B[Bxy[0] + bW * Bxy[1]]);
+
+    result[y * resW + x] = out;
 }
 
 template <typename Ta, typename Tb, typename Tr, typename Op>
@@ -27,7 +28,7 @@ void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op 
 {
     check_broadcast_sizes<Ta>(res, A, B);
 
-    dim3 block(32, 32);
+    dim3 block(32, 32);  // should probably be (512 , 1) or something
     dim3 grid(iDivUp(res.width, block.x), iDivUp(res.height, block.y));
     binary_apply_kernel<Ta, Tb, Tr, Op><<<grid, block>>>(res.begin(), A.begin(), B.begin(),
                                                          res.height, res.width, A.height, A.width,
@@ -48,19 +49,23 @@ __global__ void unary_apply_kernel(Tr *__restrict__ result, const Ta *__restrict
     if (aW == 1) Axy[0] = 0;  // broadcast along x axis
     if (aH == 1) Axy[1] = 0;
 
-    result[y * resW + x] = op(y, x, A[Axy[0] + aW * Axy[1]]);
+    Ta a = A[Axy[0] + aW * Axy[1]];
+    Tr out = op(y, x, a);
+    uint32 res_idx = y * resW + x;
+
+    result[res_idx] = out;
 }
 
 template <typename Ta, typename Tr, typename Op>
 void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op)
 {
-    dim3 block(32, 32);
+    dim3 block(256, 4);
     dim3 grid(iDivUp(res.width, block.x), iDivUp(res.height, block.y));
     unary_apply_kernel<Ta, Tr, Op>
         <<<grid, block>>>(res.begin(), A.begin(), res.height, res.width, A.height, A.width, op);
 }
 
-// All the tempalte instantiations of the above functions using same FloatT type
+// All the template instantiations of the above functions using same FloatT type
 using FloatT = float64;
 template void binary_apply<FloatT, FloatT, FloatT, Plus<FloatT, FloatT>>(Matrix<FloatT> &,
                                                                          Matrix<FloatT> const &,
@@ -133,3 +138,17 @@ template void binary_apply<FloatT, FloatT, FloatT, SoftmaxGrad<FloatT>>(Matrix<F
                                                                         Matrix<FloatT> const &,
                                                                         Matrix<FloatT> const &,
                                                                         SoftmaxGrad<FloatT>);
+
+template void unary_apply<FloatT, FloatT, Loge<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                        Loge<FloatT>);
+
+template void binary_apply<FloatT, FloatT, FloatT, NegDiv<FloatT>>(Matrix<FloatT> &,
+                                                                   Matrix<FloatT> const &,
+                                                                   Matrix<FloatT> const &,
+                                                                   NegDiv<FloatT>);
+
+template void binary_apply<FloatT, FloatT, FloatT, CrossEntropy<FloatT, FloatT>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, CrossEntropy<FloatT, FloatT>);
+
+template void unary_apply<FloatT, FloatT, Sign<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                        Sign<FloatT>);

@@ -9,12 +9,21 @@ uint32 getMatrixId()
     return id++;
 }
 
+template <typename Tc>
+__device__ Tc getC(uint32 row, uint32 col, const Tc *C, uint32 cH, uint32 cW)
+{
+    if (C == nullptr) return Tc(0);
+    uint32 y = cH > 1 ? row : 0;
+    uint32 x = cW > 1 ? col : 0;
+    return C[y * cW + x];
+}
+
 // AccumNative => internal accumulation is done in T, else 32bit(T) if sizeof(T)
 // < 4 else 64bit(T)
 template <uint32 TILE_SIZE_X = 16, bool AccumNative = false, typename T, typename PProcess>
 __global__ void tiled_mmadd_shmem(T *__restrict__ result, const T *__restrict__ A, uint32 aH,
                                   uint32 aW, const T *__restrict__ B, uint32 bW,
-                                  const T *__restrict__ C, PProcess pprocess)
+                                  const T *__restrict__ C, uint32 cH, uint32 cW, PProcess pprocess)
 {
     using SumType = typename std::conditional<AccumNative, T, typename AccumT<T>::type>::type;
     SumType sum{0};
@@ -42,18 +51,19 @@ __global__ void tiled_mmadd_shmem(T *__restrict__ result, const T *__restrict__ 
         }
         __syncthreads();
     }
+
     if (row < aH && col < bW)
     {
         uint32 offset = row * bW + col;
-        sum += SumType(C ? T(C[offset]) : T(0));
+        sum += getC(row, col, C, cH, cW);
         result[offset] = pprocess(row, col, sum);
     }
 }
 
 template <typename T, typename PProcess>
 __global__ void mmadd_kernel(T *__restrict__ result, const T *__restrict__ A, uint32 aH, uint32 aW,
-                             const T *__restrict__ B, uint32 bW, const T *__restrict__ C,
-                             PProcess pprocess)
+                             const T *__restrict__ B, uint32 bW, const T *__restrict__ C, uint32 cH,
+                             uint32 cW, PProcess pprocess)
 {
     uint32 i = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -65,7 +75,8 @@ __global__ void mmadd_kernel(T *__restrict__ result, const T *__restrict__ A, ui
         {
             sum += A[i * aW + k] * B[k * bW + j];
         }
-        result[i * bW + j] = pprocess(i, j, sum + (C ? C[i * bW + j] : T(0)));
+
+        result[i * bW + j] = pprocess(i, j, sum + getC(i, j, C, cH, cW));
     }
 }
 
@@ -216,27 +227,27 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     else if (result.numels() <= 1024)  // small matrices
     {
         // LOG("Using mmadd_kernel: ", result.numels());
-        mmadd_kernel<T><<<1, dim3(A.height, B.width)>>>(result.begin(), A.begin(), A.height,
-                                                        A.width, B.begin(), B.width,
-                                                        C ? C->begin() : nullptr, pProcess);
+        mmadd_kernel<T><<<1, dim3(A.height, B.width)>>>(
+            result.begin(), A.begin(), A.height, A.width, B.begin(), B.width,
+            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
     }
     else if (A.height <= 1536)
     {
         constexpr uint32 BLOCK_SIZE_MM = 16;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
         dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
-        tiled_mmadd_shmem<BLOCK_SIZE_MM, false>
-            <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
-                                    B.width, C ? C->begin() : nullptr, pProcess);
+        tiled_mmadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(
+            result.begin(), A.begin(), A.height, A.width, B.begin(), B.width,
+            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
     }
     else
     {
         constexpr uint32 BLOCK_SIZE_MM = 32;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
         dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
-        tiled_mmadd_shmem<BLOCK_SIZE_MM, false>
-            <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
-                                    B.width, C ? C->begin() : nullptr, pProcess);
+        tiled_mmadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(
+            result.begin(), A.begin(), A.height, A.width, B.begin(), B.width,
+            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
     }
     cudaErrCheck(cudaGetLastError());
 }
@@ -266,7 +277,7 @@ void transpose(Matrix<T> &res, const Matrix<T> &A)
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for transpose operation: ", A.shape_str,
             " -> ", res.shape_str);
-        throw std::runtime_error("Dimension mismatch");
+        throw runtime_error_with_backtrace("Dimension mismatch for transpose");
     }
 
     if (A.width == 1)
@@ -302,3 +313,7 @@ template void mmadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT
 template void mmadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,
                                                  TanH<FloatT>::TanhF);
+
+template void mmadd<FloatT, DividebBy<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                               Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                               DividebBy<FloatT>);

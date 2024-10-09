@@ -6,8 +6,10 @@
 #include <cuda_runtime_api.h>
 #include <iomanip>
 #include <ios>
+#include <stdexcept>
 #include <string>
 #include <typeinfo>
+#include "errors.hpp"
 #include "logger.hpp"
 #include "types"
 
@@ -98,7 +100,7 @@ struct Matrix
     {
         if (data == nullptr)
         {
-            throw std::runtime_error("Matrix data is null");
+            throw runtime_error_with_backtrace("Matrix data is null");
         }
         if (x >= width || y >= height)
         {

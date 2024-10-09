@@ -21,7 +21,7 @@ inline __device__ __host__ uint32 iDivUp(uint32 a, uint32 b) { return (a + b - 1
 // functor applied to final result
 template <typename T, typename ReduceOp = Plus<T>, typename PostProcess = Identity<T>>
 void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduction = ReduceOp(),
-            T identity = ReduceOp::Identity, PostProcess process = PostProcess());
+            T identity = ReduceOp::Identity, PostProcess pProcess = PostProcess());
 
 // reduces along height, for column vectors, throws if .width > 1
 template <typename T, typename ReduceOp, typename PostProcess>
@@ -30,11 +30,11 @@ void reduce_column_vec(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp,
 
 template <typename T, typename PostProcess = Identity<T>>
 void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
-           PostProcess process = PostProcess());
+           PostProcess pProcess = PostProcess());
 
 template <typename T, typename PProcess = Identity<T>>
 void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
-           PProcess process = PProcess());
+           PProcess pProcess = PProcess());
 
 template <typename T>
 void transpose(Matrix<T> &res, const Matrix<T> &A);
@@ -82,7 +82,7 @@ inline void fill(Matrix<T> &A, const Matrix<T> &B)
     if (A.height != B.height or A.width != B.width)
     {
         LOG(RED, "Dimension mismatch: A, B: ", A.shape_str, " != ", B.shape_str);
-        throw std::runtime_error("Dimension mismatch");
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
     fill(A, B.begin());
 }
@@ -98,8 +98,8 @@ void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
     else if (A.height > 1 and A.width == 1 and result.width == 1)
         reduce_column_vec(result, A, Plus<T>(), T(0), DividebBy<T>(A.height));
     else
-        throw std::runtime_error("Invalid dimensions for mean reduction " + A.shape_str + " to " +
-                                 result.shape_str);
+        throw runtime_error_with_backtrace("Invalid dimensions for mean reduction " + A.shape_str +
+                                           " to " + result.shape_str);
 }
 
 template <typename T>
@@ -110,8 +110,8 @@ void reduce_sum(Matrix<T> &result, const Matrix<T> &A)
     else if (A.height > 1 and A.width == 1 and result.width == 1)
         reduce_column_vec(result, A, Plus<T>(), T(0), Identity<T>());
     else
-        throw std::runtime_error("Invalid dimensions for sum reduction " + A.shape_str + " to " +
-                                 result.shape_str);
+        throw runtime_error_with_backtrace("Invalid dimensions for sum reduction " + A.shape_str +
+                                           " to " + result.shape_str);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -126,19 +126,20 @@ bool check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb>
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for A ", A.name, " and B ", B.name,
             " and result ", result.name);
-        throw std::runtime_error("Dimension mismatch");
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
     if (result.height != A.height || result.width != B.width)
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for result ", result.name, " and A ", A.name,
             " and B ", B.name);
-        throw std::runtime_error("Dimension mismatch");
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
-    if (C and (C->height != A.height or C->width != B.width))
+    if (C and
+        ((C->height != A.height and C->height != 1) or (C->width != B.width and C->width != 1)))
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for C ", C->name, " and A ", A.name,
             " and B ", B.name);
-        throw std::runtime_error("Dimension mismatch");
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
     return true;
 }
@@ -146,18 +147,30 @@ bool check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb>
 template <typename T>
 void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B)
 {
-    if (B.numels() != 1 and (res.height != B.height and res.width != B.width))
+    uint32 rh = std::max(A.height, B.height);
+    uint32 rw = std::max(A.width, B.width);
+
+    if (res.height != rh or res.width != rw)
     {
-        LOG(RED, "Dimension mismatch in Broadcating Binary Op: R, B: ", res.shape_str,
-            " != ", B.shape_str);
-        throw std::runtime_error("Dimension mismatch");
+        LOG(RED, "Dimension mismatch in Broadcating Binary Op: Result: ", res.shape_str,
+            ", A: ", A.shape_str, " & B: ", B.shape_str);
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
 
-    if (A.numels() != 1 and (res.height != A.height and res.width != A.width))
+    if (!(A.numels() == 1 or (rh == A.height and rw == A.width) or
+          (rh != A.height and A.height == 1) or (rh != A.width and A.width == 1)))
     {
-        LOG(RED, "Dimension mismatch in Broadcating Binary Op: R, A: ", res.shape_str,
-            " != ", A.shape_str);
-        throw std::runtime_error("Dimension mismatch");
+        LOG(RED, "Dimension mismatch in Broadcating Binary Op: Res: ", A.shape_str,
+            " & A: ", A.shape_str);
+        throw runtime_error_with_backtrace("Dimension mismatch");
+    }
+
+    if (!(B.numels() == 1 or (rh == B.height and rw == B.width) or
+          (rh != B.height and B.height == 1) or (rh != B.width and B.width == 1)))
+    {
+        LOG(RED, "Dimension mismatch in Broadcating Binary Op: Res: ", A.shape_str,
+            " & B: ", B.shape_str);
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
 }
 

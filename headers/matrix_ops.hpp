@@ -2,6 +2,7 @@
 #ifndef MATRIX_OPS_HPP
 #define MATRIX_OPS_HPP
 
+#include <algorithm>
 #include "functors.cuh"
 #include "matrix_ops.cuh"
 
@@ -47,7 +48,7 @@ void reduceCPU(Matrix<T> &result, const Matrix<T> &A, const Op &op = Op(),
     if (result.height != A.height || result.width != 1)
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for reduce operation");
-        throw std::runtime_error("Dimension mismatch");
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
     for (uint32 y = 0; y < A.height; y++)
     {
@@ -81,6 +82,18 @@ inline void fillCPU(Matrix<T> &A, T value)
 }
 
 template <typename T>
+inline void fillCPU(Matrix<T> &A, const T *values)
+{
+    std::copy_n(values, A.numels(), A.begin());
+}
+
+template <typename T>
+bool sameCPU(const Matrix<T> &A, const T *B, float32 eps = 1e-5)
+{
+    return std::equal(A.begin(), A.end(), B, [eps](T a, T b) { return std::abs(a - b) < eps; });
+}
+
+template <typename T>
 bool sameCPU(const Matrix<T> &A, const Matrix<T> &B, float32 eps = 1e-5)
 {
     return std::equal(A.begin(), A.end(), B.begin(),
@@ -97,7 +110,7 @@ inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<T
         (B.height != res.height && B.width != res.width && B.numels() != 1))
     {
         LOG(RED, "Matrix dimensions do not match for binary operation");
-        throw std::runtime_error("Dimension mismatch");
+        throw runtime_error_with_backtrace("Dimension mismatch");
     }
 
     // always broadcast either axis on either matrix

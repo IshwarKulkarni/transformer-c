@@ -29,9 +29,14 @@ struct Square
 };
 
 template <typename Ta>
-struct Exp
+struct Exp  // can apply shfted value
 {
-    __host__ __device__ inline Ta operator()(uint32 y, uint32 x, Ta a) const { return exp(a); }
+    Ta shift;
+    Exp(Ta shift = 0) : shift(shift) {}
+    __host__ __device__ inline Ta operator()(uint32 y, uint32 x, Ta a) const
+    {
+        return exp(a - shift);
+    }
 };
 
 template <typename Ta>
@@ -49,9 +54,11 @@ struct Abs
 template <typename Ta>
 struct Sign
 {
+    Ta multiplier = 1;
+    Sign(Ta multiplier = 1) : multiplier(multiplier) {}
     __host__ __device__ inline Ta operator()(uint32 y, uint32 x, Ta a) const
     {
-        return (a > 0) ? 1 : -1;
+        return (a > 0) ? multiplier : -multiplier;
     }
 };
 
@@ -127,6 +134,25 @@ struct Div
     __host__ __device__ inline Ta operator()(uint32 y, uint32 x, Ta a, Tb b) const { return a / b; }
 };
 
+template <typename Ta, typename Tb = Ta>
+struct NegDiv
+{
+    static constexpr Ta Identity = 1;
+    __host__ __device__ inline Ta operator()(uint32 y, uint32 x, Ta a, Tb b) const
+    {
+        return -a / b;
+    }
+};
+
+template <typename Ta, typename Tb = Ta>
+struct CrossEntropy
+{
+    __host__ __device__ inline Ta operator()(uint32 y, uint32 x, Ta t, Tb o) const
+    {
+        return -t * log(o);
+    }
+};
+
 template <typename WT, typename WuT = WT>
 struct WeightUpdate
 {
@@ -167,7 +193,7 @@ struct SoftmaxGrad
     // called with output * outputToutput and outout
     __host__ __device__ inline T operator()(uint32 y, uint32 x, T outputToutput, T output) const
     {
-        if (x == y) return output - outputToutput;
+        if (x == y) return output * (1 - output);
         return -outputToutput;
     }
 };
@@ -262,14 +288,23 @@ struct Composition<T, F>  // last functor
     F f;
     __host__ __device__ inline T operator()(uint32 y, uint32 x, T a) const { return f(y, x, a); }
 
-    __host__ __device__ inline T operator()(uint32 y, uint32 x, T a, T b) const
+    __host__ __device__ inline T operator()(uint32 y, uint32 x, const T a, const T b) const
     {
         return f(y, x, a, b);
     }
 };
 
-// template <typename T> // (a - b)^2
-// using DiffSq = Composition<T, Sub<T>, Square<T>>;
+template <typename T>  // (a - b)^2
+using DiffSq = Composition<T, Sub<T>, Square<T>>;
+
+template <typename T>  // (a - b)
+struct MultNeg2
+{
+    __host__ __device__ inline T operator()(uint32 y, uint32 x, T a, T b) const
+    {
+        return 2 * (a - b);
+    }
+};
 
 template <typename T>
 struct FunctorName
