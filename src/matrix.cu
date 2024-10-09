@@ -16,9 +16,9 @@ constexpr uint32 BLOCK_SIZE = 32;
 // AccumNative => internal accumulation is done in Tr, else 32bit(T) if sizeof(T) < 4 else 64bit(T)
 template <uint32 TILE_SIZE_X = 16, bool AccumNative = false, typename Ta, typename Tb, typename Tc,
           typename Tr>
-__global__ void tiled_mmadd_shmem(const Ta *__restrict__ A, uint32 aH, uint32 aW,
-                                 const Tb *__restrict__ B, uint32 bW, const Tc *__restrict__ C,
-                                 Tr *__restrict__ result)
+__global__ void tiled_mmadd_shmem(Tr *__restrict__ result, const Ta *__restrict__ A, uint32 aH,
+                                  uint32 aW, const Tb *__restrict__ B, uint32 bW,
+                                  const Tc *__restrict__ C)
 {
     using SumType = typename std::conditional<AccumNative, Tr, typename AccumT<Tr>::type>::type;
     SumType sum{0};
@@ -55,9 +55,9 @@ __global__ void tiled_mmadd_shmem(const Ta *__restrict__ A, uint32 aH, uint32 aW
 }
 
 template <typename Ta, typename Tb, typename Tc, typename Tr>
-__global__ void mmadd_kernel(const Ta *__restrict__ A, uint32 aH, uint32 aW,
-                            const Tb *__restrict__ B, uint32 bW, const Tc *__restrict__ C,
-                            Tr *__restrict__ result)
+__global__ void mmadd_kernel(Tr *__restrict__ result, const Ta *__restrict__ A, uint32 aH,
+                             uint32 aW, const Tb *__restrict__ B, uint32 bW,
+                             const Tc *__restrict__ C)
 {
     uint32 i = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -74,27 +74,29 @@ __global__ void mmadd_kernel(const Ta *__restrict__ A, uint32 aH, uint32 aW,
 }
 
 // A (h,w)  * B (w, 1)  + <C(h,1> -> result (h, 1)
-// Assuming that B is column vector, if h > 1024, multiple calls to this kernel will be made with offset = 0, 1024, 2048, ...
-template <typename Ta, typename Tb = Ta, typename Tc=Ta, typename Tr = Ta, uint32 WIDTH>
-__global__ void mat_vector_mul_kernel(const Ta *A, const Tb *B, const Tc* C, Tr *result, uint32 height, uint32 width, uint32 offset = 0, bool addToresult=false)
+// Assuming that B is column vector, if h > 1024, multiple calls to this kernel will be made with
+// assuming h = 1024, followed by h=256  ...
+template <typename Ta, typename Tb = Ta, typename Tc = Ta, typename Tr = Ta, uint32 WIDTH>
+__global__ void mat_vector_mul_kernel(Tr *result, const Ta *A, const Tb *B, const Tc *C,
+                                      uint32 height, uint32 width, uint32 offset = 0,
+                                      bool addToresult = false)
 {
     uint32 x = threadIdx.x;
     uint32 y = blockIdx.x;
     __shared__ Tr As[WIDTH];
 
-    uint32 aoffset_x = x + offset;
+    uint32 offset_x = x + offset;
 
-    As[threadIdx.x] = (aoffset_x < width) ? Tr(A[aoffset_x + y * width] * B[x + offset]) : Tr(0);
-    
+    As[threadIdx.x] = (offset_x < width) ? Tr(A[offset_x + y * width] * B[offset_x]) : Tr(0);
+
     __syncthreads();
 
     Tr c = (C ? C[blockIdx.x] : Tr(0));
     Tr r = (addToresult ? result[blockIdx.x] : Tr(0));
-    #pragma unroll
-    for (uint32 s = blockDim.x/2; s > 32; s >>= 1)
+#pragma unroll
+    for (uint32 s = blockDim.x / 2; s > 32; s >>= 1)
     {
-        if (x < s) 
-            As[x] += As[x + s];
+        if (x < s) As[x] += As[x + s];
         __syncthreads();
     }
     volatile Tr *vAs = (volatile Tr *)As;
@@ -103,14 +105,95 @@ __global__ void mat_vector_mul_kernel(const Ta *A, const Tb *B, const Tc* C, Tr 
         if (WIDTH >= 64) vAs[x] += vAs[x + 32];
         if (WIDTH >= 32) vAs[x] += vAs[x + 16];
         if (WIDTH >= 16) vAs[x] += vAs[x + 8];
-        if (WIDTH >= 8)  vAs[x] += vAs[x + 4];
-        if (WIDTH >= 4)  vAs[x] += vAs[x + 2];
-        if (WIDTH >= 2)  vAs[x] += vAs[x + 1];
+        if (WIDTH >= 8) vAs[x] += vAs[x + 4];
+        if (WIDTH >= 4) vAs[x] += vAs[x + 2];
+        if (WIDTH >= 2) vAs[x] += vAs[x + 1];
     }
     __syncthreads();
-    if (x == 0 and blockIdx.x < height) 
+    if (x == 0 and blockIdx.x < height)
     {
         result[blockIdx.x] = vAs[0] + c + r;
+    }
+}
+
+template <typename Ta, typename Op, uint32 WIDTH>
+__global__ void reduce_kernel(const Ta *A, Ta *result, Op op, uint32 height, uint32 width,
+                              uint32 offset = 0, bool reducExisting = false, Ta identity = Ta(0))
+{
+    uint32 x = threadIdx.x;
+    uint32 y = blockIdx.x;
+    __shared__ Ta As[WIDTH];
+
+    uint32 offset_x = x + offset;
+
+    As[threadIdx.x] = (offset_x < width) ? Ta(A[offset_x + y * width]) : identity;
+
+    __syncthreads();
+
+    Ta existing = (reducExisting ? result[y] : identity);
+
+#pragma unroll
+    for (uint32 s = blockDim.x / 2; s > 32; s >>= 1)
+    {
+        if (x < s) As[x] = op(As[x], As[x + s]);
+        __syncthreads();
+    }
+    volatile Ta *vAs = (volatile Ta *)As;
+    if (x <= 32)
+    {
+        if (WIDTH >= 64) vAs[x] = op(vAs[x], vAs[x + 32]);
+        if (WIDTH >= 32) vAs[x] = op(vAs[x], vAs[x + 16]);
+        if (WIDTH >= 16) vAs[x] = op(vAs[x], vAs[x + 8]);
+        if (WIDTH >= 8) vAs[x] = op(vAs[x], vAs[x + 4]);
+        if (WIDTH >= 4) vAs[x] = op(vAs[x], vAs[x + 2]);
+        if (WIDTH >= 2) vAs[x] = op(vAs[x], vAs[x + 1]);
+    }
+    __syncthreads();
+
+    if (x == 0 and blockIdx.x < height)
+    {
+        result[y] = op(vAs[0], existing);
+    }
+}
+
+template <typename T, typename Op>
+void reduce(Matrix<T> &result, const Matrix<T> &A, const Op &op, T identity)
+{
+    if (A.width <= 32)
+    {
+        reduce_kernel<T, Op, 32><<<A.height, 32>>>(A.begin(), result.begin(), op, A.height, A.width,
+                                                   0, false, identity);
+    }
+    else if (A.width <= 64)
+    {
+        reduce_kernel<T, Op, 64><<<A.height, 64>>>(A.begin(), result.begin(), op, A.height, A.width,
+                                                   0, false, identity);
+    }
+    else if (A.width <= 128)
+    {
+        reduce_kernel<T, Op, 128><<<A.height, 128>>>(A.begin(), result.begin(), op, A.height,
+                                                     A.width, 0, false, identity);
+    }
+    else if (A.width <= 256)
+    {
+        reduce_kernel<T, Op, 256><<<A.height, 256>>>(A.begin(), result.begin(), op, A.height,
+                                                     A.width, 0, false, identity);
+    }
+    else if (A.width <= 512)
+    {
+        reduce_kernel<T, Op, 512><<<A.height, 512>>>(A.begin(), result.begin(), op, A.height,
+                                                     A.width, 0, false, identity);
+    }
+    else
+    {
+        reduce_kernel<T, Op, 1024><<<A.height, 1024>>>(A.begin(), result.begin(), op, A.height,
+                                                       A.width, 0, false, identity);
+        constexpr uint32 WIDTH = 1024;
+        for (uint offset = WIDTH; offset < A.width; offset += WIDTH)
+        {
+            reduce_kernel<T, Op, WIDTH><<<A.height, WIDTH>>>(
+                A.begin(), result.begin(), op, A.height, A.width, offset, offset > 0, identity);
+        }
     }
 }
 
@@ -118,62 +201,41 @@ template <typename Tr, typename Ta, typename Tb, typename Tc>
 void mvadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const Matrix<Tc> *C)
 {
     check_mmadd_sizes(result, A, B, C);
-    if(B.height <= 2)
+    if (B.height <= 32)
     {
-           mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 2>
-                <<<A.height, 2>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
+        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 32><<<A.height, 32>>>(
+            result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width);
     }
-    else if(B.height <= 4)
+    else if (B.height <= 64)
     {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 4>
-                <<<A.height, 4>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
+        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 64><<<A.height, 64>>>(
+            result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width);
     }
-    else if(B.height <= 8)
+    else if (B.height <= 128)
     {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 8>
-                <<<A.height, 8>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
+        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 128><<<A.height, 128>>>(
+            result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width);
     }
-    else if(B.height <= 16)
+    else if (B.height <= 256)
     {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 16>
-                <<<A.height, 16>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
+        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 256><<<A.height, 256>>>(
+            result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width);
     }
-    else if(B.height <= 32)
+    else if (B.height <= 512)
     {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 32>
-                <<<A.height, 32>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
-    }
-    else if(B.height <= 64)
-    {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 64>
-                <<<A.height, 64>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
-    }
-    else if(B.height <= 128)
-    {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 128>
-                <<<A.height, 128>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
-    }
-    else if(B.height <= 256)
-    {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 256>
-                <<<A.height, 256>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
-    }
-    else if(B.height <= 512)
-    {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 512>
-                <<<A.height, 512>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
-    }
-    else if(B.height <= 1024)
-    {
-        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 1024>
-                <<<A.height, 1024>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width);
+        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 512><<<A.height, 512>>>(
+            result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width);
     }
     else
     {
-        for(uint offset = 0; offset < B.height; offset += 1024)
+        mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 1024><<<A.height, 1024>>>(
+            result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width);
+        constexpr uint32 WIDTH = 1024;
+        for (uint offset = 1024; offset < B.height; offset += WIDTH)
         {
-            mat_vector_mul_kernel<Ta, Tb, Tc, Tr, 1024>
-                <<<A.height, 1024>>>(A.begin(), B.begin(), C ? C->begin() : nullptr, result.begin(), A.height, A.width, offset, offset > 0);
+            mat_vector_mul_kernel<Ta, Tb, Tc, Tr, WIDTH><<<A.height, WIDTH>>>(
+                result.begin(), A.begin(), B.begin(), C ? C->begin() : nullptr, A.height, A.width,
+                offset, offset > 0);
         }
     }
 }
@@ -191,8 +253,8 @@ void mmadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const M
     {
         // LOG("Using mmadd_kernel: ", result.numels());
         mmadd_kernel<Tr, Ta, Tb, Tc>
-            <<<1, dim3(A.height, B.width)>>>(A.begin(), A.height, A.width, B.begin(), B.width,
-                                             C ? C->begin() : nullptr, result.begin());
+            <<<1, dim3(A.height, B.width)>>>(result.begin(), A.begin(), A.height, A.width,
+                                             B.begin(), B.width, C ? C->begin() : nullptr);
     }
     else if (A.height <= 1536)
     {
@@ -200,27 +262,19 @@ void mmadd(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B, const M
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
         dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
         tiled_mmadd_shmem<BLOCK_SIZE_MM, false, Tr, Ta, Tb, Tc>
-            <<<gridDim, blockDim>>>(A.begin(), A.height, A.width, B.begin(), B.width,
-                                    C ? C->begin() : nullptr, result.begin());
+            <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
+                                    B.width, C ? C->begin() : nullptr);
     }
-    else 
+    else
     {
         constexpr uint32 BLOCK_SIZE_MM = 32;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
         dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.width, BLOCK_SIZE_MM));
         tiled_mmadd_shmem<BLOCK_SIZE_MM, false, Tr, Ta, Tb, Tc>
-            <<<gridDim, blockDim>>>(A.begin(), A.height, A.width, B.begin(), B.width,
-                                    C ? C->begin() : nullptr, result.begin());
+            <<<gridDim, blockDim>>>(result.begin(), A.begin(), A.height, A.width, B.begin(),
+                                    B.width, C ? C->begin() : nullptr);
     }
     cudaErrCheck(cudaGetLastError());
-}
-
-template <typename T> Matrix<T> mmadd(const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C)
-{
-    Matrix<T> result(A.height, B.width);
-    fill(result, 0.0f);
-    mmadd<T, T, T, T>(result, A, B, C);
-    return result;
 }
 
 template <typename T>
@@ -241,36 +295,42 @@ __global__ void transpose_kernel(T *__restrict__ result, const T *__restrict__ A
     if (y < width && x < height) result[y * height + x] = tile[threadIdx.x][threadIdx.y];
 }
 
-template <typename T> Matrix<T> transpose(const Matrix<T> &A)
+template <typename T> void transpose(Matrix<T> &res, const Matrix<T> &A)
 {
+    if (A.height != res.width || A.width != res.height)
+    {
+        LOG(BOLD, RED, "Matrix dimensions do not match for transpose operation");
+        throw std::runtime_error("Dimension mismatch");
+    }
+
+    if (A.width == 1)
+    {
+        fill(res, A.begin());
+        return;
+    }
+
     uint32 max_dim = std::max(A.width, A.height);
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
 
     dim3 gridDim(iDivUp(max_dim, BLOCK_SIZE), iDivUp(max_dim, BLOCK_SIZE));
     // LOG("A: ", A.height, "x", A.width, "blockDim: ", blockDim.x, "x", blockDim.y, " gridDim: ",
     // gridDim.x, "x", gridDim.y);
-    Matrix<T> res(A.width, A.height);
     transpose_kernel<T><<<gridDim, blockDim>>>(res.begin(), A.begin(), A.height, A.width);
     cudaErrCheck(cudaGetLastError());
-    return res;
 }
 
-template void mmadd<float32, float32, float32>(Matrix<float32> &result, const Matrix<float32> &A,
-                                              const Matrix<float32> &B, const Matrix<float32> *C);
-template Matrix<float32> mmadd(const Matrix<float32> &A, const Matrix<float32> &B,
-                              const Matrix<float32> *C);
+using FloatT = float64;
 
-template Matrix<float32> transpose(const Matrix<float32> &A);
+template void mvadd(Matrix<FloatT> &result, const Matrix<FloatT> &A, const Matrix<FloatT> &B,
+                    const Matrix<FloatT> *C);
 
-/*
-template void mmadd<float64, float64, float64>(Matrix<float64> &result, const Matrix<float64> &A,
-                                              const Matrix<float64> &B, const Matrix<float64> *C);
-template Matrix<float64> mmadd(const Matrix<float64> &A, const Matrix<float64> &B,
-                              const Matrix<float64> *C);
+template void mmadd(Matrix<FloatT> &result, const Matrix<FloatT> &A, const Matrix<FloatT> &B,
+                    const Matrix<FloatT> *C);
 
-template void mmadd<float16, float16, float16, float16>(Matrix<float16> &result,
-                                                       const Matrix<float16> &A,
-                                                       const Matrix<float16> &B,
-                                                       const Matrix<float16> *C);
-template Matrix<half> mmadd(const Matrix<half> &A, const Matrix<half> &B, const Matrix<half> *C);
-*/
+template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A);
+
+template void reduce(Matrix<FloatT> &, const Matrix<FloatT> &, const Plus<FloatT> &, FloatT);
+
+template void reduce(Matrix<FloatT> &, const Matrix<FloatT> &, const Min<FloatT> &, FloatT);
+
+template void reduce(Matrix<FloatT> &, const Matrix<FloatT> &, const Max<FloatT> &, FloatT);

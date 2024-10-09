@@ -46,7 +46,6 @@ struct Timer
     }
 };
 
-
 struct CudaEventTimer
 {
     std::string name;
@@ -60,7 +59,7 @@ struct CudaEventTimer
     ~CudaEventTimer()
     {
         float time = stop();
-        LOG(name, "took", time, "seconds");
+        LOG(name, " took ", time, " seconds ");
     }
     float32 stop()
     {
@@ -72,6 +71,5 @@ struct CudaEventTimer
         return elapsed;
     }
 };
-
 
 #endif

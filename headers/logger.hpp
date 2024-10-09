@@ -2,6 +2,7 @@
 #define LOGGER_H
 
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <ostream>
 #include <set>
@@ -25,11 +26,6 @@ struct Location
     const char* file;
     const uint32_t line;
 };
-
-inline std::ostream& operator<<(std::ostream& strm, const Location& loc)
-{
-    return strm << loc.file << ":" << loc.line;
-}
 
 enum class LogLevel // not used
 {
@@ -60,15 +56,16 @@ class Logger {
     template <typename... Args>
     inline std::ostream& log_v(std::ostream& strm, const Location& arg1, const Args&... args)
     {
-
         if (disabled_files.count(arg1.file)) return strm;
-        return this->log_v((strm << arg1.file << ":" << arg1.line << "\t| "), args...);
+        return this->log_v(
+            (strm << std::right << std::setw(13) << arg1.file << ":" << arg1.line << "\t"),
+            args...);
     }
 
     template <typename First, typename... Args>
     inline std::ostream& log_v(std::ostream& strm, const First& arg1, const Args&... args)
     {
-        return this->log_v((strm << arg1 << " "), args...);
+        return this->log_v((strm << arg1), args...);
     }
 
     template <typename... Args> inline void log(const Args&... args)

@@ -51,7 +51,7 @@ template <typename T> struct Matrix
     {
         if (values)
         {
-            std::copy(values, values + height * width, data.get());
+            cudaMemcpy(data.get(), values, height * width * sizeof(T), cudaMemcpyDefault);
         }
         moveToDevice(0);
     }
@@ -61,7 +61,7 @@ template <typename T> struct Matrix
         m.data = nullptr;
     }
 
-    T& operator()(uint32 x, uint32 y)
+    T& operator()(uint32 x, uint32 y) // opposite of convention, but I like it
     {
         bounds_and_ptr(x, y);
         return data.get()[x + y * width];
