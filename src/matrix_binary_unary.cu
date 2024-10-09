@@ -1,9 +1,9 @@
 #include <cuda_device_runtime_api.h>
 #include "../headers/matrix_ops.cuh"
 
-template <typename Ta, typename Tb, typename Tr, typename Op>
+template <typename Ta, typename Tb, typename Tr, typename Reduction>
 __global__ void binary_apply_kernel(Tr *result, const Ta *A, const Tb *B, uint32 resH, uint32 resW,
-                                    uint32 aH, uint32 aW, uint32 bH, uint32 bW, Op op)
+                                    uint32 aH, uint32 aW, uint32 bH, uint32 bW, Reduction op)
 {
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -18,7 +18,7 @@ __global__ void binary_apply_kernel(Tr *result, const Ta *A, const Tb *B, uint32
     if (bW == 1) Bxy[0] = 0;
     if (bH == 1) Bxy[1] = 0;
 
-    Tr out = op(y, x, A[Axy[0] + aW * Axy[1]], B[Bxy[0] + bW * Bxy[1]]);
+    Tr out = op(A[Axy[0] + aW * Axy[1]], B[Bxy[0] + bW * Bxy[1]]);
 
     result[y * resW + x] = out;
 }
@@ -50,7 +50,7 @@ __global__ void unary_apply_kernel(Tr *__restrict__ result, const Ta *__restrict
     if (aH == 1) Axy[1] = 0;
 
     Ta a = A[Axy[0] + aW * Axy[1]];
-    Tr out = op(y, x, a);
+    Tr out = op(a);
     uint32 res_idx = y * resW + x;
 
     result[res_idx] = out;
@@ -133,11 +133,6 @@ template void binary_apply<FloatT, FloatT, FloatT, Div<FloatT, FloatT>>(Matrix<F
 template void unary_apply<FloatT, FloatT, Identity<FloatT>>(Matrix<FloatT> &,
                                                             Matrix<FloatT> const &,
                                                             Identity<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, SoftmaxGrad<FloatT>>(Matrix<FloatT> &,
-                                                                        Matrix<FloatT> const &,
-                                                                        Matrix<FloatT> const &,
-                                                                        SoftmaxGrad<FloatT>);
 
 template void unary_apply<FloatT, FloatT, Loge<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                         Loge<FloatT>);

@@ -4,11 +4,13 @@
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
+#include <fstream>
 #include <iomanip>
 #include <ios>
 #include <stdexcept>
 #include <string>
 #include <typeinfo>
+#include <vector>
 #include "errors.hpp"
 #include "logger.hpp"
 #include "types"

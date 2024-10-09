@@ -23,7 +23,7 @@ OBJECTSCU := $(patsubst $(SRCDIR)/%,$(OBJDIR)/%,$(SOURCESCU:.cu=.cu.o))
 TARGETDIR = `dirname $(BUILDDIR)`
 
 # Compilers
-HOST_COMPILER := g++
+HOST_COMPILER := g++-9
 NVCC          := nvcc -ccbin $(HOST_COMPILER)  #/usr/local/cuda/bin/nvcc
 
 # Flags

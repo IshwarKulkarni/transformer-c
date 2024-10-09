@@ -1,11 +1,11 @@
-#!/usr/bin/python3.8
+#!/usr/bin/python3
 
 from pathlib import Path
 import os
 import sys
 import time
 import subprocess
-from datagen import write_sample_mult_data
+from datagen import write_sample_mult_data, write_softmax_grad_data
 
 program = ["bin/test"]
 passed_tests = []
@@ -73,6 +73,14 @@ def test_mult():
           "Matrix multiplication tests passed", t_colors["end"])
 
 
+def test_softmax_grads():
+    sizes = [(1, 24), (5, 17), (1, 512), (4, 65), (20, 30), (30, 40), (32, 300), (300, 15),
+             (512, 512), (1024, 1024)]
+    for size in sizes:
+        csvs = write_softmax_grad_data(*size)
+        run_main(["test_softmax_grads"] + csvs)
+
+
 def test_transpose():
     sizes = [(30, 40), (512, 512), (1024, 1024)]
     for size in sizes:
@@ -107,7 +115,8 @@ all_functions = [
     time_transpose,
     test_mult,
     test_transpose,
-    test_reduce
+    test_reduce,
+    test_softmax_grads,
 ]
 
 if __name__ == "__main__":

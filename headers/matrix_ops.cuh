@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <random>
 #include <vector>
 #include "functors.cuh"
@@ -12,6 +13,24 @@
 #include "utils.hpp"
 
 inline __device__ __host__ uint32 iDivUp(uint32 a, uint32 b) { return (a + b - 1) / b; }
+
+inline uint32 nextPow2(uint32 n)
+{
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n++;
+    return n;
+}
+//////////////////////////////////////////////////////////////////////////////////////
+// Specialized matrix ops
+//////////////////////////////////////////////////////////////////////////////////////
+
+template <typename T>
+void softmax_gradient(Matrix<T> &s_grad_out, const Matrix<T> &s_out, const Matrix<T> &grad_in);
 
 //////////////////////////////////////////////////////////////////////////////////////
 // Matrix ops
@@ -36,8 +55,8 @@ template <typename T, typename PProcess = Identity<T>>
 void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
            PProcess pProcess = PProcess());
 
-template <typename T>
-void transpose(Matrix<T> &res, const Matrix<T> &A);
+template <typename T, typename Op = Identity<T>>
+void transpose(Matrix<T> &res, const Matrix<T> &A, Op op = Op());
 
 template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Op>
 void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op);
@@ -86,6 +105,49 @@ inline void fill(Matrix<T> &A, const Matrix<T> &B)
     }
     fill(A, B.begin());
 }
+
+template <typename FloatT>
+Matrix<FloatT> read_csv(const std::string &filename)
+{
+    std::ifstream file(filename, std::ios::in);
+    if (!file.is_open())
+    {
+        throw runtime_error_with_backtrace("Could not open file " + filename);
+    }
+    uint32 m, n;
+    file >> m >> n;
+    std::vector<FloatT> data(m * n);
+    using readT = typename AccumT<FloatT>::type;
+    std::copy(std::istream_iterator<readT>(file), std::istream_iterator<readT>(), data.begin());
+    Matrix<FloatT> matrix(m, n, data.data());
+    return matrix;
+}
+
+template <typename FloatT>
+Matrix<FloatT> shaped_like(const Matrix<FloatT> &like, const FloatT *values = nullptr)
+{
+    return Matrix<FloatT>(like.height, like.width, values);
+}
+
+template <typename FloatT>
+Matrix<FloatT> I(uint32 n)
+{
+    Matrix<FloatT> m(n, n);
+    for (uint32 i = 0; i < n; i++)
+    {
+        m(i, i) = 1;
+    }
+    return m;
+}
+
+template <typename FloatT>
+Matrix<FloatT> zeros(uint32 m, uint32 n)
+{
+    Matrix<FloatT> r(m, n);
+    cudaMemset(r.begin(), 0, r.numels() * sizeof(FloatT));
+    return r;
+}
+
 //////////////////////////////////////////////////////////////////////////////////////
 // Specialized calls to above functions
 //////////////////////////////////////////////////////////////////////////////////////
@@ -124,20 +186,20 @@ bool check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb>
 {
     if (A.width != B.height || A.height != result.height || B.width != result.width)
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for A ", A.name, " and B ", B.name,
+        LOG(BOLD, RED, "Matrix dimensions do not match for MMADD, A ", A.name, " and B ", B.name,
             " and result ", result.name);
         throw runtime_error_with_backtrace("Dimension mismatch");
     }
     if (result.height != A.height || result.width != B.width)
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for result ", result.name, " and A ", A.name,
-            " and B ", B.name);
+        LOG(BOLD, RED, "Matrix dimensions do not match for MMADD, result ", result.name, " and A ",
+            A.name, " and B ", B.name);
         throw runtime_error_with_backtrace("Dimension mismatch");
     }
     if (C and
         ((C->height != A.height and C->height != 1) or (C->width != B.width and C->width != 1)))
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for C ", C->name, " and A ", A.name,
+        LOG(BOLD, RED, "Matrix dimensions do not match for MMADD, C ", C->name, " and A ", A.name,
             " and B ", B.name);
         throw runtime_error_with_backtrace("Dimension mismatch");
     }
@@ -170,6 +232,23 @@ void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matri
     {
         LOG(RED, "Dimension mismatch in Broadcating Binary Op: Res: ", A.shape_str,
             " & B: ", B.shape_str);
+        throw runtime_error_with_backtrace("Dimension mismatch");
+    }
+}
+
+template <typename T>
+inline void check_softmax_grad_sizes(const Matrix<T> &s_grad_out, const Matrix<T> &s_out,
+                                     const Matrix<T> &grad_in)
+{
+    auto size_or_tx_match = [&s_grad_out](uint32 h, uint32 w) {
+        if (h == s_grad_out.height and w == s_grad_out.width) return true;
+        return (w == s_grad_out.height and h == s_grad_out.width);
+    };
+    if (!size_or_tx_match(s_out.height, s_out.width) or
+        !size_or_tx_match(grad_in.height, grad_in.width))
+    {
+        LOG(RED, "Dimension mismatch in softmax gradient: s_grad_out: ", s_grad_out.shape_str,
+            ", s_out: ", s_out.shape_str, " & grad_in: ", grad_in.shape_str);
         throw runtime_error_with_backtrace("Dimension mismatch");
     }
 }

@@ -56,7 +56,7 @@ __global__ void tiled_mmadd_shmem(T *__restrict__ result, const T *__restrict__ 
     {
         uint32 offset = row * bW + col;
         sum += getC(row, col, C, cH, cW);
-        result[offset] = pprocess(row, col, sum);
+        result[offset] = pprocess(sum);
     }
 }
 
@@ -76,7 +76,7 @@ __global__ void mmadd_kernel(T *__restrict__ result, const T *__restrict__ A, ui
             sum += A[i * aW + k] * B[k * bW + j];
         }
 
-        result[i * bW + j] = pprocess(i, j, sum + getC(i, j, C, cH, cW));
+        result[i * bW + j] = pprocess(sum + getC(i, j, C, cH, cW));
     }
 }
 
@@ -120,7 +120,7 @@ __global__ void mat_vector_mul_kernel(T *result, const T *A, const T *B, const T
     __syncthreads();
     if (x == 0 and blockIdx.x < height)
     {
-        result[blockIdx.x] = pProcess(y, x, vAs[0] + c + r);
+        result[blockIdx.x] = pProcess(vAs[0] + c + r);
     }
 }
 
@@ -136,7 +136,7 @@ __global__ void outer_product(T *result, const T *A, const T *B, const T *C, uin
     {
         T c = (C ? C[y * rwidth + x] : T(0));
         T r = (addToresult ? result[y * rwidth + x] : T(0));
-        result[y * rwidth + x] = pProcess(y, x, T(A[y] * B[x]) + c + r);
+        result[y * rwidth + x] = pProcess(T(A[y] * B[x]) + c + r);
     }
 }
 
@@ -252,9 +252,9 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     cudaErrCheck(cudaGetLastError());
 }
 
-template <typename T, uint32 BLOCK_SIZE>
+template <typename T, uint32 BLOCK_SIZE, typename Op>
 __global__ void transpose_kernel(T *__restrict__ result, const T *__restrict__ A, uint32 height,
-                                 uint32 width)
+                                 uint32 width, Op op)
 {
     __shared__ float32 tile[BLOCK_SIZE][BLOCK_SIZE + 1];
     uint32 x = blockIdx.x * BLOCK_SIZE + threadIdx.x;
@@ -267,11 +267,13 @@ __global__ void transpose_kernel(T *__restrict__ result, const T *__restrict__ A
     x = blockIdx.y * BLOCK_SIZE + threadIdx.x;
     y = blockIdx.x * BLOCK_SIZE + threadIdx.y;
 
-    if (y < width && x < height) result[y * height + x] = tile[threadIdx.x][threadIdx.y];
+    T out = op(tile[threadIdx.x][threadIdx.y]);
+
+    if (y < width && x < height) result[y * height + x] = out;
 }
 
-template <typename T>
-void transpose(Matrix<T> &res, const Matrix<T> &A)
+template <typename T, typename Op>
+void transpose(Matrix<T> &res, const Matrix<T> &A, Op op)
 {
     if (A.height != res.width || A.width != res.height)
     {
@@ -280,7 +282,7 @@ void transpose(Matrix<T> &res, const Matrix<T> &A)
         throw runtime_error_with_backtrace("Dimension mismatch for transpose");
     }
 
-    if (A.width == 1)
+    if (A.width == 1 and std::is_same<Op, Identity<T>>::value)
     {
         fill(res, A.begin());
         return;
@@ -291,8 +293,8 @@ void transpose(Matrix<T> &res, const Matrix<T> &A)
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
 
     dim3 gridDim(iDivUp(max_dim, BLOCK_SIZE), iDivUp(max_dim, BLOCK_SIZE));
-    transpose_kernel<T, BLOCK_SIZE>
-        <<<gridDim, blockDim>>>(res.begin(), A.begin(), A.height, A.width);
+    transpose_kernel<T, BLOCK_SIZE, Op>
+        <<<gridDim, blockDim>>>(res.begin(), A.begin(), A.height, A.width, op);
     cudaErrCheck(cudaGetLastError());
 }
 
@@ -304,7 +306,9 @@ template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<
 template void mmadd<FloatT, Identity<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                               Matrix<FloatT> const &, Matrix<FloatT> const *,
                                               Identity<FloatT>);
-template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A);
+template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A, Identity<FloatT>);
+
+template void transpose<FloatT, Exp<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &, Exp<FloatT>);
 
 template void mmadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,

@@ -32,6 +32,23 @@ def write_sample_reduce_data(height, width, op):
     save_tensor_to_csv(result, data_path/'result.csv')
 
 
+def write_softmax_grad_data(height, width):
+    a = torch.nn.Parameter(torch.randn(height, width))
+    t = torch.nn.Parameter(torch.randn(height, width))
+
+    torch.set_printoptions(precision=10)
+    s = torch.softmax(a, 0)
+    s.retain_grad()
+    mse = torch.nn.MSELoss()(s, t)
+    mse.retain_grad()
+    mse.backward()
+
+    save_tensor_to_csv(s,      'data/s_out.csv')
+    save_tensor_to_csv(s.grad, 'data/s_grad_in.csv')
+    save_tensor_to_csv(a.grad, 'data/s_grad_out.csv')
+    return ['data/s_out.csv', 'data/s_grad_in.csv', 'data/s_grad_out.csv']
+
+
 def write_sample_mult_data(height, width, height2=None):
     import torch
     height2 = height if height2 is None else height2
@@ -53,14 +70,20 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python datagen.py <gen_command> <args>")
 
+    height = int(sys.argv[2])
+    width = int(sys.argv[3])
+
     if sys.argv[1] == "gen_data_mult":
-        write_sample_mult_data(int(sys.argv[2]), int(
-            sys.argv[3]), int(sys.argv[4]))
+        write_sample_mult_data(height, width, int(sys.argv[4]))
     elif sys.argv[1] == "gen_data_transpose":
-        write_sample_mult_data(int(sys.argv[2]), int(sys.argv[3]))
+        write_sample_mult_data(height, width)
     elif sys.argv[1] == "gen_data_reduce_sum":
-        write_sample_reduce_data(int(sys.argv[2]), int(sys.argv[3]), "sum")
+        write_sample_reduce_data(height, width, "sum")
     elif sys.argv[1] == "gen_data_reduce_min":
-        write_sample_reduce_data(int(sys.argv[2]), int(sys.argv[3]), "min")
+        write_sample_reduce_data(height, width, "min")
     elif sys.argv[1] == "gen_data_reduce_max":
-        write_sample_reduce_data(int(sys.argv[2]), int(sys.argv[3]), "max")
+        write_sample_reduce_data(height, width, "max")
+    elif sys.argv[1] == "gen_data_softmax_grad":
+        write_softmax_grad_data(height, width)
+    else:
+        raise ValueError("Invalid command")

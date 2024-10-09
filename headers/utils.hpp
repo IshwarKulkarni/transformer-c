@@ -2,26 +2,24 @@
 #define UTILS_HPP
 
 #include <chrono>
-#include <fstream>
-#include <iterator>
-#include <stdexcept>
-#include <vector>
-#include "functors.cuh"
+#include "errors.hpp"
 #include "logger.hpp"
 #include "matrix.cuh"
-#include "matrix_ops.cuh"
 
-template <typename FloatT>
-Matrix<FloatT> read_csv(const std::string& filename)
+inline std::string exec_cli(const char* cmd)
 {
-    std::ifstream file(filename, std::ios::in);
-    uint32 m, n;
-    file >> m >> n;
-    std::vector<FloatT> data(m * n);
-    using readT = typename AccumT<FloatT>::type;
-    std::copy(std::istream_iterator<readT>(file), std::istream_iterator<readT>(), data.begin());
-    Matrix<FloatT> matrix(m, n, data.data());
-    return matrix;
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe)
+    {
+        throw runtime_error_with_backtrace("popen() failed!");
+    }
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
+    {
+        result += buffer.data();
+    }
+    return result;
 }
 
 struct Timer

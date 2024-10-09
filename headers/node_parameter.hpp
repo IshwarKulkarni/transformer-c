@@ -1,6 +1,7 @@
-#ifndef PARAMETER_HPP
-#define PARAMETER_HPP
+#ifndef NODE_PARAMETER_HPP
+#define NODE_PARAMETER_HPP
 
+#include <sstream>
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
 
@@ -20,7 +21,7 @@ struct Node
     Matrix<T> output;
     const std::string name;
 
-    Node(uint32_t height, uint32_t width, Node<T>* prev, std::string name = "")
+    Node(uint32_t height, uint32_t width, Node<T>* prev, const std::string& name = "")
         : output(height, width), name(name + "_" + get_layer_num(prev))
     {
         if (prev)
@@ -66,7 +67,7 @@ struct Node
             n_params += count;
             uint32 other_params = node->n_untrainable_params();
             nt_params += other_params;
-            snprintf(buffer, 100, "%-s | %-8s| % 8d | %18s | %5d\n", node->name.c_str(),
+            snprintf(buffer, 100, "%-20s | %-8s| % 8d | %18s | %5d\n", node->name.c_str(),
                      node->output.shape_str.c_str(), count, node->params_string().c_str(),
                      node->n_untrainable_params());
             ss << buffer;
@@ -83,6 +84,8 @@ struct Node
     virtual uint32 n_untrainable_params() { return 0; }
 
     virtual std::string params_string() { return ""; }
+
+    virtual std::string repr() { return name + " output: " + output.shape_str; }
 };
 
 template <typename TW, typename TG = TW>  // weight and gradient
@@ -106,19 +109,19 @@ struct Parameter
           UpdatedWeights(height, width),
           name(name)
     {
-        set_grad();
-        if (wValues)
-        {
-            fill(Weights, wValues);
-        }
+        set_grad(nullptr);
+        if (wValues) fill(Weights, wValues);
     }
 
-    inline void set_grad()
+    inline void set_grad(const TG* values = nullptr)
     {
-        cudaErrCheck(cudaMemset(Grads.begin(), 0, Grads.numels() * sizeof(TG)));
+        if (values)
+            fill(Grads, values);
+        else
+            cudaErrCheck(cudaMemset(Grads.begin(), 0, Grads.numels() * sizeof(TG)));
     }
 
-    void fill_values(TW* wValues) { fill(Weights, wValues); }
+    void fill_values(const TW* wValues) { fill(Weights, wValues); }
 
     void fill_value(TW value) { fillCPU(Weights, value); }
 };
@@ -130,4 +133,4 @@ std::ostream& operator<<(std::ostream& os, const Parameter<Ta, Tb>& p)
     return os;
 }
 
-#endif  // PARAMETER_HPP
+#endif  // NODE_PARAMETER_HPP

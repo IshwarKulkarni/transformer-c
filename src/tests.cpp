@@ -78,14 +78,18 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
     std::ofstream diff("diff.csv");
 
     diff << std::setprecision(8);
+    uint32 diffs = 0;
     for (uint32 y = 0; y < D.height; y++)
     {
         for (uint32 x = 0; x < D.width; x++)
         {
             auto d = D(y, x);
             auto c = C(y, x);
-            if (std::abs(c - d) / (abs(c) + abs(d)) > eps)
+            if (std::abs(c - d) > eps)
             {
+                diffs++;
+                std::cout << "Mismatch at " << y << ", " << x << " : " << c << ", " << d
+                          << std::endl;
                 diff << y << ", " << x << " :\t" << std::setprecision(6) << std::setfill(' ')
                      << std::setw(10) << c << ",\t" << std::setprecision(6) << std::setfill(' ')
                      << std::setw(10) << d << ",\t" << std::setprecision(6) << std::setfill(' ')
@@ -93,6 +97,7 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
             }
         }
     }
+    LOG(RED, "Total diffs: ", diffs);
     return -1;
 }
 
@@ -110,7 +115,8 @@ int main(int argc, char const* argv[])
           << name + " test_reduce    h w               for testing reduce sum/min/max \n\t"
           << name + " test_bin_ops   h w               for testing binary ops        \n\t"
           << name + " test_un_ops    h w               for testing unary ops         \n\t"
-          << name + " test_mult_csv  a.csv b.csv c.csv for testing with golden files \n\t";
+          << name + " test_mult_csv  a.csv b.csv c.csv for testing with golden files \n\t"
+          << name + " test_softmax_grads s_out.csv s_grad_in.csv s_grad_out.csv for testing softmax grqdient  \n\t";
 
     std::map<std::string, uint32> commands = {
         {"time_mult", 4},
@@ -122,7 +128,8 @@ int main(int argc, char const* argv[])
         {"test_reduce", 4},
         {"test_bin_ops", 4},
         {"test_un_ops", 4}, 
-        {"test_mult_csv", 5}
+        {"test_mult_csv", 5},
+        {"test_softmax_grads", 5}
     };
 
     // clang-format on
@@ -338,6 +345,29 @@ int main(int argc, char const* argv[])
         unary_applyCPU(C, A2, Neg<FloatT>());
         int un_sq_bc = test_match(C, D, "Unary square broadcast col");
         return un_sq_match + un_neg_match + un_sq_br + un_sq_bc;
+    }
+    else if (argv[1] == std::string("test_softmax_grads"))
+    {
+        auto s_out = read_csv<FloatT>(argv[2]);
+        auto s_grad_in = read_csv<FloatT>(argv[3]);
+        auto s_grad_out = read_csv<FloatT>(argv[4]);
+        MatrixT D(s_out.height, s_out.width);
+        softmax_gradient(D, s_out, s_grad_in);
+        auto gradTest = test_match(s_grad_out, D, "Softmax gradient");
+
+        Matrix<FloatT> s_outT(s_out.width, s_out.height);
+        transpose(s_outT, s_out);
+
+        Matrix<FloatT> s_grad_inT(s_grad_in.width, s_grad_in.height);
+        transpose(s_grad_inT, s_grad_in);
+
+        softmax_gradient(D, s_out, s_grad_inT);
+        auto gradTestT = test_match(s_grad_out, D, "Softmax gradient transposed");
+
+        softmax_gradient(D, s_outT, s_grad_in);
+        auto gradTestTT = test_match(s_grad_out, D, "Softmax gradient transposed both");
+
+        return gradTest + gradTestT;
     }
 
     return 0;

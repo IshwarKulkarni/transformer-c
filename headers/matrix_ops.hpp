@@ -1,4 +1,3 @@
-
 #ifndef MATRIX_OPS_HPP
 #define MATRIX_OPS_HPP
 
@@ -24,7 +23,7 @@ void mmaddCPU(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const M
             {
                 value += (*C)(y, x);
             }
-            result(y, x) = unary(y, x, value);
+            result(y, x) = unary(value);
         }
     }
 }
@@ -41,9 +40,9 @@ void transposeCPU(Matrix<T> &res, const Matrix<T> &A)
     }
 }
 
-template <typename T, typename Op = Plus<T>, typename PostProcess = Identity<T>>
-void reduceCPU(Matrix<T> &result, const Matrix<T> &A, const Op &op = Op(),
-               T identity = Op::Identity, PostProcess pProcess = PostProcess())
+template <typename T, typename Reduction = Plus<T>, typename PostProcess = Identity<T>>
+void reduceCPU(Matrix<T> &result, const Matrix<T> &A, const Reduction &op = Reduction(),
+               T identity = Reduction::Identity, PostProcess pProcess = PostProcess())
 {
     if (result.height != A.height || result.width != 1)
     {
@@ -55,9 +54,9 @@ void reduceCPU(Matrix<T> &result, const Matrix<T> &A, const Op &op = Op(),
         T value = identity;
         for (uint32 x = 0; x < A.width; x++)
         {
-            value = op(y, x, value, A(y, x));
+            value = op(value, A(y, x));
         }
-        result(y, 0) = pProcess(y, 0, value);
+        result(y, 0) = pProcess(value);
     }
 }
 
@@ -96,12 +95,17 @@ bool sameCPU(const Matrix<T> &A, const T *B, float32 eps = 1e-5)
 template <typename T>
 bool sameCPU(const Matrix<T> &A, const Matrix<T> &B, float32 eps = 1e-5)
 {
+    if (A.height != B.height || A.width != B.width)
+    {
+        return false;
+    }
     return std::equal(A.begin(), A.end(), B.begin(),
                       [eps](T a, T b) { return std::abs(a - b) < eps; });
 }
 
-template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Op>
-inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op &op)
+template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Reduction>
+inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B,
+                            Reduction &op)
 {
     // a and b's dimensions should match result dimensions either on height or
     // width or have numels
@@ -123,13 +127,13 @@ inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<T
             uint32 bx = B.width > 1 ? x : 0;
             uint32 by = B.height > 1 ? y : 0;
 
-            res(x, y) = op(y, x, A(ay, ax), B(by, by));
+            res(x, y) = op(A(ay, ax), B(by, by));
         }
     }
 }
 
-template <typename Ta, typename Tr, typename Op>
-void unary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, Op op)
+template <typename Ta, typename Tr, typename Reduction>
+void unary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, Reduction op)
 {
     for (uint32 y = 0; y < res.height; y++)
     {
@@ -137,7 +141,7 @@ void unary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, Op op)
         {
             uint32 ax = A.width > 1 ? x : 0;
             uint32 ay = A.height > 1 ? y : 0;
-            res(y, x) = op(ay, ax, A(ay, ax));
+            res(y, x) = op(A(ay, ax));
         }
     }
 }

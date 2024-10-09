@@ -1,3 +1,5 @@
+#ifndef ERRORS_HPP
+#define ERRORS_HPP
 
 #include <cxxabi.h>
 #include <execinfo.h>
@@ -98,3 +100,5 @@ class runtime_error_with_backtrace : public std::runtime_error
         print_backtrace();
     }
 };
+
+#endif
