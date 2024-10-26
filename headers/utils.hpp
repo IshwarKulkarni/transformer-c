@@ -22,16 +22,30 @@ inline std::string exec_cli(const char* cmd)
     return result;
 }
 
+inline bool endswith(const std::string& str, const std::string& tail)
+{
+    if (str.size() < tail.size()) return false;
+    return str.compare(str.size() - tail.size(), tail.size(), tail) == 0;
+}
+
+inline bool startswith(const std::string& str, const std::string& head)
+{
+    if (str.size() < head.size()) return false;
+    return str.compare(0, head.size(), head) == 0;
+}
 struct Timer
 {
     std::string name;
     std::chrono::high_resolution_clock::time_point t1;
     std::chrono::high_resolution_clock::time_point t2;
+    bool stopped = false;
     Timer(const std::string& name) : name(name), t1(std::chrono::high_resolution_clock::now()) {}
     ~Timer()
     {
-        auto span_count = stop();
-        LOG(name, "took", span_count, "seconds");
+        if (!stopped)
+        {
+            stop(true);
+        }
     }
     float64 get_duration() const
     {
@@ -40,12 +54,15 @@ struct Timer
             std::chrono::duration_cast<std::chrono::duration<float64>>(now - t1);
         return time_span.count();
     }
-    float64 stop()
+    float64 stop(bool log = false)
     {
         t2 = std::chrono::high_resolution_clock::now();
         std::chrono::duration<float64> time_span =
             std::chrono::duration_cast<std::chrono::duration<float64>>(t2 - t1);
-        return time_span.count();
+        stopped = true;
+        auto span_count = time_span.count();
+        if (log) LOG(name, " took ", span_count, "s.");
+        return span_count;
     }
 };
 

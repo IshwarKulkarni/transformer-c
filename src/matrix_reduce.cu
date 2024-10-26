@@ -260,7 +260,7 @@ __global__ void reduce_kernel_small(const T *A, T *result, ReduceOp reduceOp, ui
 
 template <typename T, typename ReduceOp, typename PostProcess>
 void reduce_kernel_launcher(const T *A, T *result, ReduceOp op, uint32 n_reductions, uint32 aspan,
-                            uint32 n_outputs, bool reducExisting = false, T identity = T(0),
+                            uint32 n_outputs, T identity = T(0),
                             PostProcess pProcess = PostProcess())
 {
     if (n_outputs != n_reductions)
@@ -333,7 +333,7 @@ void reduce_column_vec(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp,
         throw runtime_error_with_backtrace("Invalid dimensions for column-reduction " +
                                            A.shape_str + " to " + result.shape_str);
     }
-    reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, 1, A.height, 1, false, identity,
+    reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, 1, A.height, 1, identity,
                            postProcess);
 }
 
@@ -358,10 +358,9 @@ void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp, T identity
                                            " to " + result.shape_str + " use unary_apply instead");
     }
     reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, A.height, A.width, result.height,
-                           false, identity, postProcess);
+                           identity, postProcess);
 }
 
-using FloatT = float64;
 template void reduce<FloatT, Plus<FloatT, FloatT>, DividebBy<FloatT>>(Matrix<FloatT> &,
                                                                       Matrix<FloatT> const &,
                                                                       Plus<FloatT, FloatT>, FloatT,

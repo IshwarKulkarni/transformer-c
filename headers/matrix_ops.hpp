@@ -124,7 +124,6 @@ inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<T
         {
             uint32 ax = A.width > 1 ? x : 0;
             uint32 ay = A.height > 1 ? y : 0;
-            uint32 bx = B.width > 1 ? x : 0;
             uint32 by = B.height > 1 ? y : 0;
 
             res(x, y) = op(A(ay, ax), B(by, by));

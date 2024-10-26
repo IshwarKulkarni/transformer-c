@@ -14,7 +14,6 @@
 #include <sstream>
 #include <string>
 
-using FloatT = float64;
 using MatrixT = Matrix<FloatT>;
 
 FloatT run_mm_timing(const MatrixT& A, const MatrixT& B)
@@ -118,7 +117,7 @@ int main(int argc, char const* argv[])
           << name + " test_mult_csv  a.csv b.csv c.csv for testing with golden files \n\t"
           << name + " test_softmax_grads s_out.csv s_grad_in.csv s_grad_out.csv for testing softmax grqdient  \n\t";
 
-    std::map<std::string, uint32> commands = {
+    std::map<std::string, int32> commands = {
         {"time_mult", 4},
         {"time_mult_2", 5},
         {"time_transpose", 4},
@@ -137,7 +136,7 @@ int main(int argc, char const* argv[])
     if (argc <= 1 || commands.find(argv[1]) == commands.end() || argc != commands[argv[1]])
     {
         std::stringstream ss;
-        for (uint32 i = 0; i < argc; i++) ss << argv[i] << " ";
+        for (int32 i = 0; i < argc; i++) ss << argv[i] << " ";
         LOG(RED, usage.str(), RESET, ORANGE, "\nInstead called:\n\t", ss.str().c_str());
         throw runtime_error_with_backtrace("Invalid usage");
     }
@@ -366,8 +365,7 @@ int main(int argc, char const* argv[])
 
         softmax_gradient(D, s_outT, s_grad_in);
         auto gradTestTT = test_match(s_grad_out, D, "Softmax gradient transposed both");
-
-        return gradTest + gradTestT;
+        return gradTest + gradTestT + gradTestTT;
     }
 
     return 0;

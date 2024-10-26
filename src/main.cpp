@@ -1,3 +1,4 @@
+#include <cuda_device_runtime_api.h>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -6,8 +7,7 @@
 #include "../headers/matrix_ops.hpp"
 #include "../headers/nodes.hpp"
 #include "../headers/types"
-
-using FloatT = float64;
+#include "../headers/word2vec.hpp"
 
 // clang-format off
 static const
@@ -56,7 +56,7 @@ int test_Linear()
     fillCPU(t, FloatT(0.7));
 
     const auto* y = L0.forward(&x);
-    const auto* err = l1e.forward(y, &t);
+    l1e.forward(y, &t);
     l1e.backward();
 
     FloatT b0G[] = {-0.0520891696, 0.0928521454, 0.1384243667};
@@ -88,7 +88,7 @@ int test_L1()
     fillCPU(t, FloatT(0.7));
 
     const auto* y = L0.forward(&x);
-    const auto* err = l1e.forward(y, &t);
+    l1e.forward(y, &t);
     l1e.backward();
 
     FloatT bG[] = {-0.0731064528, -0.0830356926, 0.0614434481};
@@ -115,7 +115,7 @@ int test_L2()
     fillCPU(t, FloatT(0.2));
 
     const auto* y = L0.forward(&x);
-    const auto* err = mse.forward(y, &t);
+    mse.forward(y, &t);
 
     mse.backward();
     FloatT bG[] = {0.0694743693, 0.0448588878, 0.0683571771};
@@ -127,8 +127,8 @@ int test_SMCE(uint32 _xW = 1)
     if (_xW > 3) throw std::runtime_error("Test for CE failed for _xW >= 3\n\n");
 
     uint32 _xH = 5;
-    uint32 _tH = 3;
     uint32 _tW = _xW;
+    uint32 _tH = 3;
 
     LinearSigmoidF L0(_xH, _tH, _xW);
     SoftmaxF S(_tH, _tW, &L0);
@@ -146,9 +146,10 @@ int test_SMCE(uint32 _xW = 1)
                           {0.1, 0.6, 0.3, 0.7, 0.1, 0.2, 0.2, 0.3, 0.5}};
 
     fillCPU(t, probs[_xW - 1]);
+    print(t, "t");
 
     const auto* y = L0.forward(&x);
-    const auto* ce_out = ce.forward(y, &t);
+    ce.forward(y, &t);
     ce.backward();
 
     FloatT bG_xw[3] = {0.0076335, -0.0391180, 0.0225302};
@@ -178,7 +179,7 @@ int test_sm()
     fillCPU(t, tVals);
 
     const auto* y = L0.forward(&x);
-    const auto* e = error.forward(y, &t);
+    error.forward(y, &t);
     error.backward();
 
     FloatT L0WG[] = {0.1198487431,  0.1143481433,  0.0771488622,  0.0771488622,  0.0826494619,
@@ -193,33 +194,87 @@ int test_sm()
     return 0;
 }
 
-int test_attention()
+int test_word2vec()
 {
-    uint32 emb_size = 3;
-    uint32 seq_len = 2;
-    Attention<FloatT> att(emb_size, seq_len);
+    const char* filename = "/home/ishwark/word2vecdata//wiki.multi.en.vec";
+    Word2Vec word2vec(filename);
+    std::random_device rd;
+    std::mt19937 eng(rd());
+    std::uniform_int_distribution<> distr(0, word2vec.size() - 1);
 
-    att.Wq.W.fill_value(0.1);
-    att.Wk.W.fill_value(0.1);
-    att.Wv.W.fill_value(0.1);
+    std::vector<std::string> sample_words = {
+        "king",   "queen",  "knight",   "prince", "princess", "knight",   "castle",  "kingdom",
+        "boy",    "girl",   "mom",      "dad",    "brother",  "uncle",    "aunt",    "grandma",
+        "laptop", "mouse",  "keyboard", "screen", "monitor",  "cpu",      "gpu",     "ram",
+        "table",  "chair",  "sofa",     "bed",    "lamp",     "fan",      "blanket", "tv",
+        "bus",    "car",    "bike",     "train",  "plane",    "ship",     "boat",    "truck",
+        "oak",    "maple",  "pine",     "birch",  "beech",    "mahogany", "teak",    "cedar",
+        "dog",    "cat",    "fish",     "bird",   "rabbit",   "hamster",  "rat",     "mouse",
+        "pen",    "pencil", "eraser",   "book",   "notebook", "diary",    "journal", "calendar"};
 
-    Matrixf x(emb_size, seq_len);
-    FloatT xVals[] = {1, 2, 3, 4, 5, 6};
-    fillCPU(x, xVals);
+    std::string options[] = {"FAST", "ACCURATE", "EXACT"};
 
-    const auto* y = att.forward(&x);
+    std::vector<std::tuple<std::string, std::string, float32, float32>> sig033fast;
+
+    for (FloatT sigma : {0.01, 0.033, 0.1})  // 10deg, 30deg, 60deg
+    {
+        LOG("");
+        for (SearchOption option : {FAST, ACCURATE})
+        {
+            uint32 missed = 0;
+            FloatT meanSim = 0;
+            Timer timer("Word2Vec");
+            uint32 tries = option == EXACT ? 1 : 4;
+            word2vec.nearest_count = 0;
+            for (uint32 i = 0; i < tries; ++i)
+            {
+                for (auto word : sample_words)
+                {
+                    auto node = word2vec[word];
+
+                    Vec300 vec = node->vec;
+                    auto sim = add_noise_normal(vec, 0, sigma);
+                    meanSim += sim;
+                    auto nearest = word2vec(vec, option);
+
+                    if (*nearest == *node) continue;
+
+                    if (sigma > 0.01 and sigma < 0.1 and option == FAST)
+                        sig033fast.push_back({word, nearest->word, sim, nearest->cos_sim(node)});
+                    // LOG(RED, word, " -> ", nearest->word, BLUE, " error ", sim,
+                    //     "  |nearest-node|=", std::sqrt(nearest->dist2(node)));
+                    //  print_path(node);
+                    //  print_path(nearest);
+                    missed++;
+                }
+            }
+            uint32 total = tries * sample_words.size();
+            FloatT success_rate = 100.0 * (total - missed) / total;
+            FloatT nearest_count = FloatT(word2vec.nearest_count) / total;
+            LOG(" Option ", std::setw(10), options[option], "\tsigma: ", std::setw(5), sigma,
+                " Success: ", GREEN, std::setw(6), success_rate, "%", RESET, " Avg. calls: ", GREEN,
+                std::setw(6), nearest_count, RESET, " Avg. time: ", GREEN, std::setw(6),
+                timer.stop() * 1e3 / total, "ms.", RESET, " Avg. sim: ", BLUE, std::setw(6),
+                meanSim / total, RESET);
+        }
+    }
+    // for (auto [word, nearest, sim, nearestSim] : sig033fast)
+    //{
+    //     LOG(RED, word, " -> ", nearest, BLUE, " error ", sim, "  |nearest-node| = ", nearestSim);
+    // }
     return 0;
 }
 
-int main(int argc, char const* argv[])
+int main()
 {
-    test_Linear();
-    test_sm();
-    test_L2();
-    test_L1();
-    test_SMCE(1);
-    test_SMCE(2);
-    test_SMCE(3);
+    // test_Linear();
+    // test_sm();
+    // test_L2();
+    // test_L1();
+    // test_SMCE(1);
+    // test_SMCE(2);
+    // test_SMCE(3);
     // test_attention();
+    test_word2vec();
     return 0;
 }

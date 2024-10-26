@@ -66,7 +66,6 @@ void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op)
 }
 
 // All the template instantiations of the above functions using same FloatT type
-using FloatT = float64;
 template void binary_apply<FloatT, FloatT, FloatT, Plus<FloatT, FloatT>>(Matrix<FloatT> &,
                                                                          Matrix<FloatT> const &,
                                                                          Matrix<FloatT> const &,

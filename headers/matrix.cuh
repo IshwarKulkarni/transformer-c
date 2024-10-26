@@ -26,7 +26,7 @@ inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool 
     if (code == cudaSuccess) return;
     LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at",
         Log::Location{file, line});
-    throw std::runtime_error("CUDA ERROR");
+    if (abort) throw std::runtime_error("CUDA ERROR");
 }
 
 template <typename T>
@@ -55,13 +55,13 @@ struct Matrix
     CudaPtr data;
 
     Matrix(uint32 height, uint32 width, const T* values = nullptr)
-        : height(height),
+        : id(getMatrixId()),
+          height(height),
           width(width),
-          id(getMatrixId()),
-          data(CudaAllocator(height * width)),
           shape_str('[' + std::to_string(height) + "x" + std::to_string(width) + ']'),
           name("Matrix-" + std::string(typeid(T).name()) + '{' + std::to_string(id) + '}' +
-               shape_str)
+               shape_str),
+          data(CudaAllocator(height * width))
     {
         if (values)
         {
@@ -137,7 +137,6 @@ std::ostream& operator<<(std::ostream& os, const Matrix<T>& m)  // usable to pas
     return os;
 }
 
-using FloatT = float64;
 typedef Matrix<FloatT> Matrixf;
 
 #endif  // MATRIX_CUH

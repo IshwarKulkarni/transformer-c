@@ -28,7 +28,7 @@ NVCC          := nvcc -ccbin $(HOST_COMPILER)  #/usr/local/cuda/bin/nvcc
 
 # Flags
 NVCCFLAGS     := -m64  #-dc used cg::grid_group, cg::this_group
-CCFLAGS       := --std=c++0x -fPIC -rdynamic
+CCFLAGS       := --std=c++14 -fPIC -rdynamic -Wall -Wextra -Wno-sign-compare
 LDFLAGS       :=
 
 # Debug build flags

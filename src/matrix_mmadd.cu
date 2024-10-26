@@ -298,7 +298,6 @@ void transpose(Matrix<T> &res, const Matrix<T> &A, Op op)
     cudaErrCheck(cudaGetLastError());
 }
 
-using FloatT = float64;
 template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                        Matrix<FloatT> const &,
                                                        Matrix<FloatT> const *,

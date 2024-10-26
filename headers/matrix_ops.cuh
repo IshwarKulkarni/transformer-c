@@ -55,6 +55,12 @@ template <typename T, typename PProcess = Identity<T>>
 void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
            PProcess pProcess = PProcess());
 
+template <typename T>
+inline void multiply(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B)
+{
+    mmadd<T, Identity<T>>(result, A, B, nullptr);
+}
+
 template <typename T, typename Op = Identity<T>>
 void transpose(Matrix<T> &res, const Matrix<T> &A, Op op = Op());
 
@@ -75,11 +81,10 @@ inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> nor
     std::random_device rd;
     std::mt19937 gen(rd());
     using gen_type = typename AccumT<T>::type;
-    std::normal_distribution<float32> dist(mean, std);
+    std::normal_distribution<gen_type> dist(mean, std);
     std::vector<T> values(height * width);
     std::generate(values.begin(), values.end(), [&dist, &gen]() { return dist(gen); });
-    Matrix<T> out(height, width, values.data());
-    return out;
+    return Matrix<T>(height, width, values.data());
 }
 
 template <class T>
@@ -87,6 +92,37 @@ inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> xav
     uint32 height, uint32 width)
 {
     return normal_init<T>(height, width, 0.f, std::sqrt(2.0 / (height + width)));
+}
+
+// uniform random initialization, enabled only for floating point types
+template <typename FloatT>
+Matrix<is_floating_point<FloatT>> uniform(uint32 m, uint32 n)
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<FloatT> dist(0, 1);
+    std::vector<FloatT> values(m * n);
+    std::generate(values.begin(), values.end(), [&dist, &gen]() { return dist(gen); });
+    return Matrix<FloatT>(m, n, values.data());
+}
+
+template <typename FloatT>
+void arange_over_sum(Matrix<is_floating_point<FloatT>> &A)
+{
+    uint32 n = A.numels();
+    FloatT sum = n * (n - 1) / 2;
+    for (uint32 i = 0; i < n; i++)
+    {
+        A.begin()[i] = FloatT(i) / sum;
+    }
+}
+
+template <typename FloatT>
+Matrix<is_floating_point<FloatT>> arange_over_sum(uint32 m, uint32 n)
+{
+    Matrix<is_floating_point<FloatT>> A(m, n);
+    arange_over_sum(A);
+    return A;
 }
 
 template <typename T>

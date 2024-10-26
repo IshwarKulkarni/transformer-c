@@ -14,7 +14,7 @@ struct Loss : Node<T>
 
     virtual const Matrix<T>* forward(const Matrix<T>* y) { return y; }
 
-    virtual void backward(const Matrix<T>* e)
+    virtual void backward(const Matrix<T>*)
     {
         throw std::runtime_error(
             "This is loss class, no-input version of backward should be called");
@@ -110,7 +110,7 @@ struct L1Loss : Loss<T>  // L-n loss computes (Y^ - Y)^N
     void backward()
     {
         // gradient is 2 * (y - target) / numels
-        unary_apply(gradientOut, diff, Sign<T>{1. / diff.numels()});
+        unary_apply(gradientOut, diff, Sign<T>{FloatT(1) / diff.numels()});
         if (this->prev) this->prev->backward(&gradientOut);
     }
 
