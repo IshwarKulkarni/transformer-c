@@ -6,6 +6,7 @@
 #include <functional>
 #include <iterator>
 #include <random>
+#include <type_traits>
 #include <vector>
 #include "functors.cuh"
 #include "matrix.cuh"
@@ -107,6 +108,15 @@ Matrix<is_floating_point<FloatT>> uniform(uint32 m, uint32 n)
 }
 
 template <typename FloatT>
+void arange(Matrix<is_floating_point<FloatT>> &A)
+{
+    for (uint32 i = 0; i < A.numels(); i++)
+    {
+        A.begin()[i] = FloatT(i);
+    }
+}
+
+template <typename FloatT>
 void arange_over_sum(Matrix<is_floating_point<FloatT>> &A)
 {
     uint32 n = A.numels();
@@ -128,7 +138,12 @@ Matrix<is_floating_point<FloatT>> arange_over_sum(uint32 m, uint32 n)
 template <typename T>
 inline void fill(Matrix<T> &A, const T *values)
 {
-    cudaMemcpy(A.begin(), values, A.numels() * sizeof(T), cudaMemcpyDefault);
+    if (values != nullptr)
+    {
+        cudaErrCheck(cudaMemcpy(A.begin(), values, A.numels() * sizeof(T), cudaMemcpyDefault));
+        return;
+    }
+    cudaMemset(A.begin(), 0, A.numels() * sizeof(T));
 }
 
 template <typename T>
@@ -181,6 +196,14 @@ Matrix<FloatT> zeros(uint32 m, uint32 n)
 {
     Matrix<FloatT> r(m, n);
     cudaMemset(r.begin(), 0, r.numels() * sizeof(FloatT));
+    return r;
+}
+
+template <typename T = FloatT>
+Matrix<T> ones(uint32 m, uint32 n)
+{
+    Matrix<T> r(m, n);
+    fillCPU(r, FloatT(1.));
     return r;
 }
 

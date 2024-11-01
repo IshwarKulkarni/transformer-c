@@ -27,7 +27,7 @@ HOST_COMPILER := g++-9
 NVCC          := nvcc -ccbin $(HOST_COMPILER)  #/usr/local/cuda/bin/nvcc
 
 # Flags
-NVCCFLAGS     := -m64  #-dc used cg::grid_group, cg::this_group
+NVCCFLAGS     := -m64
 CCFLAGS       := --std=c++14 -fPIC -rdynamic -Wall -Wextra -Wno-sign-compare
 LDFLAGS       :=
 

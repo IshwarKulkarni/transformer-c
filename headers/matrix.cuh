@@ -24,9 +24,9 @@ uint32 getMatrixId();
 inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool abort = true)
 {
     if (code == cudaSuccess) return;
-    LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at",
+    LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at ",
         Log::Location{file, line});
-    if (abort) throw std::runtime_error("CUDA ERROR");
+    if (abort) throw runtime_error_with_backtrace("CUDA ERROR");
 }
 
 template <typename T>
@@ -65,7 +65,8 @@ struct Matrix
     {
         if (values)
         {
-            cudaMemcpy(data.get(), values, height * width * sizeof(T), cudaMemcpyDefault);
+            cudaErrCheck(
+                cudaMemcpy(data.get(), values, height * width * sizeof(T), cudaMemcpyDefault));
         }
         moveToDevice(0);
     }
@@ -96,6 +97,13 @@ struct Matrix
     inline const T* end() const { return data.get() + height * width; }
 
     uint32 numels() const { return height * width; }
+
+    bool is_on_device() const
+    {
+        cudaPointerAttributes attr;
+        cudaErrCheck(cudaPointerGetAttributes(&attr, data.get()));
+        return attr.type == cudaMemoryTypeDevice;
+    }
 
  private:
     inline void bounds_and_ptr(uint32 y, uint32 x) const

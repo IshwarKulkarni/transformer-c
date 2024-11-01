@@ -121,7 +121,8 @@ static bool read_binary(const std::string& filename, std::vector<WordVecPair>& w
     file.read((char*)&max_word_len, sizeof(uint32));
     if (vec_size != N)
     {
-        throw std::runtime_error("Vector size mismatch");
+        LOG(RED, "Vector size mismatch: ", vec_size, " != ", N);
+        throw runtime_error_with_backtrace("Vector size mismatch");
     }
     wordVecPairs.reserve(n_words);
 
@@ -153,7 +154,8 @@ static bool read_text(const std::string& filename, std::vector<WordVecPair>& wor
     file >> n_words >> vec_size;
     if (vec_size != N)
     {
-        throw std::runtime_error("Vector size mismatch");
+        LOG(RED, "Vector size mismatch: ", vec_size, " != ", N);
+        throw runtime_error_with_backtrace("Vector size mismatch");
     }
     wordVecPairs.reserve(n_words);
     while (file)
@@ -254,7 +256,8 @@ void Word2Vec::nearest(const Vec300& vec, const WordVecNode* node, NodeDist2& be
     if (count and *count > count_threshold) return;
     uint32 axis = get_axis(node->depth);
     if (best.second < thresh) return;
-    FloatT dist2 = node->depth < maxDepthForExact ? node->dist2(vec) : l2_dist2_pca(node->vec, vec, 50);
+    FloatT dist2 =
+        node->depth < maxDepthForExact ? node->dist2(vec) : l2_dist2_pca(node->vec, vec, 50);
     if (dist2 < best.second)
     {
         best = {node, dist2};

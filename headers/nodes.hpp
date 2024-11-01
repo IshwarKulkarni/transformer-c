@@ -57,8 +57,8 @@ struct FullyConnected : public Node<T>
 
     const Matrix<T>* forward(const Matrix<T>* x)
     {
-        const auto* bias = useBias ? &b.Weights : nullptr;
-        mmadd<T, Forward>(this->output, W.Weights, *x, bias);
+        const auto* bias = useBias ? &b : nullptr;
+        mmadd<T, Forward>(this->output, W, *x, bias);
         transpose(inputT, *x);  // disbale this in inference only mode.
         if (this->next) return this->next->forward(&this->output);
         return &this->output;
@@ -78,7 +78,7 @@ struct FullyConnected : public Node<T>
         }
 
         binary_apply(actGxGradIn, *gradientIn, *temp, Mul<T>());  // gradientIn * backward(output)
-        mmadd<T>(W.Grads, actGxGradIn, inputT, nullptr);  // gradientIn * backward(output) * input
+        mmadd<T>(W.grads, actGxGradIn, inputT, nullptr);  // gradientIn * backward(output) * input
 
         temp = actGxGradIn.width > 1 ? &actGxGradIn1D : &actGxGradIn;
 
@@ -86,25 +86,25 @@ struct FullyConnected : public Node<T>
         if (actGxGradIn.width > 1)
         {
             reduce_mean(*temp, actGxGradIn);
-            if (useBias) unary_apply(b.Grads, *temp, MultiplyBy<T>(actGxGradIn.width));
+            if (useBias) unary_apply(b.grads, *temp, MultiplyBy<T>(actGxGradIn.width));
         }
         else if (useBias)
         {
-            fill(b.Grads, *temp);
+            fill(b.grads, *temp);
         }
 
         // return gradient is transpose(W) * actGxGradIn
         if (this->prev)
         {
-            transpose(WtTranspose, W.Weights);
+            transpose(WtTranspose, W);
             mmadd<T>(retGradient1D, WtTranspose, *temp, nullptr);
             this->prev->backward(&retGradient1D);
         }
     }
 
-    virtual uint32 n_trainable_params() { return W.Weights.numels() + b.Weights.numels(); }
+    virtual uint32 n_trainable_params() { return W.numels() + b.numels(); }
 
-    virtual std::string params_string() { return W.Weights.shape_str + "+" + b.Weights.shape_str; }
+    virtual std::string params_string() { return W.shape_str + "+" + b.shape_str; }
 
     virtual uint32 n_untrainable_params()
     {
@@ -124,49 +124,50 @@ struct FullyConnected : public Node<T>
 
 // https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative/
 template <typename T>
-struct Softmax : Node<T>
+struct SoftmaxDim0 : Node<T>
 {
     Matrix<T> gradientOut;
-    Matrix<T> expT;
-    Matrix<T> sumExpsT;
-    Matrix<T> softmaxT;
+    Matrix<T> exp;
+    Matrix<T> sumExps;
+    Matrix<T> softmax;
 
-    Softmax(uint32 height, uint32 width, Node<T>* prev = nullptr,
-            const std::string& name = "Softmax")
+    SoftmaxDim0(uint32 height, uint32 width, Node<T>* prev = nullptr,
+                const std::string& name = "SoftmaxDim0")
         : Node<T>(height, width, prev, name),
           gradientOut(height, width),
-          expT(width, height),
-          sumExpsT(width, 1),
-          softmaxT(width, height)
+          exp(width, height),
+          sumExps(width, 1),
+          softmax(width, height)
     {
     }
 
+    // computes softmax along width of x => output rows sum to 1
     const Matrix<T>* forward(const Matrix<T>* x)
     {
-        transpose<FloatT, Exp<T>>(expT, *x);
-        reduce_sum(sumExpsT, expT);
-        binary_apply(softmaxT, expT, sumExpsT, Div<T>());
-        transpose(this->output, softmaxT);
+        transpose<FloatT, Exp<T>>(exp, *x);
+        reduce_sum(sumExps, exp);
+        binary_apply(softmax, exp, sumExps, Div<T>());
+        transpose(this->output, softmax);
         if (this->next) return this->next->forward(&this->output);
         return &this->output;
     }
 
     void backward(const Matrix<T>* gradientIn)
     {
-        softmax_gradient(gradientOut, softmaxT, *gradientIn);
+        softmax_gradient(gradientOut, softmax, *gradientIn);
         if (this->prev) this->prev->backward(&gradientOut);
     }
 
     virtual uint32 n_untrainable_params()
     {
-        return gradientOut.numels() + expT.numels() + sumExpsT.numels() + softmaxT.numels() +
+        return gradientOut.numels() + exp.numels() + sumExps.numels() + softmax.numels() +
                this->output.numels();
     }
 
     std::string repr()
     {
         std::stringstream ss;
-        ss << "ExpT " << expT << "\nSumExpsT " << sumExpsT << "\nSoftmaxT " << softmaxT
+        ss << "ExpT " << exp << "\nSumExps " << sumExps << "\nSoftmaxT " << softmax
            << "\nGradientOut " << gradientOut;
         return ss.str();
     }
@@ -178,15 +179,16 @@ struct Linear : Node<T>
     Parameter<T, T> W;
     Matrix<T> xT;
 
-    Linear(uint32 height, uint32 width, Node<T>* prev = nullptr,
+    // out_width is number of output columns --> seq length
+    Linear(uint32 emb_size, uint32 seq_len, Node<T>* prev = nullptr,
            const std::string& name = "MMProduct")
-        : Node<T>(height, width, prev, name), W(height, width), xT(width, height)
+        : Node<T>(seq_len, seq_len, prev, name), W(seq_len, emb_size), xT(seq_len, emb_size)
     {
     }
 
     const Matrix<T>* forward(const Matrix<T>* x)
     {
-        multiply(this->output, W.Weights, *x);
+        multiply(this->output, W, *x);
         transpose(xT, *x);  // disable this in inference only mode.
         if (this->next) return this->next->forward(&this->output);
         return &this->output;
@@ -194,8 +196,8 @@ struct Linear : Node<T>
 
     void backward(const Matrix<T>* gradientIn)
     {
-        multiply(W.Grads, *gradientIn, xT);
-        if (this->prev) this->prev->backward(&W.Grads);
+        multiply(W.grads, *gradientIn, xT);
+        if (this->prev) this->prev->backward(&W.grads);
     }
 
     bool update_weights(FloatT lr)
@@ -205,40 +207,83 @@ struct Linear : Node<T>
         return true;
     }
 
-    virtual uint32 n_trainable_params() { return W.Weights.numels(); }
+    virtual uint32 n_trainable_params() { return W.numels(); }
 
-    virtual std::string params_string() { return W.Weights.shape_str; }
+    virtual std::string params_string() { return W.shape_str; }
 
     virtual uint32 n_untrainable_params() { return xT.numels(); }
 };
 
 template <typename T>
+struct Product : Node<T>
+{
+    Matrix<T> aT, bT;
+    Node<T>*prevA, prevB;
+    Matrix<T> a_grad_in, b_grad_in;
+
+    Product(uint32 heightA, uint32 width, uint32 heightB, Node<T>** prev = nullptr,
+            const std::string& name = "Product")
+        : Node<T>(heightA, heightB, prev, name),
+          aT(width, heightA),
+          bT(width, heightB),
+          prevA(prev[0]),
+          prevB(prev[1]),
+          a_grad_in(heightA, width),
+          b_grad_in(heightB, width)
+    {
+    }
+
+    const Matrix<T>* forward(const Matrix<T>* x)
+    {
+        auto a = x;
+        auto b = x + 1;
+        transpose(aT, *a);  // disable this in inference only mode.
+        transpose(bT, *b);
+        mmadd(this->output, *a, bT);
+    }
+
+    void backward(const Matrix<T>* gradientIn)
+    {
+        mmadd(a_grad_in, *gradientIn, bT);
+        mmadd(b_grad_in, aT, *gradientIn);
+        if (prevA) prevA->backward(&a_grad_in);
+        if (prevB) prevB->backward(&b_grad_in);
+    }
+
+    virtual uint32 n_untrainable_params() { return aT.numels() + bT.numels(); }
+
+    std::string repr() { return ""; }
+};
+
+template <typename T>
 struct Attention : Node<T>
 {
-    Linear<T> Q;
-    Linear<T> K;
-    Linear<T> V;
-    Softmax<T> softmax;
-    Matrix<T> kT;
-    Matrix<T> qkT;
-    Matrix<T> vT;
-    Matrix<T> v_grad_in;
-    Matrix<T> s_grad_in;
-    DividebBy<T> scaler;
+    Linear<T> Q, K, V;
+    SoftmaxDim0<T> softmax;
+    Matrix<T> s_grad_out;  // gradientT of softmax as we use the transpose of softmax, see `forward`
+    Matrix<T> qT, kqT, vT;
+    Matrix<T> v_grad_in, s_grad_in, q_grad_in, k_grad_in, k_grad_inT;
+    Matrix<T> kCopy;
+    DividebBy<T> scalerF;
 
-    Attention(uint32 height, uint32 width, Node<T>* prev = nullptr,
+    Attention(uint32 emb_size, uint32 seq_len, Node<T>** qkv_prev = nullptr,
               const std::string& name = "Attention")
-        : Node<T>(height, width, prev, name),
-          Q(height, width, prev, name + "_Q"),
-          K(height, width, prev, name + "_K"),
-          V(height, width, prev, name + "_V"),
-          softmax(height, width, prev, name + "_Softmax"),
-          kT(width, height),
-          qkT(height, width),
-          vT(width, height),
-          v_grad_in(height, width),
-          s_grad_in(height, width),
-          scaler(1.0 / sqrt(height))
+        : Node<T>(seq_len, seq_len, nullptr, name),
+          Q(emb_size, seq_len, qkv_prev[0], name + "_Q"),
+          K(emb_size, seq_len, qkv_prev[1], name + "_K"),
+          V(emb_size, seq_len, qkv_prev[2], name + "_V"),
+          softmax(seq_len, seq_len, nullptr, name + "_Softmax"),
+          s_grad_out(seq_len, seq_len),
+          qT(seq_len, seq_len),
+          kqT(seq_len, seq_len),
+          vT(seq_len, seq_len),
+          v_grad_in(seq_len, seq_len),
+          s_grad_in(seq_len, seq_len),
+          q_grad_in(seq_len, seq_len),
+          k_grad_in(seq_len, seq_len),
+          k_grad_inT(seq_len, seq_len),
+          kCopy(seq_len, seq_len),
+          scalerF(sqrt(emb_size))
     {
     }
 
@@ -248,10 +293,13 @@ struct Attention : Node<T>
         auto k = K.forward(&qkv[1]);
         auto v = V.forward(&qkv[2]);
 
-        transpose(kT, *k);
-        multiply(qkT, *q, kT);
-        auto s = softmax.forward(&qkT);
-        mmadd<T, DividebBy<T>>(this->output, *s, *v, nullptr, scaler);
+        transpose(qT, *q);
+        mmadd(kqT, *k, qT, (Matrix<T>*)nullptr, scalerF);
+        fill(kCopy, *k);
+        softmax.forward(&kqT);  // here `softmax` sums along width, compute Softmax(KQ')',
+                                // which is equivalent to Softmax(QK', dim=-1)
+        multiply(this->output, softmax.softmax, *v);  // use s.softmax which is transpose of output
+
         transpose(vT, *v);  // disable this in inference only mode.
         if (this->next) return this->next->forward(&this->output);
         return &this->output;
@@ -259,15 +307,23 @@ struct Attention : Node<T>
 
     void backward(const Matrix<T>* gradientIn)
     {
-        multiply(v_grad_in, softmax.softmaxT, *gradientIn);
+        multiply(v_grad_in, softmax.output, *gradientIn);
         multiply(s_grad_in, *gradientIn, vT);
 
         softmax.backward(&s_grad_in);
+        transpose(s_grad_out, softmax.gradientOut);
         V.backward(&v_grad_in);
+
+        mmadd(k_grad_in, qT, s_grad_out, (Matrix<T>*)(nullptr), scalerF);
+        transpose(k_grad_inT, k_grad_in);
+
+        K.backward(&k_grad_inT);
+        mmadd(q_grad_in, s_grad_out, kCopy, (Matrix<T>*)(nullptr), scalerF);
+        Q.backward(&q_grad_in);
     }
 };
 typedef Node<FloatT> NodeF;
 typedef FullyConnected<FloatT, Sigmoid<FloatT>> LinearSigmoidF;
 typedef FullyConnected<FloatT, IdentityActivation<FloatT>> LinearIdentityF;
-typedef Softmax<FloatT> SoftmaxF;
+typedef SoftmaxDim0<FloatT> SoftmaxDim0F;
 #endif  // NODES_HPP
