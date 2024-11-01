@@ -162,7 +162,6 @@ struct Word2Vec
     const WordVecNode* operator()(const Vec300& vec, SearchOption option = SearchOption::ACCURATE);
 
     uint32 nearest_count = 0;
-    uint32 nearest_by_dist_count = 0;
 
     ~Word2Vec()
     {

@@ -89,47 +89,38 @@ struct Node
 };
 
 template <typename TW, typename TG = TW>  // weight and gradient
-struct Parameter
+struct Parameter : Matrix<TW>
 {
     void update(float32 lr)
     {
         WeightUpdate<TW, TG> updateFunc(lr);
-        binary_apply(UpdatedWeights, Weights, Grads, updateFunc);
-        std::swap(Weights.data, UpdatedWeights.data);
-        set_grad();
+        binary_apply(updatedWeights, *this, grads, updateFunc);
+        std::swap(this->data, updatedWeights.data);
+        fill(grads, (TG*)nullptr);
     }
-    Matrix<TW> Weights;
-    Matrix<TG> Grads;
-    Matrix<TW> UpdatedWeights;
+    Parameter(uint32_t height, uint32_t width, TW* wValues = nullptr, std::string name = "Param")
+        : Matrix<TW>(normal_init<TW>(height, width)),
+          grads(Matrix<TG>(height, width)),
+          name(name),
+          updatedWeights(height, width)
+    {
+        fill(grads, (TW*)nullptr);
+        fill(*this, wValues);
+        fill(updatedWeights, (TW*)nullptr);
+    }
+
+ public:
+    Matrix<TG> grads;
     const std::string name;
 
-    Parameter(uint32_t height, uint32_t width, TW* wValues = nullptr, std::string name = "Param")
-        : Weights(normal_init<TW>(height, width)),
-          Grads(Matrix<TG>(height, width)),
-          UpdatedWeights(height, width),
-          name(name)
-    {
-        set_grad(nullptr);
-        if (wValues) fill(Weights, wValues);
-    }
-
-    inline void set_grad(const TG* values = nullptr)
-    {
-        if (values)
-            fill(Grads, values);
-        else
-            cudaErrCheck(cudaMemset(Grads.begin(), 0, Grads.numels() * sizeof(TG)));
-    }
-
-    void fill_values(const TW* wValues) { fill(Weights, wValues); }
-
-    void fill_value(TW value) { fillCPU(Weights, value); }
+ private:
+    Matrix<TW> updatedWeights;
 };
 
 template <typename Ta, typename Tb = Ta>
 std::ostream& operator<<(std::ostream& os, const Parameter<Ta, Tb>& p)
 {
-    os << p.name << " Weights: " << p.Weights << p.name << " Grads: " << p.Grads << std::endl;
+    os << p.name << " Weights: " << p << "\n" << p.name << " Grads: " << p.grads << std::endl;
     return os;
 }
 

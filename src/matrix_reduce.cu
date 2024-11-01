@@ -43,20 +43,20 @@ __global__ void softmax_grad_kernel(T *__restrict__ gradient_out, const T *__res
     uint32 width = gridDim.x;
     uint32 sin_offset = sout_isT ? x + col_idx * height : col_idx + x * width;
     uint32 gin_offset = gin_isT ? x + col_idx * height : col_idx + x * width;
+    bool oob = x >= height or col_idx >= width;
 
     __shared__ T s_outputs[BLOCK_SIZE + 1];
-    for (uint32 i = gridDim.y; i < BLOCK_SIZE and x == 0; i++) s_outputs[i] = 0;
+    for (uint32 i = col_idx; i < BLOCK_SIZE + 1 and x == 0; i++)
+    {
+        s_outputs[i] = 0;
+    }
 
-    s_outputs[x] = softmax_out[sin_offset];
+    s_outputs[x] = oob ? 0 : softmax_out[sin_offset];
 
     __syncthreads();
     T Jsi = ((x == y) ? s_outputs[x] * (1 - s_outputs[x]) : -(s_outputs[y] * s_outputs[x]));
 
-    T gin = gradient_in[gin_offset];
-
-    s_outputs[x] = Jsi * gin;
-
-    __syncthreads();
+    s_outputs[x] = Jsi * (oob ? 0 : gradient_in[gin_offset]);
 
     if (BLOCK_SIZE >= 1024)
     {
@@ -114,14 +114,15 @@ __global__ void softmax_grad_kernel(T *__restrict__ gradient_out, const T *__res
 template <typename T>
 void softmax_gradient(Matrix<T> &s_grad_out, const Matrix<T> &s_out, const Matrix<T> &grad_in)
 {
-    dim3 gridDim(s_grad_out.width, s_grad_out.height);
+    dim3 gridDim(s_grad_out.width, s_grad_out.height, 1);
     uint32 span = s_grad_out.height;
-    dim3 blockDim(span);
+    uint32 w = nextPow2(span);
+    dim3 blockDim(w, 1, 1);
 
     check_softmax_grad_sizes(s_grad_out, s_out, grad_in);
 
-    bool sout_isT = (s_out.width == s_grad_out.height);
-    bool gin_isT = (grad_in.width == s_grad_out.height);
+    bool sout_isT = (s_out.width == s_grad_out.height and s_out.height == s_grad_out.width);
+    bool gin_isT = (grad_in.width == s_grad_out.height and grad_in.height == s_grad_out.width);
 
     if (span <= 8)
     {
@@ -172,8 +173,7 @@ void softmax_gradient(Matrix<T> &s_grad_out, const Matrix<T> &s_out, const Matri
 // it's best to read this kernel as reducing along the width of the matrix
 template <typename T, typename ReduceOp, uint32 BLOCK_X, typename PostProcess>
 __global__ void reduce_kernel(const T *A, T *result, ReduceOp reduceOp, uint32 height, uint32 width,
-                              bool reducExisting = false, T identity = T(0),
-                              PostProcess postProcess = PostProcess())
+                              T identity = T(0), PostProcess postProcess = PostProcess())
 {
     __shared__ T As[BLOCK_X + 1];
     uint32 x = threadIdx.x;
@@ -243,7 +243,7 @@ __global__ void reduce_kernel(const T *A, T *result, ReduceOp reduceOp, uint32 h
 
 template <typename T, typename ReduceOp, uint32 BLOCK, typename PostProcess>
 __global__ void reduce_kernel_small(const T *A, T *result, ReduceOp reduceOp, uint32 height,
-                                    uint32 width, bool reducExisting = false, T identity = T(0),
+                                    uint32 width, T identity = T(0),
                                     PostProcess postProcess = PostProcess())
 {
     uint32 y = threadIdx.y;
@@ -270,53 +270,53 @@ void reduce_kernel_launcher(const T *A, T *result, ReduceOp op, uint32 n_reducti
     }
     else if (aspan <= 8 and n_reductions <= 16)
     {
-        reduce_kernel_small<T, ReduceOp, 16><<<1, dim3(1, n_reductions)>>>(
-            A, result, op, n_reductions, aspan, false, identity, pProcess);
+        reduce_kernel_small<T, ReduceOp, 16>
+            <<<1, dim3(1, n_reductions)>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan <= 8)
     {
         reduce_kernel<T, ReduceOp, 8>
-            <<<n_outputs, 4>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 4>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan <= 16)
     {
         reduce_kernel<T, ReduceOp, 16>
-            <<<n_outputs, 8>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 8>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan <= 32)
     {
         reduce_kernel<T, ReduceOp, 32>
-            <<<n_outputs, 16>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 16>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan <= 64)
     {
         reduce_kernel<T, ReduceOp, 64>
-            <<<n_outputs, 32>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 32>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan <= 128)
     {
         reduce_kernel<T, ReduceOp, 128>
-            <<<n_outputs, 64>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 64>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan <= 256)
     {
         reduce_kernel<T, ReduceOp, 256>
-            <<<n_outputs, 128>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 128>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan <= 512)
     {
         reduce_kernel<T, ReduceOp, 512>
-            <<<n_outputs, 256>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 256>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else if (aspan < 1024)
     {
         reduce_kernel<T, ReduceOp, 1024>
-            <<<n_outputs, 512>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 512>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
     else
     {
         reduce_kernel<T, ReduceOp, 1880>
-            <<<n_outputs, 940>>>(A, result, op, n_reductions, aspan, false, identity, pProcess);
+            <<<n_outputs, 940>>>(A, result, op, n_reductions, aspan, identity, pProcess);
     }
 }
 
