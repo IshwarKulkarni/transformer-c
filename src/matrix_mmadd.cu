@@ -3,9 +3,6 @@
 #include "../headers/matrix_ops.cuh"
 #include "../headers/types"
 
-uint32 MatrixIds::alloced_byes = 0;
-uint32 MatrixIds::id = 0;
-
 template <typename Tc>
 __device__ Tc getC(uint32 row, uint32 col, const Tc *C, uint32 cH, uint32 cW)
 {
@@ -77,7 +74,7 @@ __global__ void mmadd_kernel(T *__restrict__ result, const T *__restrict__ A, ui
     }
 }
 
-// A (h,w)  * B (w, 1)  + <C(h,1> -> result (h, 1)
+// A (h,w) @ B (w, 1) + <C(h,1)> -> result (h, 1)
 // Assuming that B is column vector, if h > 1024, multiple calls to this kernel
 // will be made with assuming h = 1024, followed by h=256  ...
 template <typename T, uint32 BLOCK_X, typename PostProcess>
@@ -323,3 +320,11 @@ template void mmadd<FloatT, DividebBy<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> 
 template void mmadd<FloatT, Neg<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                          Matrix<FloatT> const &, Matrix<FloatT> const *,
                                          Neg<FloatT>);
+
+template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, DividebBy<FloatT>>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, Matrix<FloatT> const *,
+    Composition<FloatT, Neg<FloatT>, DividebBy<FloatT>>);
+
+template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, Matrix<FloatT> const *,
+    Composition<FloatT, Neg<FloatT>, Identity<FloatT>>);

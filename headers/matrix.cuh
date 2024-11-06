@@ -58,10 +58,9 @@ struct Matrix
     T* CudaAllocator(size_t numElems)
     {
         T* ptr = nullptr;
-        if (numElems == 0)
-            throw_rte_with_backtrace("Matrix size is 0")
+        if (numElems == 0) throw_rte_with_backtrace("Matrix size is 0");
 
-                cudaErrCheck(cudaMallocManaged((void**)&ptr, sizeof(T) * numElems));
+        cudaErrCheck(cudaMallocManaged((void**)&ptr, sizeof(T) * numElems));
         return ptr;
     }
 
@@ -69,25 +68,19 @@ struct Matrix
 
     CudaPtr data;
 
-    Matrix(uint32 height, uint32 width, const T* values = nullptr)
+    Matrix(uint32 height, uint32 width, const std::string& name_ = "Matrix")
         : id(MatrixIds::get<T>(height, width)),
           height(height),
           width(width),
           shape_str('[' + std::to_string(height) + "x" + std::to_string(width) + ']'),
-          name("Matrix-" + std::string(typeid(T).name()) + '{' + std::to_string(id) + '}' +
-               shape_str),
+          name(name_ + '{' + std::to_string(id) + '}'),
           data(CudaAllocator(height * width))
     {
-        if (values)
-        {
-            cudaErrCheck(
-                cudaMemcpy(data.get(), values, height * width * sizeof(T), cudaMemcpyDefault));
-        }
         moveToDevice(0);
     }
 
-    Matrix(std::pair<uint32, uint32> shape, const T* values = nullptr)
-        : Matrix(shape.first, shape.second, values)
+    Matrix(std::pair<uint32, uint32> shape, const std::string& name_ = "Matrix")
+        : Matrix(shape.first, shape.second, name_)
     {
     }
 
@@ -138,8 +131,8 @@ struct Matrix
         }
         if (x >= width || y >= height)
         {
-            throw std::out_of_range("Matrix index out of range: " + std::to_string(x) + " " +
-                                    std::to_string(y));
+            throw_rte_with_backtrace("Matrix index out of range: x:", x, ", y:", y, " for ",
+                                     shape_str);
         }
     }
     void moveToDevice(int32_t device = 0)
@@ -155,7 +148,7 @@ struct Matrix
 template <typename T>
 std::ostream& operator<<(std::ostream& os, const Matrix<T>& m)  // usable to paste in torch ()
 {
-    os << m.name << std::setprecision(12) << std::fixed << std::setfill(' ') << '[';
+    os << m.name << m.shape_str << std::setprecision(12) << std::fixed << std::setfill(' ') << '[';
     for (uint32 y = 0; y < m.height; y++)
     {
         os << "\n[";

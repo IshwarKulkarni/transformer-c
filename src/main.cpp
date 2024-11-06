@@ -1,10 +1,12 @@
+#include <iostream>
 #include "../headers/loss_nodes.hpp"
+#include "../headers/matrix_ops.cuh"
 #include "../headers/matrix_ops.hpp"
 #include "../headers/nodes.hpp"
 #include "../headers/word2vec.hpp"
 #include "fstream"
 
-int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const FloatT* expected,
+int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const Matrix<FloatT>& expected,
                     FloatT eps = 1e-6)
 {
     cudaErrCheck(cudaDeviceSynchronize());
@@ -12,7 +14,7 @@ int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const FloatT*
     {
         LOG(RED, BOLD, "Test ", test_name, " failed to match");
         LOG(RED, matrix, RESET, " and with expected");
-        LOG(GREEN, shaped_like(matrix, expected));
+        LOG(GREEN, expected);
         return 1;
     }
     return 0;
@@ -27,7 +29,7 @@ int test_fc()
     Input<> x(xh, xw, "x");
 
     FullyConnected<FloatT, Sigmoid<FloatT>> L0(xh, inner, xw, {&x}, true, "Linear-L0");
-    FullyConnected<FloatT, Sigmoid<FloatT>> L1(inner, th, xw, {&L0}, true, "Linear-L1");
+    FullyConnected<FloatT, TanH<FloatT>> L1(inner, th, xw, {&L0}, true, "Linear-L1");
     SoftmaxDim0<FloatT> S({&L1}, "Softmax-Dim0");
     Input<> t(S.shape(), "target");
     CrossEntropyLoss<FloatT> loss({&t, &S}, "L2Error");
@@ -35,20 +37,20 @@ int test_fc()
     fillCPU(x, 1);
     fillCPU(t, 5);
 
-    Matrix<FloatT> W0_grad(L0.W.shape());
-    Matrix<FloatT> b0_grad(L0.b.shape());
-    Matrix<FloatT> W1_grad(L1.W.shape());
-    Matrix<FloatT> b1_grad(L1.b.shape());
+    Matrix<FloatT> W0_grad = Matrix<FloatT>(L0.W.grads.shape());
+    Matrix<FloatT> b0_grad = Matrix<FloatT>(L0.b.grads.shape());
+    Matrix<FloatT> W1_grad = Matrix<FloatT>(L1.W.grads.shape());
+    Matrix<FloatT> b1_grad = Matrix<FloatT>(L1.b.grads.shape());
 
     std::ifstream golden("static_data/fc.txt");
     golden >> L0.W >> L0.b >> L1.W >> L1.b >> W0_grad >> b0_grad >> W1_grad >> b1_grad;
 
-    loss.forward();
+    loss.compute();
     loss.backward();
 
-    uint32 err = values_mismatch("Linear-L0.W", L0.W.grads, W0_grad.begin()) +
-                 values_mismatch("Linear-L1.W", L1.W.grads, W1_grad.begin()) +
-                 values_mismatch("Linear-L1.b", L1.b.grads, b1_grad.begin());
+    uint32 err = values_mismatch("Linear-L0.W", L0.W.grads, W0_grad) +
+                 values_mismatch("Linear-L1.W", L1.W.grads, W1_grad) +
+                 values_mismatch("Linear-L1.b", L1.b.grads, b1_grad);
 
     if (err == 0) LOG(GREEN, "Test FC passed");
     return err;
@@ -129,46 +131,115 @@ int test_word2vec()
 
 int test_attention()
 {
-    uint32 emb_size = 7;
-    uint32 seq_len = 5;
-    Input<> q_(emb_size, seq_len, "q_input");
-    Input<> k_(emb_size, seq_len, "k_input");
-    Input<> v_(emb_size, seq_len, "v_input");
-    fillCPU(q_, .1);
-    fillCPU(k_, .2);
-    fillCPU(v_, .3);
+    uint32 Ei = 48;  //  input embedding size
+    uint32 Eq = 16;  //  query embedding size
+    // uint32 Ek = Eq;  //  key embedding size, unused
+    uint32 Ev = Ei;  //  value, i.e. output embedding size
+    uint32 S = 5;    //  sequence length
 
-    Attention<> attention(emb_size, seq_len, {&q_, &k_, &v_}, "Attention");
+    Input<> q(S, Ei, "Query"), k(S, Ei, "Key"), v(S, Ei, "Value");
 
-    Matrix<FloatT> Q_grad(attention.Q.W.shape());
-    Matrix<FloatT> K_grad(attention.K.W.shape());
-    Matrix<FloatT> V_grad(attention.V.W.shape());
+    Attention<FloatT> A(Eq, Ev, {&q, &k, &v}, "Attention");
+    Input<> target(A.shape(), "target");
+    fillCPU(target, 1);
+    L2Loss<FloatT> loss({&A, &target}, "L2Error");
 
     std::ifstream golden("static_data/attention.txt");
-    golden >> attention.Q.W >> attention.K.W >> attention.V.W;
-    golden >> Q_grad >> K_grad >> V_grad;
+    golden >> A.Q.W >> A.K.W >> A.V.W;
+    golden >> q >> k >> v;
 
-    Input<> target(seq_len, seq_len, "target");
-    fillCPU(target, (1.));
+    loss.compute();
+    loss.backward();
 
-    L2Loss<> l2({&target, &attention});
-    std::ofstream out("graph.dot");
-    graph_to_dot(&l2, out);
+    uint32 err = values_mismatch("Attention out", A, read_csv<FloatT>(golden)) +
+                 values_mismatch("Q.W.grads", A.Q.W.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("K.W.grads", A.K.W.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("V.W.grads", A.V.W.grads, read_csv<FloatT>(golden));
 
-    l2.forward();
-    l2.backward();
+    if (err == 0) LOG(GREEN, "Test Attention passed");
+    return err;
+}
 
-    uint32 err = values_mismatch("Q_grad", attention.Q.W.grads, Q_grad.begin()) +
-                 values_mismatch("K_grad", attention.K.W.grads, K_grad.begin()) +
-                 values_mismatch("V_grad", attention.V.W.grads, V_grad.begin());
-    if (err == 0) LOG(GREEN, "Test attention passed");
+int test_mmTadd_torch()
+{
+    Matrix<FloatT> A = normal_init<FloatT>(3, 4);
+    Matrix<FloatT> B = normal_init<FloatT>(5, 4);
+    Matrix<FloatT> C(3, 5);
+    Matrix<FloatT> ABt(3, 5);
+    fillCPU(C, 2.5);
+    fillCPU(ABt, 1.5);
+
+    Matrix<FloatT> Correct(ABt.shape());
+
+    A <<= {2.212206363678, 1.163078665733,  0.774003803730,  0.483804613352,
+           1.043440341949, 0.299563467503,  1.183925509453,  0.153025463223,
+           1.891711354256, -1.168814778328, -1.234741449356, 1.558071136475};
+
+    B <<= {2.212206363678,  1.163078665733, 0.774003803730,  0.483804613352,  1.043440341949,
+           0.299563467503,  1.183925509453, 0.153025463223,  1.891711354256,  -1.168814778328,
+           -1.234741449356, 1.558071136475, -1.771028995514, -0.545944571495, -0.451384454966,
+           -2.355629682541, 0.579383552074, 0.541440188885,  -1.856081962585, 2.678506612778};
+
+    Correct <<= {7.0797576904, 3.6471183300, 2.6235396862, -6.0418958664, 1.7707128525,
+                 3.6471183300, 2.6036026478, 0.4003363252, -2.9063849449, -1.0208352804,
+                 2.6235396862, 0.4003363252, 8.8968715668, -5.8250632286, 6.9282684326};
+
+    mmTaddCPU<FloatT>(C, A, B, nullptr);
+    mmTadd<FloatT>(ABt, A, B, nullptr);
+    cudaErrCheck(cudaDeviceSynchronize());
+    if (values_mismatch("mmTaddCPU", C, Correct) == 0)
+    {
+        LOG(GREEN, "Test mmTaddCPU passed");
+    }
+    if (values_mismatch("mmTadd", ABt, Correct) == 0)
+    {
+        LOG(GREEN, "Test mmTadd passed");
+    }
+    return 0;
+}
+
+int test_ProductT()
+{
+    Input<> A(3, 4, "A");
+    Input<> B(5, 4, "B");
+    Input<> target(3, 5, "target");
+    ProductT<FloatT, DividebBy<FloatT>> P({&A, &B}, DividebBy<FloatT>(5), "ProductT");
+
+    L2Loss<FloatT> loss({&target, &P}, "L2Error");
+
+    fillCPU(A, 1);
+    fillCPU(B, 2);
+    fillCPU(target, 3);
+    loss.compute();
+    loss.backward();
+    return 0;
+}
+
+int test_linear()
+{
+    Input<> A(3, 4, "A");
+    Linear<FloatT> L(5, {&A}, "Linear");
+
+    std::ifstream golden("static_data/linear.txt");
+    golden >> L.W >> A;
+
+    Input<> target(L.shape(), "target");
+    fillCPU(target, 1);
+    L2Loss<FloatT> loss({&L, &target}, "L2Error");
+
+    loss.compute();
+    loss.backward();
+    uint32 err = values_mismatch("L.W.grads", L.W.grads, read_csv<FloatT>(golden));
+    if (err == 0) LOG(GREEN, "Test Linear passed");
     return err;
 }
 
 int main()
 {
-    test_word2vec();
     test_fc();
+    test_linear();
+    test_ProductT();
+    test_mmTadd_torch();
     test_attention();
     return 0;
 }

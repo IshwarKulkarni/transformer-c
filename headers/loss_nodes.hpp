@@ -28,11 +28,14 @@ struct Loss2Node : Node<T>  // 2 input loss node
     virtual void backward() = 0;
 };
 
+/*
+L2 loss computes (Y - Yt)^2 , first input is value, second is target
+*/
 template <typename T = FloatT>
-struct L2Loss : Loss2Node<T>  // L2 loss computes (Y^ - Y)^2 , first input is target, second is Y
+struct L2Loss : Loss2Node<T>
 {
-    Matrix<T> diff;         // storage for (y - y_tartget)
-    Matrix<T> nDiff;        // storage for (y - y_tartget)^2
+    Matrix<T> diff;         // storage for (Y - Y)
+    Matrix<T> nDiff;        // storage for (Y - Y)^2
     Matrix<T> temp1d;       // storage for output of reduction to 1d
     Matrix<T> gradientOut;  // storage for output  of reduction for backward
     MultiplyBy<T> times2ByNumels;
@@ -48,7 +51,7 @@ struct L2Loss : Loss2Node<T>  // L2 loss computes (Y^ - Y)^2 , first input is ta
         if (inputs.size() != 2) throw_rte_with_backtrace("L2Loss requires 2 inputs");
     }
 
-    void compute() override
+    void forward() override
     {
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Square<T>());
@@ -93,7 +96,7 @@ struct L1Loss : Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is target,
     {
     }
 
-    void compute() override
+    void forward() override
     {
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Abs<T>());
@@ -135,7 +138,7 @@ struct CrossEntropyLoss : Loss2Node<T>  // y is target, second is y
     {
     }
 
-    void compute() override
+    void forward() override
     {
         binary_apply(ce, this->prev(0), this->prev(1), CrossEntropy<T>());
         if (ce.width > 1)

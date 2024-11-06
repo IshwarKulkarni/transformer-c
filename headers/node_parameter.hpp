@@ -10,13 +10,12 @@ struct Parameter;
 template <typename T = FloatT>
 struct Node : Matrix<T>
 {
-    const uint32 id = node_id();
     Node(uint32_t height, uint32_t width, const std::vector<Node<T>*>& prev,
-         const std::string& name, uint32 prev_count)
-        : Matrix<T>(height, width), name(name + '{' + std::to_string(id) + '}')
+         const std::string& name_, uint32 prev_count)
+        : Matrix<T>(height, width, name_)
     {
         if (prev.size() != prev_count)
-            throw_rte_with_backtrace("Expected ", prev_count, " input(s), for ", name, " got ",
+            throw_rte_with_backtrace("Expected ", prev_count, " input(s), for ", name_, " got ",
                                      prev_nodes.size());
         for (auto& p : prev)
         {
@@ -27,20 +26,21 @@ struct Node : Matrix<T>
     }
 
     Node(std::pair<uint32_t, uint32_t> shape, const std::vector<Node<T>*>& prev,
-         const std::string& name, uint32 prev_count)
-        : Node(shape.first, shape.second, prev, name, prev_count)
+         const std::string& name_, uint32 prev_count)
+        : Node(shape.first, shape.second, prev, name_, prev_count)
     {
     }
 
-    virtual void forward(uint32 depth = 0)
+    virtual void
+    compute()  // calls compute on all previous nodes to populate their output, then calls forward
     {
         for (auto& p : prev_nodes)
         {
-            p->forward(depth + 1);
+            p->compute();
         }
-        this->compute();
+        this->forward();
     }
-    virtual void compute() = 0;
+    virtual void forward() = 0;
     virtual void backward(const Matrix<T>* e) = 0;
     virtual void update_weights(FloatT lr)
     {
@@ -54,7 +54,6 @@ struct Node : Matrix<T>
     std::vector<Parameter<T, T>*> params;
     std::vector<Node<T>*> next_nodes{};
     std::vector<Node<T>*> prev_nodes{};
-    const std::string name;
 
     Matrix<T>& prev(uint32 i) { return *((Matrix<T>*)(prev_nodes[i])); }
 
@@ -63,26 +62,27 @@ struct Node : Matrix<T>
     virtual uint32 n_trainable_params()
     {
         uint32 total = 0;
-        for (auto& p : params) total += p->numels();
+        for (auto& p : params)
+        {
+            LOG('\n', this->name, " ", p->shape_str, " : ", p->numels());
+            total += p->numels();
+        }
+        for (auto& n : prev_nodes)
+        {
+            total += n->n_trainable_params();
+        }
         return total;
     }
 
     virtual uint32 n_untrainable_params() { return 0; }
 
     virtual std::string dot_repr() { return ""; }
-
- private:
-    uint32 node_id()
-    {
-        static uint32 id = 0;
-        return id++;
-    }
 };
 
 template <typename T = FloatT>
-void graph_to_dot(Node<T>* node, std::ostream& os, const std::string& header = "digraph G")
+void graph_to_dot(Node<T>* node, std::ostream& os, std::string header = "digraph G")
 {
-    os << header << " {\n";
+    os << header << "{\n";
     std::vector<Node<T>*> nodes;
     nodes.push_back(node);
     while (!nodes.empty())
@@ -91,10 +91,11 @@ void graph_to_dot(Node<T>* node, std::ostream& os, const std::string& header = "
         nodes.pop_back();
         for (auto* p : n->prev_nodes)
         {
-            os << p->id << "->" << n->id << " [label=\" " << p->shape_str << " \"]\n";
+            os << p->id << "->" << n->id << " [label=\"" << p->shape_str << "\"]\n";
             nodes.push_back(p);
         }
-        os << n->id << " [label=\"" << n->name << "\"]\n" << n->dot_repr();
+        os << n->id << " [label=\"" << n->name << "\"]\n";
+        os << n->dot_repr();
     }
     os << "}\n";
 }
@@ -105,15 +106,15 @@ using NodePtrs = const std::vector<Node<T>*>&;
 template <typename T = FloatT>
 struct Input : Node<T>
 {
-    Input(uint32_t height, uint32_t width, const std::string& name = "Input")
+    Input(uint32_t height, uint32_t width, const std::string& name)
         : Node<T>(height, width, {}, name, 0)
     {
     }
-    Input(std::pair<uint32_t, uint32_t> shape, const std::string& name = "Input")
+    Input(std::pair<uint32_t, uint32_t> shape, const std::string& name)
         : Node<T>(shape, {}, name, 0)
     {
     }
-    void compute() override {}
+    void forward() override {}
 
     void backward(const Matrix<T>*) override {}
 };

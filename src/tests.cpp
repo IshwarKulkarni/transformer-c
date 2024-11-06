@@ -20,16 +20,30 @@ FloatT run_mm_timing(const MatrixT& A, const MatrixT& B)
 {
     uint32 max_iters = 100;
     CudaEventTimer timer("Timing for " + std::to_string(max_iters) + " iterations");
-    Matrix<FloatT> D(A.height, B.width);
+    Matrix<FloatT> AB(A.height, B.width);
     for (uint32 i = 0; i < max_iters; i++)
     {
-        mmadd<FloatT>(D, A, B, nullptr);
+        mmadd<FloatT>(AB, A, B, nullptr);
     }
     auto time = timer.stop();
-    uint32 num_bytes = A.height * A.height * sizeof(FloatT) * max_iters;
+    uint32 num_bytes = AB.height * AB.width * sizeof(FloatT) * max_iters;
     FloatT bandWidth_mb = num_bytes / (time * (1 << 30));
-    LOG("MM Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, D.shape_str, RESET,
-        " for A, B: ", A.shape_str, " @ ", B.shape_str);
+    LOG("MM  Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, AB.shape_str, RESET,
+        " for A, B: ", A.shape_str, " @ ", B.shape_str, " -> ", AB.shape_str);
+
+    auto Bt = normal_init<FloatT>(B.width, B.height);
+    CudaEventTimer timer2("Timing for " + std::to_string(max_iters) + " iterations");
+    Matrix<FloatT> ABt(A.height, B.width);
+    for (uint32 i = 0; i < max_iters; i++)
+    {
+        mmTadd<FloatT>(ABt, A, Bt, nullptr);
+    }
+    auto time2 = timer2.stop();
+    num_bytes = ABt.height * ABt.width * sizeof(FloatT) * max_iters;
+    bandWidth_mb = num_bytes / (time2 * (1 << 30));
+    LOG("MMT Bandwidth: ", BLUE, bandWidth_mb, "GB/s ", RED, ABt.shape_str, RESET,
+        " for A, Bt: ", A.shape_str, " @ ", Bt.shape_str, " -> ", ABt.shape_str);
+
     return bandWidth_mb;
 }
 
@@ -192,6 +206,13 @@ int main(int argc, char const* argv[])
         mmaddCPU<FloatT, Sigmoid<FloatT>::SigmoidF>(C, A, B, &S);
         mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(D, A, B, &S);
         test_match(C, D, "Matrix Multiply with S, and Sigmoid PProcess");
+
+        auto Bt = normal_init<FloatT>(k, A.width);
+        MatrixT C1(A.height, Bt.height);
+        MatrixT D1(A.height, Bt.height);
+        mmTaddCPU<FloatT, Sigmoid<FloatT>::SigmoidF>(C1, A, Bt, &S);
+        mmTadd<FloatT, Sigmoid<FloatT>::SigmoidF>(D1, A, Bt, &S);
+        test_match(C, D, "Matrix Multiply/Transpose with S, and Sigmoid PProcess");
     }
     else if (argv[1] == std::string("test_mult_csv"))
     {

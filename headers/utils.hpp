@@ -71,6 +71,7 @@ struct CudaEventTimer
 {
     std::string name;
     cudaEvent_t start, end;
+    bool stopped = false;
     CudaEventTimer(const std::string& name) : name(name)
     {
         cudaErrCheck(cudaEventCreate(&start));
@@ -80,12 +81,13 @@ struct CudaEventTimer
     ~CudaEventTimer()
     {
         float32 time = stop();
-        LOG(name, " took ", time, " seconds ");
+        if (!stopped) LOG(name, " took ", time, " seconds ");
     }
     float32 stop()
     {
         cudaErrCheck(cudaEventRecord(end, 0));
         cudaErrCheck(cudaEventSynchronize(end));
+        stopped = true;
         float32 elapsed = 0;
         cudaErrCheck(cudaEventElapsedTime(&elapsed, start, end));
         elapsed /= 1000;  // convert to seconds

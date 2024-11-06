@@ -221,11 +221,15 @@ struct IdentityActivation
 template <typename T, typename F, typename... Rest>
 struct Composition  // chaining left to right, F(rest(...))
 {
+    Composition() = default;
     F f;
     Composition<T, Rest...> rest;
     __host__ __device__ inline T operator()(T a) const { return rest(f(a)); }
 
-    __host__ __device__ inline T operator()(T a, T b) const { return rest(f(a, b)); }
+    __host__ __device__ inline T operator()(T a, T b) const
+    {
+        return rest(f(a, b));
+    }  // unary( binary(a,b) )
 };
 
 template <typename T, typename F>

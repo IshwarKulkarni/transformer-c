@@ -28,6 +28,30 @@ void mmaddCPU(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const M
     }
 }
 
+// result = A * B^T + C
+template <typename T, typename PostProcess = Identity<T>>
+void mmTaddCPU(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
+               PostProcess unary = PostProcess())
+{
+    check_mmTadd_sizes(result, A, B, C);
+    for (uint32 y = 0; y < A.height; y++)
+    {
+        for (uint32 x = 0; x < B.height; x++)
+        {
+            T value = 0;
+            for (uint32 k = 0; k < A.width; k++)
+            {
+                value += A(y, k) * B(x, k);
+            }
+            if (C)
+            {
+                value += (*C)(y, x);
+            }
+            result(y, x) = unary(value);
+        }
+    }
+}
+
 template <typename T>
 void transposeCPU(Matrix<T> &res, const Matrix<T> &A)
 {
