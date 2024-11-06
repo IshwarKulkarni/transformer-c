@@ -166,7 +166,7 @@ void softmax_gradient(Matrix<T> &s_grad_out, const Matrix<T> &s_out, const Matri
     }
     else
     {
-        throw runtime_error_with_backtrace("Span too large for softmax gradient");
+        throw_rte_with_backtrace("Span too large for softmax gradient");
     }
 }
 
@@ -265,8 +265,7 @@ void reduce_kernel_launcher(const T *A, T *result, ReduceOp op, uint32 n_reducti
 {
     if (n_outputs != n_reductions)
     {
-        throw runtime_error_with_backtrace(
-            "Number of outputs must be equal to number of reductions");
+        throw_rte_with_backtrace("Number of outputs must be equal to number of reductions");
     }
     else if (aspan <= 8 and n_reductions <= 16)
     {
@@ -328,10 +327,10 @@ void reduce_column_vec(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp,
     {
         if (A.height == 1)
         {
-            throw runtime_error_with_backtrace("A is scalar consider copying instead");
+            throw_rte_with_backtrace("A is scalar consider copying instead");
         }
-        throw runtime_error_with_backtrace("Invalid dimensions for column-reduction " +
-                                           A.shape_str + " to " + result.shape_str);
+        throw_rte_with_backtrace("Invalid dimensions for column-reduction ", A.shape_str, " to ",
+                                 result.shape_str, " or invalid postProcess");
     }
     reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, 1, A.height, 1, identity,
                            postProcess);
@@ -354,8 +353,8 @@ void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp, T identity
             LOG("For reducing to scalar from a column vector, use reduce_column_vec "
                 "function");
         }
-        throw runtime_error_with_backtrace("Invalid dimensions for row-reduction " + A.shape_str +
-                                           " to " + result.shape_str + " use unary_apply instead");
+        throw_rte_with_backtrace("Invalid dimensions for row-reduction ", A.shape_str, " to ",
+                                 result.shape_str, " or invalid postProcess");
     }
     reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, A.height, A.width, result.height,
                            identity, postProcess);

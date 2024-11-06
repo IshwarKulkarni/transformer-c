@@ -138,7 +138,7 @@ int main(int argc, char const* argv[])
         std::stringstream ss;
         for (int32 i = 0; i < argc; i++) ss << argv[i] << " ";
         LOG(RED, usage.str(), RESET, ORANGE, "\nInstead called:\n\t", ss.str().c_str());
-        throw runtime_error_with_backtrace("Invalid usage");
+        throw_rte_with_backtrace("Invalid usage");
     }
 
     auto init_argv = [&](const char** argv) {  // expects argv[2] and argv[3] to be m, n

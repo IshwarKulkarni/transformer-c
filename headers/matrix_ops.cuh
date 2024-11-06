@@ -152,9 +152,35 @@ inline void fill(Matrix<T> &A, const Matrix<T> &B)
     if (A.height != B.height or A.width != B.width)
     {
         LOG(RED, "Dimension mismatch: A, B: ", A.shape_str, " != ", B.shape_str);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
     fill(A, B.begin());
+}
+
+template <typename T>
+Matrix<T> &operator<<=(Matrix<T> &mat, const std::initializer_list<T> &values)
+{
+    if (values.size() != mat.numels())
+    {
+        throw_rte_with_backtrace("Values size mismatch for ", mat.name, " expected ", mat.numels(),
+                                 " got ", values.size());
+    }
+    fill(mat, values.begin());
+    return mat;
+}
+
+template <typename T>
+std::ifstream &operator>>(std::ifstream &file, Matrix<T> &mat)
+{
+    uint32 m = 0, n = 0;
+    file >> m >> n;
+    if (m != mat.height or n != mat.width)
+    {
+        throw_rte_with_backtrace("Dimension do not match for ", mat.name, " got ", m, "x", n);
+    }
+    using readT = typename AccumT<FloatT>::type;
+    std::copy_n(std::istream_iterator<readT>(file), m * n, mat.begin());
+    return file;
 }
 
 template <typename FloatT>
@@ -163,14 +189,13 @@ Matrix<FloatT> read_csv(const std::string &filename)
     std::ifstream file(filename, std::ios::in);
     if (!file.is_open())
     {
-        throw runtime_error_with_backtrace("Could not open file " + filename);
+        throw_rte_with_backtrace("Could not open file ", filename);
     }
     uint32 m, n;
     file >> m >> n;
-    std::vector<FloatT> data(m * n);
+    Matrix<FloatT> matrix(m, n);
     using readT = typename AccumT<FloatT>::type;
-    std::copy(std::istream_iterator<readT>(file), std::istream_iterator<readT>(), data.begin());
-    Matrix<FloatT> matrix(m, n, data.data());
+    std::copy_n(std::istream_iterator<readT>(file), m * n, matrix.begin());
     return matrix;
 }
 
@@ -219,8 +244,8 @@ void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
     else if (A.height > 1 and A.width == 1 and result.width == 1)
         reduce_column_vec(result, A, Plus<T>(), T(0), DividebBy<T>(A.height));
     else
-        throw runtime_error_with_backtrace("Invalid dimensions for mean reduction " + A.shape_str +
-                                           " to " + result.shape_str);
+        throw_rte_with_backtrace("Invalid dimensions for mean reduction ", A.shape_str, " to ",
+                                 result.shape_str);
 }
 
 template <typename T>
@@ -231,8 +256,8 @@ void reduce_sum(Matrix<T> &result, const Matrix<T> &A)
     else if (A.height > 1 and A.width == 1 and result.width == 1)
         reduce_column_vec(result, A, Plus<T>(), T(0), Identity<T>());
     else
-        throw runtime_error_with_backtrace("Invalid dimensions for sum reduction " + A.shape_str +
-                                           " to " + result.shape_str);
+        throw_rte_with_backtrace("Invalid dimensions for sum reduction ", A.shape_str, " to ",
+                                 result.shape_str);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -247,20 +272,20 @@ bool check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb>
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for MMADD, A ", A.name, " and B ", B.name,
             " and result ", result.name);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
     if (result.height != A.height || result.width != B.width)
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for MMADD, result ", result.name, " and A ",
             A.name, " and B ", B.name);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
     if (C and
         ((C->height != A.height and C->height != 1) or (C->width != B.width and C->width != 1)))
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for MMADD, C ", C->name, " and A ", A.name,
             " and B ", B.name);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
     return true;
 }
@@ -275,7 +300,7 @@ void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matri
     {
         LOG(RED, "Dimension mismatch in Broadcating Binary Op: Result: ", res.shape_str,
             ", A: ", A.shape_str, " & B: ", B.shape_str);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
 
     if (!(A.numels() == 1 or (rh == A.height and rw == A.width) or
@@ -283,7 +308,7 @@ void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matri
     {
         LOG(RED, "Dimension mismatch in Broadcating Binary Op: Res: ", A.shape_str,
             " & A: ", A.shape_str);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
 
     if (!(B.numels() == 1 or (rh == B.height and rw == B.width) or
@@ -291,7 +316,7 @@ void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matri
     {
         LOG(RED, "Dimension mismatch in Broadcating Binary Op: Res: ", A.shape_str,
             " & B: ", B.shape_str);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
 }
 
@@ -308,7 +333,7 @@ inline void check_softmax_grad_sizes(const Matrix<T> &s_grad_out, const Matrix<T
     {
         LOG(RED, "Dimension mismatch in softmax gradient: s_grad_out: ", s_grad_out.shape_str,
             ", s_out: ", s_out.shape_str, " & grad_in: ", grad_in.shape_str);
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
 }
 

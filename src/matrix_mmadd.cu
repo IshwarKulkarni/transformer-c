@@ -3,11 +3,8 @@
 #include "../headers/matrix_ops.cuh"
 #include "../headers/types"
 
-uint32 getMatrixId()
-{
-    static uint32 id = 0;
-    return id++;
-}
+uint32 MatrixIds::alloced_byes = 0;
+uint32 MatrixIds::id = 0;
 
 template <typename Tc>
 __device__ Tc getC(uint32 row, uint32 col, const Tc *C, uint32 cH, uint32 cW)
@@ -279,7 +276,7 @@ void transpose(Matrix<T> &res, const Matrix<T> &A, Op op)
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for transpose operation: ", A.shape_str,
             " -> ", res.shape_str);
-        throw runtime_error_with_backtrace("Dimension mismatch for transpose");
+        throw_rte_with_backtrace("Dimension mismatch for transpose");
     }
 
     if (A.width == 1 and std::is_same<Op, Identity<T>>::value)
@@ -309,6 +306,8 @@ template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A, Identity<F
 
 template void transpose<FloatT, Exp<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &, Exp<FloatT>);
 
+template void transpose<FloatT, Neg<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &, Neg<FloatT>);
+
 template void mmadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,
                                                  Relu<FloatT>::ReluF);
@@ -320,3 +319,7 @@ template void mmadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<FloatT
 template void mmadd<FloatT, DividebBy<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                Matrix<FloatT> const &, Matrix<FloatT> const *,
                                                DividebBy<FloatT>);
+
+template void mmadd<FloatT, Neg<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                         Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                         Neg<FloatT>);

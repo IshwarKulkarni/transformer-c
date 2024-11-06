@@ -1,91 +1,121 @@
 #ifndef NODE_PARAMETER_HPP
 #define NODE_PARAMETER_HPP
 
-#include <sstream>
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
 
-template <typename T>
-struct Node
+template <typename TW, typename TG>
+struct Parameter;
+
+template <typename T = FloatT>
+struct Node : Matrix<T>
 {
-    virtual const Matrix<T>* forward(const Matrix<T>* x) = 0;
-    virtual void backward(const Matrix<T>* e) = 0;
-    virtual bool update_weights(FloatT lr)
+    const uint32 id = node_id();
+    Node(uint32_t height, uint32_t width, const std::vector<Node<T>*>& prev,
+         const std::string& name, uint32 prev_count)
+        : Matrix<T>(height, width), name(name + '{' + std::to_string(id) + '}')
     {
-        if (prev) return prev->update_weights(lr);
-        return false;
+        if (prev.size() != prev_count)
+            throw_rte_with_backtrace("Expected ", prev_count, " input(s), for ", name, " got ",
+                                     prev_nodes.size());
+        for (auto& p : prev)
+        {
+            if (p == nullptr) throw_rte_with_backtrace("Input node is nullptr");
+            prev_nodes.push_back(p);
+            p->next_nodes.push_back(this);
+        }
     }
 
-    Node<T>* next = nullptr;  // for now singly linked list, not multiple fan outs.
-    Node<T>* prev = nullptr;
-    Matrix<T> output;
+    Node(std::pair<uint32_t, uint32_t> shape, const std::vector<Node<T>*>& prev,
+         const std::string& name, uint32 prev_count)
+        : Node(shape.first, shape.second, prev, name, prev_count)
+    {
+    }
+
+    virtual void forward(uint32 depth = 0)
+    {
+        for (auto& p : prev_nodes)
+        {
+            p->forward(depth + 1);
+        }
+        this->compute();
+    }
+    virtual void compute() = 0;
+    virtual void backward(const Matrix<T>* e) = 0;
+    virtual void update_weights(FloatT lr)
+    {
+        for (auto& p : params) p->update(lr);
+        for (auto& n : next_nodes)
+        {
+            n->update_weights(lr);
+        }
+    }
+
+    std::vector<Parameter<T, T>*> params;
+    std::vector<Node<T>*> next_nodes{};
+    std::vector<Node<T>*> prev_nodes{};
     const std::string name;
 
-    Node(uint32_t height, uint32_t width, Node<T>* prev, const std::string& name = "")
-        : output(height, width), name(name + "_" + get_layer_num(prev))
-    {
-        if (prev)
-        {
-            if (prev->next)
-                throw runtime_error_with_backtrace(
-                    "Node already has a next node,"
-                    "only singly linked nodes are supported");
-            prev->next = this;
-            this->prev = prev;
-        }
-    }
+    Matrix<T>& prev(uint32 i) { return *((Matrix<T>*)(prev_nodes[i])); }
 
-    static std::string get_layer_num(Node<T>* node)
-    {
-        uint32 layer_num = 0;
-        while (node)
-        {
-            node = node->prev;
-            layer_num++;
-        }
-        return std::to_string(layer_num);
-    }
+    Node<T>* prev_node(uint32 i) { return prev_nodes[i]; }
 
-    virtual std::string graph_rep(bool traverse_to_init = true)
+    virtual uint32 n_trainable_params()
     {
-        char buffer[100];
-        std::stringstream ss;
-        ss << "Graph " << (prev and !traverse_to_init ? " (does not start from here)\n" : ":\n");
-        sprintf(buffer,
-                "Layer                |  Output | Param #  |        Shape       | Other params\n");
-        ss << buffer << std::string(70, '-') << '\n';
-        Node<T>* node = this;
-        uint32 n_params = 0;
-        uint32 nt_params = 0;
-        while (node->prev and traverse_to_init)
-        {
-            node = node->prev;
-        }
-        while (node)
-        {
-            uint32 count = node->n_trainable_params();
-            n_params += count;
-            uint32 other_params = node->n_untrainable_params();
-            nt_params += other_params;
-            snprintf(buffer, 100, "%-20s | %-8s| % 8d | %18s | %5d\n", node->name.c_str(),
-                     node->output.shape_str.c_str(), count, node->params_string().c_str(),
-                     node->n_untrainable_params());
-            ss << buffer;
-            node = node->next;
-        }
-        ss << std::string(30, '-') << "\n  Total trainable params: " << n_params << '\n'
-           << "Total untrainable params: " << nt_params << '\n'
-           << std::string(30, '-') << std::endl;
-        return ss.str();
+        uint32 total = 0;
+        for (auto& p : params) total += p->numels();
+        return total;
     }
-
-    virtual uint32 n_trainable_params() { return 0; }
 
     virtual uint32 n_untrainable_params() { return 0; }
 
-    virtual std::string params_string() { return ""; }
+    virtual std::string dot_repr() { return ""; }
 
-    virtual std::string repr() { return name + " output: " + output.shape_str; }
+ private:
+    uint32 node_id()
+    {
+        static uint32 id = 0;
+        return id++;
+    }
+};
+
+template <typename T = FloatT>
+void graph_to_dot(Node<T>* node, std::ostream& os, const std::string& header = "digraph G")
+{
+    os << header << " {\n";
+    std::vector<Node<T>*> nodes;
+    nodes.push_back(node);
+    while (!nodes.empty())
+    {
+        auto* n = nodes.back();
+        nodes.pop_back();
+        for (auto* p : n->prev_nodes)
+        {
+            os << p->id << "->" << n->id << " [label=\" " << p->shape_str << " \"]\n";
+            nodes.push_back(p);
+        }
+        os << n->id << " [label=\"" << n->name << "\"]\n" << n->dot_repr();
+    }
+    os << "}\n";
+}
+
+template <typename T = FloatT>
+using NodePtrs = const std::vector<Node<T>*>&;
+
+template <typename T = FloatT>
+struct Input : Node<T>
+{
+    Input(uint32_t height, uint32_t width, const std::string& name = "Input")
+        : Node<T>(height, width, {}, name, 0)
+    {
+    }
+    Input(std::pair<uint32_t, uint32_t> shape, const std::string& name = "Input")
+        : Node<T>(shape, {}, name, 0)
+    {
+    }
+    void compute() override {}
+
+    void backward(const Matrix<T>*) override {}
 };
 
 template <typename TW, typename TG = TW>  // weight and gradient
@@ -120,7 +150,8 @@ struct Parameter : Matrix<TW>
 template <typename Ta, typename Tb = Ta>
 std::ostream& operator<<(std::ostream& os, const Parameter<Ta, Tb>& p)
 {
-    os << p.name << " Weights: " << p << "\n" << p.name << " Grads: " << p.grads << std::endl;
+    os << p.name << " Weights: " << *(Matrix<Ta>*)(&p) << "\n"
+       << p.name << " Grads: " << p.grads << std::endl;
     return os;
 }
 

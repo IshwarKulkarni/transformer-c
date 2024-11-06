@@ -7,8 +7,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <stdexcept>
-#include "logger.hpp"
+#include <string>
+
+#define BLUE "\033[1;34m"
+#define GREEN "\033[1;32m"
+#define RESET "\033[0m"
 
 inline char* demangle_symbol1(const char* abiName)
 {
@@ -53,7 +56,7 @@ inline void print_backtrace()
         return;
     }
 
-    for (long int i = size - 1; i >= 0; --i)
+    for (long int i = 0; i < size; i++)
     {
         std::string string(strings[i]);
         size_t start = string.find("(");
@@ -91,14 +94,11 @@ inline void print_backtrace()
     free(strings);
 }
 
-class runtime_error_with_backtrace : public std::runtime_error
-{
- public:
-    runtime_error_with_backtrace(const std::string& error) : std::runtime_error(error)
-    {
-        printf("Exception: %s\n Trace:", error.c_str());
-        print_backtrace();
+#define throw_rte_with_backtrace(...)      \
+    {                                      \
+        LOG(__VA_ARGS__);                  \
+        print_backtrace();                 \
+        throw std::runtime_error("Error"); \
     }
-};
 
 #endif

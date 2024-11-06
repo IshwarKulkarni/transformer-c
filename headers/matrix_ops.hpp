@@ -47,7 +47,7 @@ void reduceCPU(Matrix<T> &result, const Matrix<T> &A, const Reduction &op = Redu
     if (result.height != A.height || result.width != 1)
     {
         LOG(BOLD, RED, "Matrix dimensions do not match for reduce operation");
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
     for (uint32 y = 0; y < A.height; y++)
     {
@@ -74,20 +74,20 @@ void reduce_meanCPU(Matrix<T> &result, const Matrix<T> &A)
     }
 }
 
-template <typename T>
-inline void fillCPU(Matrix<T> &A, T value)
+template <typename T, typename V = T>
+inline void fillCPU(Matrix<T> &A, V value)
 {
     std::fill(A.begin(), A.end(), value);
 }
 
-template <typename T>
-inline void fillCPU(Matrix<T> &A, const T *values)
+template <typename T, typename V = T>
+inline void fillCPU(Matrix<T> &A, const V *values)
 {
     std::copy_n(values, A.numels(), A.begin());
 }
 
-template <typename T>
-bool sameCPU(const Matrix<T> &A, const T *B, float32 eps = 1e-5)
+template <typename T, typename V = T>
+bool sameCPU(const Matrix<T> &A, const V *B, float32 eps = 1e-5)
 {
     return std::equal(A.begin(), A.end(), B, [eps](T a, T b) { return std::abs(a - b) < eps; });
 }
@@ -114,7 +114,7 @@ inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<T
         (B.height != res.height && B.width != res.width && B.numels() != 1))
     {
         LOG(RED, "Matrix dimensions do not match for binary operation");
-        throw runtime_error_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch");
     }
 
     // always broadcast either axis on either matrix

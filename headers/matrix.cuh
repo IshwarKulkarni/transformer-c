@@ -15,19 +15,31 @@
 #include "logger.hpp"
 #include "types"
 
-uint32 getMatrixId();
+#define cudaErrCheck(err) cudaErrCheck_((err), __FILE__, __LINE__)
 
-#define cudaErrCheck(err)                         \
-    {                                             \
-        cudaErrCheck_((err), __FILE__, __LINE__); \
-    }
 inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool abort = true)
 {
     if (code == cudaSuccess) return;
     LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at ",
         Log::Location{file, line});
-    if (abort) throw runtime_error_with_backtrace("CUDA ERROR");
+    if (abort) throw_rte_with_backtrace("CUDA ERROR")
 }
+
+typedef struct MatrixIds
+{
+    template <typename T>
+    static uint32 get(uint32 height, uint32 width)
+    {
+        alloced_byes += height * width * sizeof(T);
+        return id++;
+    }
+    static uint32 get_alloced_bytes() { return alloced_byes; }
+
+ private:
+    MatrixIds() = delete;
+    static uint32 id;
+    static uint32 alloced_byes;
+} MatrixIds;
 
 template <typename T>
 struct Matrix
@@ -46,7 +58,10 @@ struct Matrix
     T* CudaAllocator(size_t numElems)
     {
         T* ptr = nullptr;
-        cudaErrCheck(cudaMallocManaged((void**)&ptr, sizeof(T) * numElems));
+        if (numElems == 0)
+            throw_rte_with_backtrace("Matrix size is 0")
+
+                cudaErrCheck(cudaMallocManaged((void**)&ptr, sizeof(T) * numElems));
         return ptr;
     }
 
@@ -55,7 +70,7 @@ struct Matrix
     CudaPtr data;
 
     Matrix(uint32 height, uint32 width, const T* values = nullptr)
-        : id(getMatrixId()),
+        : id(MatrixIds::get<T>(height, width)),
           height(height),
           width(width),
           shape_str('[' + std::to_string(height) + "x" + std::to_string(width) + ']'),
@@ -69,6 +84,11 @@ struct Matrix
                 cudaMemcpy(data.get(), values, height * width * sizeof(T), cudaMemcpyDefault));
         }
         moveToDevice(0);
+    }
+
+    Matrix(std::pair<uint32, uint32> shape, const T* values = nullptr)
+        : Matrix(shape.first, shape.second, values)
+    {
     }
 
     Matrix(Matrix<T>&& m) : id(m.id), height(m.height), width(m.width), data(std::move(m.data))
@@ -105,12 +125,16 @@ struct Matrix
         return attr.type == cudaMemoryTypeDevice;
     }
 
+    std::pair<uint32, uint32> shape() const { return {height, width}; }
+
+    std::pair<uint32, uint32> t_shape() const { return {width, height}; }
+
  private:
     inline void bounds_and_ptr(uint32 y, uint32 x) const
     {
         if (data == nullptr)
         {
-            throw runtime_error_with_backtrace("Matrix data is null");
+            throw_rte_with_backtrace("Matrix data is null");
         }
         if (x >= width || y >= height)
         {

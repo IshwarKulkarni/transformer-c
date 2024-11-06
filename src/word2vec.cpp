@@ -122,7 +122,7 @@ static bool read_binary(const std::string& filename, std::vector<WordVecPair>& w
     if (vec_size != N)
     {
         LOG(RED, "Vector size mismatch: ", vec_size, " != ", N);
-        throw runtime_error_with_backtrace("Vector size mismatch");
+        throw_rte_with_backtrace("Vector size mismatch");
     }
     wordVecPairs.reserve(n_words);
 
@@ -155,7 +155,7 @@ static bool read_text(const std::string& filename, std::vector<WordVecPair>& wor
     if (vec_size != N)
     {
         LOG(RED, "Vector size mismatch: ", vec_size, " != ", N);
-        throw runtime_error_with_backtrace("Vector size mismatch");
+        throw_rte_with_backtrace("Vector size mismatch");
     }
     wordVecPairs.reserve(n_words);
     while (file)

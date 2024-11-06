@@ -5,6 +5,7 @@
 #include "errors.hpp"
 #include "logger.hpp"
 #include "matrix.cuh"
+#include "types"
 
 inline std::string exec_cli(const char* cmd)
 {
@@ -13,7 +14,7 @@ inline std::string exec_cli(const char* cmd)
     std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
     if (!pipe)
     {
-        throw runtime_error_with_backtrace("popen() failed!");
+        throw_rte_with_backtrace("popen() failed!");
     }
     while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
     {
