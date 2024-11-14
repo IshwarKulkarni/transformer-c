@@ -103,22 +103,6 @@ void graph_to_dot(Node<T>* node, std::ostream& os, std::string header = "digraph
 template <typename T = FloatT>
 using NodePtrs = const std::vector<Node<T>*>&;
 
-template <typename T = FloatT>
-struct Input : Node<T>
-{
-    Input(uint32_t height, uint32_t width, const std::string& name)
-        : Node<T>(height, width, {}, name, 0)
-    {
-    }
-    Input(std::pair<uint32_t, uint32_t> shape, const std::string& name)
-        : Node<T>(shape, {}, name, 0)
-    {
-    }
-    void forward() override {}
-
-    void backward(const Matrix<T>*) override {}
-};
-
 template <typename TW, typename TG = TW>  // weight and gradient
 struct Parameter : Matrix<TW>
 {
@@ -135,8 +119,7 @@ struct Parameter : Matrix<TW>
           name(name),
           updatedWeights(height, width)
     {
-        if(wValues)
-            fill(*this, wValues);
+        if (wValues) fill(*this, wValues);
         fill(updatedWeights, (TW*)nullptr);
         fill(grads, (TW*)nullptr);
     }

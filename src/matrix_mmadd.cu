@@ -246,7 +246,6 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     cudaErrCheck(cudaGetLastError());
 }
 
-
 template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                        Matrix<FloatT> const &,
                                                        Matrix<FloatT> const *,
@@ -254,7 +253,6 @@ template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<
 template void mmadd<FloatT, Identity<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                               Matrix<FloatT> const &, Matrix<FloatT> const *,
                                               Identity<FloatT>);
-
 
 template void mmadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,

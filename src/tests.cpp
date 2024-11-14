@@ -114,7 +114,6 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
     return -1;
 }
 
-
 int test_mmTadd_torch()
 {
     Matrix<FloatT> A = normal_init<FloatT>(3, 4);
@@ -152,7 +151,6 @@ int test_mmTadd_torch()
     }
     return 0;
 }
-
 
 int main(int argc, char const* argv[])
 {
@@ -414,6 +412,8 @@ int main(int argc, char const* argv[])
         auto s_grad_in = read_csv<FloatT>(argv[3]);
         auto s_grad_out = read_csv<FloatT>(argv[4]);
         MatrixT D(s_out.height, s_out.width);
+        LOG(YELLOW, "Tests with sizes: ", s_out.shape_str, " ", s_grad_in.shape_str, " ",
+            s_grad_out.shape_str);
         softmax_gradient(D, s_out, s_grad_in);
         auto gradTest = test_match(s_grad_out, D, "Softmax gradient");
 

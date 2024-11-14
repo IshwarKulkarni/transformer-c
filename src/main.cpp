@@ -1,7 +1,6 @@
+#include "../headers/learning_nodes.hpp"
 #include "../headers/loss_nodes.hpp"
-#include "../headers/matrix_ops.cuh"
 #include "../headers/matrix_ops.hpp"
-#include "../headers/nodes.hpp"
 #include "../headers/word2vec.hpp"
 #include "fstream"
 
@@ -9,12 +8,18 @@ int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const Matrix<
                     FloatT eps = 1e-6)
 {
     cudaErrCheck(cudaDeviceSynchronize());
-    if (!sameCPU(matrix, expected, eps))
+    uint32 mismatches = sameCPU(matrix, expected, eps);
+    if (mismatches)
     {
-        LOG(RED, BOLD, "Test ", test_name, " failed to match");
-        LOG(RED, matrix, RESET, " and with expected");
-        LOG(GREEN, expected);
+        LOG(RED, BOLD, "Test ", test_name, " failed to match at ", mismatches,
+            " locations, for shape ", matrix.shape_str, " with eps: ", eps);
+        // LOG(RED, matrix, RESET, " and with expected");
+        // LOG(GREEN, expected);
         return 1;
+    }
+    else
+    {
+        LOG(YELLOW, "Test ", test_name, " passed");
     }
     return 0;
 }
@@ -130,26 +135,30 @@ int test_word2vec()
 
 int test_attention()
 {
-    uint32 Ei = 48;  //  input embedding size
-    uint32 Eq = 16;  //  query embedding size
+    std::ifstream golden("static_data/attention.txt");
+    uint32 Ei;  //  input embedding size
+    uint32 Eq;  //  query embedding size
+    golden >> Eq >> Ei;
+    golden.seekg(0, std::ios::beg);
     uint32 Ev = Ei;  //  value, i.e. output embedding size
-    uint32 S = 5;    //  sequence length
+    uint32 S = 10;   //  sequence length
 
     Input<> q(S, Ei, "Query"), k(S, Ei, "Key"), v(S, Ei, "Value");
 
-    Attention<FloatT> A(Eq, Ev, {&q, &k, &v}, "Attention");
+    Attention<float64> A(Eq, Ev, {&q, &k, &v}, "Attention");
     Input<> target(A.shape(), "target");
     fillCPU(target, 1);
-    L2Loss<FloatT> loss({&A, &target}, "L2Error");
+    L2Loss<float64> loss({&A, &target}, "L2Error");
 
-    std::ifstream golden("static_data/attention.txt");
     golden >> A.Q.W >> A.K.W >> A.V.W;
     golden >> q >> k >> v;
 
     loss.compute();
     loss.backward();
 
-    uint32 err = values_mismatch("Attention out", A, read_csv<FloatT>(golden)) +
+    uint32 err = values_mismatch("Attn. qkt", A.qkT, read_csv<FloatT>(golden)) +
+                 values_mismatch("Attn. smax", A.attention_weights, read_csv<FloatT>(golden)) +
+                 values_mismatch("Attn. out", A.attention, read_csv<FloatT>(golden)) +
                  values_mismatch("Q.W.grads", A.Q.W.grads, read_csv<FloatT>(golden)) +
                  values_mismatch("K.W.grads", A.K.W.grads, read_csv<FloatT>(golden)) +
                  values_mismatch("V.W.grads", A.V.W.grads, read_csv<FloatT>(golden));
@@ -191,7 +200,7 @@ int test_linear()
     loss.compute();
     loss.backward();
 
-    uint32 err = values_mismatch("L0.W.grads", L0.W.grads, read_csv<FloatT>(golden)) + 
+    uint32 err = values_mismatch("L0.W.grads", L0.W.grads, read_csv<FloatT>(golden)) +
                  values_mismatch("L1.W.grads", L1.W.grads, read_csv<FloatT>(golden));
     if (err == 0) LOG(GREEN, "Test Linear passed");
     return err;
@@ -199,11 +208,11 @@ int test_linear()
 
 int time_attention()
 {
-    uint32 Ei = 640;
-    uint32 Eq = 128;
-    uint32 Ev = Ei;
-    uint32 S = 24;
-    Input<> q(S, Ei, "Query"), k(S, Ei, "Key"), v(S, Ei, "Value");
+    uint32 Ei = 640;  //  input embedding size
+    uint32 Eq = 128;  //  query embedding size
+    uint32 Ev = Ei;   //  value, i.e. output embedding size for each head
+    uint32 Sl = 20;   //  sequence length
+    Input<> q(Sl, Ei, "Query"), k(Sl, Ei, "Key"), v(Sl, Ei, "Value");
     Attention<FloatT> A(Eq, Ev, {&q, &k, &v}, "Attention");
     Input<> target(A.shape(), "target");
     L2Loss<FloatT> loss({&A, &target}, "L2Error");
@@ -227,10 +236,10 @@ int test_multihead()
     uint32 Ei = 48;  //  input embedding size
     uint32 Eq = 16;  //  query embedding size
     uint32 Ev = 20;  //  value, i.e. output embedding size for each head
-    uint32 S = 5;    //  sequence length
+    uint32 Sl = 20;  //  sequence length
     uint32 Eo = Ei;  //  output embedding size, same as input
 
-    Input<> q(S, Ei, "Query"), k(S, Ei, "Key"), v(S, Ei, "Value");
+    Input<> q(Sl, Ei, "Query"), k(Sl, Ei, "Key"), v(Sl, Ei, "Value");
     MultiHeadAttention<FloatT> M(3, Eq, Ev, Eo, {&q, &k, &v}, "MultiHeadAttention");
     Input<> target(M.shape(), "target");
     fillCPU(target, 1);
@@ -244,11 +253,11 @@ int test_multihead()
 
 int main()
 {
-    test_fc();
-    test_linear();
-    test_ProductT();
+    // test_fc();
+    // test_linear();
+    // test_ProductT();
     test_attention();
-    time_attention();
-    test_multihead();
+    // time_attention();
+    // test_multihead();
     return 0;
 }

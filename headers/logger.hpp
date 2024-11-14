@@ -4,9 +4,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <ostream>
 #include <set>
-#include <mutex>
 
 namespace Log {
 
@@ -41,7 +41,8 @@ class Logger
 {
     // add mutex for threads here.
     std::mutex ostream_mtx;
-public:
+
+ public:
     void inline tee(const std::string& filename)
     {
         if (!file.is_open())

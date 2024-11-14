@@ -53,9 +53,7 @@ struct Matrix
 
     struct CudaDeleter
     {
-        void operator()(T* ptr) { 
-            cudaErrCheck(cudaFree(ptr)); 
-        }
+        void operator()(T* ptr) { cudaErrCheck(cudaFree(ptr)); }
     };
 
     T* CudaAllocator(size_t numElems)

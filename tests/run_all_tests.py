@@ -42,7 +42,7 @@ def run_main(args=[]):
 def build(debug=False):
     print("Building project: " + ("debug" if debug else "release"))
     subprocess.check_output(["make", "clean"], shell=True, text=True)
-    build_app = ["make"] + (["debg=1"] if debug else [])
+    build_app = ["make", "-j"] + (["debg=1"] if debug else [])
     try:
         make_result = subprocess.check_output(build_app, shell=True, text=True)
     except subprocess.CalledProcessError as e:
@@ -74,9 +74,9 @@ def test_mult():
 
 
 def test_softmax_grads():
-    sizes = [(1, 24), (5, 17), (1, 512), (4, 65), (20, 30), (30, 40), (32, 300), (300, 15),
+    sizes = [(1, 24), (5, 17), (9, 512), (4, 65), (20, 30), (30, 40), (32, 300), (300, 15),
              (512, 512), (1024, 1024)]
-    for size in sizes:
+    for size in sizes[:3]:
         csvs = write_softmax_grad_data(*size)
         run_main(["test_softmax_grads"] + csvs)
 

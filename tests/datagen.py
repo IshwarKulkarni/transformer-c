@@ -8,8 +8,8 @@ data_path = Path('./data')
 os.makedirs(data_path, exist_ok=True)
 
 
-def save_tensor_to_csv(tensor, filename):
-    with open(filename, 'a') as f:
+def save_tensor_to_csv(tensor, filename, append=False):
+    with open(filename, 'a' if append else 'w') as f:
         f.write(f"{tensor.shape[0]} {tensor.shape[1]}\n")
         for i in range(tensor.shape[0]):
             f.write(' '.join([str(x) for x in tensor[i].tolist()]) + '\n')

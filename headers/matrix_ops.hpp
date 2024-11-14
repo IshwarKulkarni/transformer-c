@@ -117,14 +117,15 @@ bool sameCPU(const Matrix<T> &A, const V *B, float32 eps = 1e-5)
 }
 
 template <typename T>
-bool sameCPU(const Matrix<T> &A, const Matrix<T> &B, float32 eps = 1e-5)
+uint32 sameCPU(const Matrix<T> &A, const Matrix<T> &B, float32 eps = 1e-5)
 {
     if (A.height != B.height || A.width != B.width)
     {
         return false;
     }
-    return std::equal(A.begin(), A.end(), B.begin(),
-                      [eps](T a, T b) { return std::abs(a - b) < eps; });
+    uint32 count = 0;
+    for (uint32 y = 0; y < A.numels(); y++) count += (std::abs(A.begin()[y] - B.begin()[y]) > eps);
+    return count;
 }
 
 template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Reduction>

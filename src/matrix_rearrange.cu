@@ -106,7 +106,8 @@ void concat(Matrix<T> &res, const std::vector<Matrix<T> *> &inputs, Op op)
 }
 
 template <typename T, typename Op>
-__global__ void split_kernel(T **__restrict__ outputs, const T *__restrict__ input, uint32 height, uint32 width, Op op)
+__global__ void split_kernel(T **__restrict__ outputs, const T *__restrict__ input, uint32 height,
+                             uint32 width, Op op)
 {
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -173,5 +174,6 @@ template void concat<FloatT, Identity<FloatT>>(
     Matrix<FloatT> &, std::vector<Matrix<FloatT> *, std::allocator<Matrix<FloatT> *>> const &,
     Identity<FloatT>);
 
-
-template void split<FloatT, Identity<FloatT> >(std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> >&, Matrix<FloatT> const&, Identity<FloatT>);
+template void split<FloatT, Identity<FloatT>>(
+    std::vector<Matrix<FloatT> *, std::allocator<Matrix<FloatT> *>> &, Matrix<FloatT> const &,
+    Identity<FloatT>);

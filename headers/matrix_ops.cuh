@@ -76,11 +76,11 @@ void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op 
 template <typename Ta, typename Tr = Ta, typename Op>
 void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op);
 
-template <typename T, typename Op=Identity<T>>
-void concat(Matrix<T> &res, const std::vector<Matrix<T> *> &inputs, Op op=Op());
+template <typename T, typename Op = Identity<T>>
+void concat(Matrix<T> &res, const std::vector<Matrix<T> *> &inputs, Op op = Op());
 
-template<typename T, typename Op=Identity<T>>
-void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res,  Op op=Op());
+template <typename T, typename Op = Identity<T>>
+void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res, Op op = Op());
 
 //////////////////////////////////////////////////////////////////////////////////////
 // Matrix initializations
@@ -197,8 +197,8 @@ std::ifstream &operator>>(std::ifstream &file, Matrix<T> &mat)
     file >> m >> n;
     if (m != mat.height or n != mat.width)
     {
-        throw_rte_with_backtrace("Dimension do not match for ", mat.name, mat.shape_str, " got ", m,
-                                 "x", n);
+        throw_rte_with_backtrace("Dimension mismatch in reading file for ", mat.name, mat.shape_str,
+                                 " got ", m, "x", n);
     }
     using readT = typename AccumT<T>::type;
     std::copy_n(std::istream_iterator<readT>(file), m * n, mat.begin());
