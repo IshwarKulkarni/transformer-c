@@ -97,3 +97,10 @@ $(TARGET_TEST): $(OBJECTS_TEST) $(OBJECTSCU)
 	@mkdir -p $(TARGETDIR);
 	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@
 	@echo "\033[1;32mBuild complete for $(TARGET_TEST) \033[0m "
+
+valgrind: build
+	valgrind --leak-check=full \
+         --show-leak-kinds=all \
+         --track-origins=yes \
+         --gen-suppressions=all \
+         --suppressions=cuda_supp.sup ./$(TARGET_MAIN)

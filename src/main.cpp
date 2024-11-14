@@ -1,4 +1,3 @@
-#include <iostream>
 #include "../headers/loss_nodes.hpp"
 #include "../headers/matrix_ops.cuh"
 #include "../headers/matrix_ops.hpp"
@@ -133,7 +132,6 @@ int test_attention()
 {
     uint32 Ei = 48;  //  input embedding size
     uint32 Eq = 16;  //  query embedding size
-    // uint32 Ek = Eq;  //  key embedding size, unused
     uint32 Ev = Ei;  //  value, i.e. output embedding size
     uint32 S = 5;    //  sequence length
 
@@ -160,44 +158,6 @@ int test_attention()
     return err;
 }
 
-int test_mmTadd_torch()
-{
-    Matrix<FloatT> A = normal_init<FloatT>(3, 4);
-    Matrix<FloatT> B = normal_init<FloatT>(5, 4);
-    Matrix<FloatT> C(3, 5);
-    Matrix<FloatT> ABt(3, 5);
-    fillCPU(C, 2.5);
-    fillCPU(ABt, 1.5);
-
-    Matrix<FloatT> Correct(ABt.shape());
-
-    A <<= {2.212206363678, 1.163078665733,  0.774003803730,  0.483804613352,
-           1.043440341949, 0.299563467503,  1.183925509453,  0.153025463223,
-           1.891711354256, -1.168814778328, -1.234741449356, 1.558071136475};
-
-    B <<= {2.212206363678,  1.163078665733, 0.774003803730,  0.483804613352,  1.043440341949,
-           0.299563467503,  1.183925509453, 0.153025463223,  1.891711354256,  -1.168814778328,
-           -1.234741449356, 1.558071136475, -1.771028995514, -0.545944571495, -0.451384454966,
-           -2.355629682541, 0.579383552074, 0.541440188885,  -1.856081962585, 2.678506612778};
-
-    Correct <<= {7.0797576904, 3.6471183300, 2.6235396862, -6.0418958664, 1.7707128525,
-                 3.6471183300, 2.6036026478, 0.4003363252, -2.9063849449, -1.0208352804,
-                 2.6235396862, 0.4003363252, 8.8968715668, -5.8250632286, 6.9282684326};
-
-    mmTaddCPU<FloatT>(C, A, B, nullptr);
-    mmTadd<FloatT>(ABt, A, B, nullptr);
-    cudaErrCheck(cudaDeviceSynchronize());
-    if (values_mismatch("mmTaddCPU", C, Correct) == 0)
-    {
-        LOG(GREEN, "Test mmTaddCPU passed");
-    }
-    if (values_mismatch("mmTadd", ABt, Correct) == 0)
-    {
-        LOG(GREEN, "Test mmTadd passed");
-    }
-    return 0;
-}
-
 int test_ProductT()
 {
     Input<> A(3, 4, "A");
@@ -217,21 +177,69 @@ int test_ProductT()
 
 int test_linear()
 {
-    Input<> A(3, 4, "A");
-    Linear<FloatT> L(5, {&A}, "Linear");
+    Input<> x(3, 4, "A");
+    Linear<FloatT> L0(5, {&x}, "Linear0");
+    Linear<FloatT> L1(6, {&L0}, "Linear1");
 
     std::ifstream golden("static_data/linear.txt");
-    golden >> L.W >> A;
+    golden >> L0.W >> L1.W >> x;
 
-    Input<> target(L.shape(), "target");
+    Input<> target(L1.shape(), "target");
     fillCPU(target, 1);
-    L2Loss<FloatT> loss({&L, &target}, "L2Error");
+    L2Loss<FloatT> loss({&L1, &target}, "L2Error");
 
     loss.compute();
     loss.backward();
-    uint32 err = values_mismatch("L.W.grads", L.W.grads, read_csv<FloatT>(golden));
+
+    uint32 err = values_mismatch("L0.W.grads", L0.W.grads, read_csv<FloatT>(golden)) + 
+                 values_mismatch("L1.W.grads", L1.W.grads, read_csv<FloatT>(golden));
     if (err == 0) LOG(GREEN, "Test Linear passed");
     return err;
+}
+
+int time_attention()
+{
+    uint32 Ei = 640;
+    uint32 Eq = 128;
+    uint32 Ev = Ei;
+    uint32 S = 24;
+    Input<> q(S, Ei, "Query"), k(S, Ei, "Key"), v(S, Ei, "Value");
+    Attention<FloatT> A(Eq, Ev, {&q, &k, &v}, "Attention");
+    Input<> target(A.shape(), "target");
+    L2Loss<FloatT> loss({&A, &target}, "L2Error");
+
+    uint32 max_iters = 100;
+    CudaEventTimer timer("Attention");
+    for (uint32 i = 0; i < max_iters; ++i)
+    {
+        loss.compute();
+        loss.backward();
+    }
+    cudaErrCheck(cudaDeviceSynchronize());
+    LOG(GREEN, "Time per iteration: ", timer.stop() / max_iters, "ms");
+    LOG(BLUE, "Allocated memory: ",
+        float64(MatrixIds::get_alloced_bytes()) / (sizeof(FloatT) * (1 << 20)), "MB");
+    return 0;
+}
+
+int test_multihead()
+{
+    uint32 Ei = 48;  //  input embedding size
+    uint32 Eq = 16;  //  query embedding size
+    uint32 Ev = 20;  //  value, i.e. output embedding size for each head
+    uint32 S = 5;    //  sequence length
+    uint32 Eo = Ei;  //  output embedding size, same as input
+
+    Input<> q(S, Ei, "Query"), k(S, Ei, "Key"), v(S, Ei, "Value");
+    MultiHeadAttention<FloatT> M(3, Eq, Ev, Eo, {&q, &k, &v}, "MultiHeadAttention");
+    Input<> target(M.shape(), "target");
+    fillCPU(target, 1);
+    L2Loss<FloatT> loss({&M, &target}, "L2Error");
+
+    loss.compute();
+    loss.backward();
+
+    return 0;
 }
 
 int main()
@@ -239,7 +247,8 @@ int main()
     test_fc();
     test_linear();
     test_ProductT();
-    test_mmTadd_torch();
     test_attention();
+    time_attention();
+    test_multihead();
     return 0;
 }

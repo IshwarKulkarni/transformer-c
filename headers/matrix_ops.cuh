@@ -76,6 +76,12 @@ void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op 
 template <typename Ta, typename Tr = Ta, typename Op>
 void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op);
 
+template <typename T, typename Op=Identity<T>>
+void concat(Matrix<T> &res, const std::vector<Matrix<T> *> &inputs, Op op=Op());
+
+template<typename T, typename Op=Identity<T>>
+void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res,  Op op=Op());
+
 //////////////////////////////////////////////////////////////////////////////////////
 // Matrix initializations
 //////////////////////////////////////////////////////////////////////////////////////

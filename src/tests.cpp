@@ -114,6 +114,46 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
     return -1;
 }
 
+
+int test_mmTadd_torch()
+{
+    Matrix<FloatT> A = normal_init<FloatT>(3, 4);
+    Matrix<FloatT> B = normal_init<FloatT>(5, 4);
+    Matrix<FloatT> C(3, 5);
+    Matrix<FloatT> ABt(3, 5);
+    fillCPU(C, 2.5);
+    fillCPU(ABt, 1.5);
+
+    Matrix<FloatT> Correct(ABt.shape());
+
+    A <<= {2.212206363678, 1.163078665733,  0.774003803730,  0.483804613352,
+           1.043440341949, 0.299563467503,  1.183925509453,  0.153025463223,
+           1.891711354256, -1.168814778328, -1.234741449356, 1.558071136475};
+
+    B <<= {2.212206363678,  1.163078665733, 0.774003803730,  0.483804613352,  1.043440341949,
+           0.299563467503,  1.183925509453, 0.153025463223,  1.891711354256,  -1.168814778328,
+           -1.234741449356, 1.558071136475, -1.771028995514, -0.545944571495, -0.451384454966,
+           -2.355629682541, 0.579383552074, 0.541440188885,  -1.856081962585, 2.678506612778};
+
+    Correct <<= {7.0797576904, 3.6471183300, 2.6235396862, -6.0418958664, 1.7707128525,
+                 3.6471183300, 2.6036026478, 0.4003363252, -2.9063849449, -1.0208352804,
+                 2.6235396862, 0.4003363252, 8.8968715668, -5.8250632286, 6.9282684326};
+
+    mmTaddCPU<FloatT>(C, A, B, nullptr);
+    mmTadd<FloatT>(ABt, A, B, nullptr);
+    cudaErrCheck(cudaDeviceSynchronize());
+    if (test_match(C, Correct, "mmTaddCPU") == 0)
+    {
+        LOG(GREEN, "Test mmTaddCPU passed");
+    }
+    if (test_match(ABt, Correct, "mmTadd") == 0)
+    {
+        LOG(GREEN, "Test mmTadd passed");
+    }
+    return 0;
+}
+
+
 int main(int argc, char const* argv[])
 {
     std::string name = (argc > 1) ? argv[0] : "main";
@@ -190,6 +230,8 @@ int main(int argc, char const* argv[])
         auto S = normal_init<FloatT>(A.height, B.width);
         MatrixT C(A.height, B.width);
         MatrixT D(A.height, B.width);
+
+        test_mmTadd_torch();
 
         mmaddCPU<FloatT>(C, A, B, nullptr);
         mmadd<FloatT>(D, A, B, nullptr);

@@ -246,51 +246,6 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
     cudaErrCheck(cudaGetLastError());
 }
 
-template <typename T, uint32 BLOCK_SIZE, typename Op>
-__global__ void transpose_kernel(T *__restrict__ result, const T *__restrict__ A, uint32 height,
-                                 uint32 width, Op op)
-{
-    __shared__ float32 tile[BLOCK_SIZE][BLOCK_SIZE + 1];
-    uint32 x = blockIdx.x * BLOCK_SIZE + threadIdx.x;
-    uint32 y = blockIdx.y * BLOCK_SIZE + threadIdx.y;
-
-    if (x < width && y < height) tile[threadIdx.y][threadIdx.x] = A[y * width + x];
-
-    __syncthreads();
-
-    x = blockIdx.y * BLOCK_SIZE + threadIdx.x;
-    y = blockIdx.x * BLOCK_SIZE + threadIdx.y;
-
-    T out = op(tile[threadIdx.x][threadIdx.y]);
-
-    if (y < width && x < height) result[y * height + x] = out;
-}
-
-template <typename T, typename Op>
-void transpose(Matrix<T> &res, const Matrix<T> &A, Op op)
-{
-    if (A.height != res.width || A.width != res.height)
-    {
-        LOG(BOLD, RED, "Matrix dimensions do not match for transpose operation: ", A.shape_str,
-            " -> ", res.shape_str);
-        throw_rte_with_backtrace("Dimension mismatch for transpose");
-    }
-
-    if (A.width == 1 and std::is_same<Op, Identity<T>>::value)
-    {
-        fill(res, A.begin());
-        return;
-    }
-
-    constexpr uint32 BLOCK_SIZE = 32;
-    uint32 max_dim = std::max(A.width, A.height);
-    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-
-    dim3 gridDim(iDivUp(max_dim, BLOCK_SIZE), iDivUp(max_dim, BLOCK_SIZE));
-    transpose_kernel<T, BLOCK_SIZE, Op>
-        <<<gridDim, blockDim>>>(res.begin(), A.begin(), A.height, A.width, op);
-    cudaErrCheck(cudaGetLastError());
-}
 
 template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                        Matrix<FloatT> const &,
@@ -299,11 +254,7 @@ template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<
 template void mmadd<FloatT, Identity<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                               Matrix<FloatT> const &, Matrix<FloatT> const *,
                                               Identity<FloatT>);
-template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A, Identity<FloatT>);
 
-template void transpose<FloatT, Exp<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &, Exp<FloatT>);
-
-template void transpose<FloatT, Neg<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &, Neg<FloatT>);
 
 template void mmadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,

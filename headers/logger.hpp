@@ -6,6 +6,7 @@
 #include <iostream>
 #include <ostream>
 #include <set>
+#include <mutex>
 
 namespace Log {
 
@@ -38,7 +39,9 @@ enum class LogLevel  // not used
 
 class Logger
 {
- public:
+    // add mutex for threads here.
+    std::mutex ostream_mtx;
+public:
     void inline tee(const std::string& filename)
     {
         if (!file.is_open())
@@ -50,6 +53,7 @@ class Logger
     template <typename First>
     inline std::ostream& log_v(std::ostream& strm, const First& arg1)
     {
+        std::lock_guard<std::mutex> guard(ostream_mtx);
         return (strm << arg1);
     }
 

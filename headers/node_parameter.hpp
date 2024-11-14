@@ -130,14 +130,15 @@ struct Parameter : Matrix<TW>
         fill(grads, (TG*)nullptr);
     }
     Parameter(uint32_t height, uint32_t width, TW* wValues = nullptr, std::string name = "Param")
-        : Matrix<TW>(normal_init<TW>(height, width)),
+        : Matrix<TW>(xavier_init<TW>(height, width)),
           grads(Matrix<TG>(height, width)),
           name(name),
           updatedWeights(height, width)
     {
-        fill(grads, (TW*)nullptr);
-        fill(*this, wValues);
+        if(wValues)
+            fill(*this, wValues);
         fill(updatedWeights, (TW*)nullptr);
+        fill(grads, (TW*)nullptr);
     }
 
  public:

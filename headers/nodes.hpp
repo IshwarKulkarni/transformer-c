@@ -6,7 +6,7 @@
 #include <driver_types.h>
 #include <cmath>
 #include <cstdlib>
-#include <sstream>
+#include <memory>
 #include "functors.cuh"
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
@@ -18,6 +18,7 @@ template <typename T = FloatT>
 inline void print_ln(const Matrix<T>& m, const std::string& name, const char* file,
                      const int line_num)
 {
+    cudaErrCheck(cudaDeviceSynchronize());
     std::cout << "  " << file << ":" << line_num << " | " << name << " :\n" << m << std::endl;
 }
 
@@ -159,14 +160,16 @@ because W is a matrix of size (out_size, Ei)
 template <typename T = FloatT>
 struct Linear : Node<T>
 {
-    Matrix<T> gradInT;
     Parameter<T, T> W;
+    Matrix<T> gradInT;
+    Matrix<T> gradOut;
 
     // out_size is width of each output row.
     Linear(uint32 out_size, NodePtrs<T>& prev, const std::string& name)
         : Node<T>(prev[0]->height, out_size, prev, name, 1),
+          W(out_size, prev[0]->width, nullptr, name + "_W"),
           gradInT(this->t_shape()),
-          W(out_size, prev[0]->width, nullptr, name + "_W")
+          gradOut(prev[0]->shape())
     {
         this->params.push_back(&W);
     }
@@ -177,7 +180,8 @@ struct Linear : Node<T>
     {
         transpose(gradInT, *gradientIn);
         mmadd<T>(W.grads, gradInT, this->prev(0), nullptr);
-        this->prev_node(0)->backward(&W.grads);
+        mmadd<T>(gradOut, *gradientIn, W, nullptr);
+        this->prev_nodes[0]->backward(&gradOut);
     }
 };
 
@@ -312,19 +316,95 @@ struct Attention : Node<T>
           attention_weights({&qkT}, name + "_Softmax"),
           attention({&attention_weights, &V}, Identity<T>(), name + "_Softmax*V")
     {
+        this->data = attention.data;
+        LOG(BLUE, "Attention output size: ", this->shape_str, " for Q: ", Q.shape_str,
+            " K: ", K.shape_str, " V: ", V.shape_str, " Q.W.shape: ", Q.W.shape_str,
+            " K.W.shape: ", K.W.shape_str, " V.W.shape: ", V.W.shape_str);
     }
 
-    void compute() override
-    {
-        attention.compute();
-        fill(*this, attention);
-    }
+    void compute() override { attention.compute(); }
 
     void forward() override {}
 
     void backward(const Matrix<T>* gradientIn) override { attention.backward(gradientIn); }
 
     uint32 n_trainable_params() override { return attention.n_trainable_params(); }
+};
+
+template <typename T = FloatT>
+struct Concat : Node<T>  // Concatenates two matrices along width
+{
+    std::vector<Matrix<T>> grads;
+    std::vector<Matrix<T>*> prevs_as_mats;
+    std::vector<Matrix<T>*> grad_ptrs;
+    Concat(NodePtrs<T> prevs, const std::string& name)
+        : Node<T>(prevs[0]->height, prevs[0]->width * prevs.size(), prevs, name, prevs.size())
+    {
+        grads.reserve(prevs.size());
+        for (auto p : prevs)
+        {
+            if (p->height != this->height)
+                throw_rte_with_backtrace("Matrix dimensions do not match for Concat between ",
+                                         p->name, p->shape_str, " and ", this->name, p->shape_str);
+            grads.push_back(shaped_like(*p));
+            prevs_as_mats.push_back((Matrix<T>*)p);
+        }
+        LOG(BLUE, "Concatenating ", prevs.size() , " inputs in ", this->name, " each of shape ", prevs[0]->shape_str);
+        grad_ptrs.resize(prevs.size());
+        for (uint32 i = 0; i < grads.size(); ++i) grad_ptrs[i] = &grads[i];
+    }
+
+    void forward() override { concat(*this, prevs_as_mats); }
+
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        split(grad_ptrs, *gradientIn);
+        for (uint32 i = 0; i < this->prev_nodes.size(); ++i)
+            this->prev_node(i)->backward(&grads[i]);
+    }
+};
+
+/*
+MultiHeadAttention:
+Input is a std::vector of 3 matrices, each of size `S x Ei`, where S is the sequence length.
+With `n_heads`, each head projects querys and keys to `S x q_size`
+to generate attention and, values are projected to `S x v_size` to generate each output,
+that are concatenated to `S x n_heads * v_size`, which are then linearly transformed to
+`S x out_size`.
+*/
+template <typename T = FloatT>
+struct MultiHeadAttention : Node<T>
+{
+    std::vector<std::unique_ptr<Attention<T>>> heads;
+    std::unique_ptr<Concat<T>> concat;
+    std::unique_ptr<Linear<T>> linear;
+
+    MultiHeadAttention(uint32 n_heads, uint32 q_size, uint32 v_size, uint32 out_size,
+                       NodePtrs<T>& _qkt, const std::string& name = "MultiHeadAttention")
+        : Node<T>(_qkt[0]->height, out_size, _qkt, name, 3)
+    {
+        std::vector<Node<T>*> head_ptrs;
+        for (uint32 i = 0; i < n_heads; ++i)
+        {
+            auto att = new Attention<T>(q_size, v_size, _qkt, name + "_Head_" + std::to_string(i));
+            heads.emplace_back(att);
+            head_ptrs.push_back(att);
+        }
+        concat = std::make_unique<Concat<T>>(head_ptrs, name + "_Concat");
+        NodePtrs<T> concat_ptr = {concat.get()};
+        linear = std::make_unique<Linear<T>>(out_size, concat_ptr, name + "_Linear");
+        this->data = linear->data;
+
+        LOG(BLUE, "MultiHeadAttention with ", n_heads,
+            " heads, Each Attentions Head's output size is ", this->shape_str,
+            " Linear projection matrix shape: ", linear->W.shape_str, " to output: ", this->shape_str);
+    }
+
+    void compute() override { linear->compute(); }
+
+    void forward() override {}
+
+    void backward(const Matrix<T>* gradientIn) override { linear->backward(gradientIn); }
 };
 
 #endif  // NODES_HPP

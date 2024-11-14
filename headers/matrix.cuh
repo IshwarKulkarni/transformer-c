@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <ios>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <typeinfo>
@@ -52,7 +53,9 @@ struct Matrix
 
     struct CudaDeleter
     {
-        void operator()(T* ptr) { cudaErrCheck(cudaFree(ptr)); }
+        void operator()(T* ptr) { 
+            cudaErrCheck(cudaFree(ptr)); 
+        }
     };
 
     T* CudaAllocator(size_t numElems)
@@ -64,7 +67,7 @@ struct Matrix
         return ptr;
     }
 
-    typedef std::unique_ptr<T[], CudaDeleter> CudaPtr;
+    typedef std::shared_ptr<T[]> CudaPtr;
 
     CudaPtr data;
 
@@ -74,7 +77,7 @@ struct Matrix
           width(width),
           shape_str('[' + std::to_string(height) + "x" + std::to_string(width) + ']'),
           name(name_ + '{' + std::to_string(id) + '}'),
-          data(CudaAllocator(height * width))
+          data(CudaAllocator(height * width), CudaDeleter())
     {
         moveToDevice(0);
     }
@@ -84,10 +87,11 @@ struct Matrix
     {
     }
 
-    Matrix(Matrix<T>&& m) : id(m.id), height(m.height), width(m.width), data(std::move(m.data))
-    {
-        m.data = nullptr;
-    }
+    Matrix(Matrix<T>&& m) = default;
+
+    Matrix() = delete;
+
+    Matrix(const Matrix<T>& m) = delete;
 
     const T& operator()(uint32 y, uint32 x) const
     {
