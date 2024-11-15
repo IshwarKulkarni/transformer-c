@@ -1,6 +1,7 @@
 #ifndef NODES_HPP
 #define NODES_HPP
 
+#include "learning_nodes.hpp"
 #include "matrix.cuh"
 #include "node_parameter.hpp"
 #include "types"
@@ -243,7 +244,11 @@ struct Dropout : Node<T>
 
     void forward() override { dropout(this->prev(0), mask, p); }
 
-    void backward(const Matrix<T>* gradientIn) override { dropout(*gradientIn, mask, -1); }
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        dropout(*gradientIn, mask, -1);
+        this->prev_node(0)->backward(gradientIn);
+    }
 };
 
 #endif  // NODES_HPP

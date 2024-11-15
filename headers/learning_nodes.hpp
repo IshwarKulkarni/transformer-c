@@ -15,8 +15,15 @@
 
 #define print(x, name) print_ln(x, name, __FILE__, __LINE__)
 
+template <typename T = FloatT>
+void print_ln(const Matrix<T>& x, const std::string& name, const char* file, int line)
+{
+    cudaErrCheck(cudaDeviceSynchronize());
+    std::cout << name << " @ " << file << ":" << line << " " << x << std::endl;
+}
+
 /*
-Implements a Fully connected layer with activation, that takes `outW` column vectors of size
+Implements a Fully connected layer with activation, that takes column vectors
 as inputs and produces `outW` column vectors as output, each of size `outH`;
 Here's an equivalent python code:
 def Linear(x, W, b, Activation_):
@@ -41,16 +48,16 @@ struct FullyConnected : public Node<T>
 
  public:
     // outW is default 1 => Vector transform, > 1 is batch of input vectors
-    FullyConnected(uint32 inH, uint32 outH, uint32 outW, NodePtrs<T> inputs, bool bias = true,
+    FullyConnected(uint32 out_size, NodePtrs<T> inputs, bool bias = true,
                    const std::string& name_ = "Linear")
-        : Node<T>(outH, outW, inputs, name_, 1),
-          W(outH, inH, nullptr, this->name + "_W"),
-          b(outH, 1, nullptr, this->name + "_b"),
-          actGrad(outH, outW),
-          actGxGradIn(outH, outW),
-          actGxGradIn1D(outH, 1),
-          retGradient1D(inH, 1),  // gradient sum from all input Columns
-          WtTranspose(inH, outH),
+        : Node<T>(out_size, inputs[0]->width, inputs, name_, 1),
+          W(out_size, inputs[0]->height, this->name + "_W"),
+          b(out_size, 1, this->name + "_b"),
+          actGrad(this->shape()),
+          actGxGradIn(this->shape()),
+          actGxGradIn1D(out_size, 1),
+          retGradient1D(inputs[0]->height, 1),  // gradient sum from all input Columns
+          WtTranspose(W.t_shape()),
           useBias(bias)
     {
         this->params.push_back(&W);
@@ -118,7 +125,7 @@ struct Linear : Node<T>
     // out_size is width of each output row.
     Linear(uint32 out_size, NodePtrs<T>& prev, const std::string& name)
         : Node<T>(prev[0]->height, out_size, prev, name, 1),
-          W(out_size, prev[0]->width, nullptr, name + "_W"),
+          W(out_size, prev[0]->width, name + "_W"),
           gradInT(this->t_shape()),
           gradOut(prev[0]->shape())
     {
@@ -131,6 +138,59 @@ struct Linear : Node<T>
     {
         transpose(gradInT, *gradientIn);
         mmadd<T>(W.grads, gradInT, this->prev(0), nullptr);
+        mmadd<T>(gradOut, *gradientIn, W, nullptr);
+        this->prev_nodes[0]->backward(&gradOut);
+    }
+};
+
+/*
+Implements a torch.Linear with Bias, y = Dropout(Act(X @ W^T + b))
+*/
+template <typename T = FloatT, typename Act = Identity<T>>
+struct LinearBiasAct : Node<T>
+{
+    Parameter<T, T> W;
+    Parameter<T, T> b;
+    Matrix<T> actGrad;  // gradient of activation ( i.e. backward(output))
+    Matrix<T> gradInT;
+    Matrix<T> gradOut;
+    bool useBias;
+
+    using Forward = typename Act::forward;
+    using Backward = typename Act::backward;
+
+    LinearBiasAct(uint32 out_size, NodePtrs<T>& prev, bool useBias, const std::string& name)
+        : Node<T>(prev[0]->height, out_size, prev, name, 1),
+          W(out_size, prev[0]->width, name + "_W"),
+          b(1, out_size, name + "_b"),
+          actGrad(this->t_shape()),
+          gradInT(this->t_shape()),
+          gradOut(prev[0]->shape()),
+          useBias(useBias)
+    {
+        this->params.push_back(&W);
+
+        if (!useBias)
+            b.data = nullptr;
+        else
+            this->params.push_back(&b);
+
+        LOG(BLUE, "LinearBiasAct: ", this->name, this->shape_str, " for W: ", W.shape_str,
+            ", b: ", b.shape_str, " useBias:", useBias, " for input: ", prev[0]->name,
+            prev[0]->shape_str);
+    }
+
+    void forward() override
+    {
+        Matrix<T>* b_ptr = useBias ? &b : nullptr;
+        mmTadd<T, Forward>(*this, this->prev(0), W, b_ptr);
+    }
+
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        transpose(gradInT, *gradientIn, Backward());
+        mmadd<T>(W.grads, gradInT, this->prev(0), nullptr);
+        if (useBias) reduce_sum(b.grads, gradInT);
         mmadd<T>(gradOut, *gradientIn, W, nullptr);
         this->prev_nodes[0]->backward(&gradOut);
     }

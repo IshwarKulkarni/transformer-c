@@ -7,7 +7,7 @@ using float16 = half;
 using float32 = float;
 using float64 = double;
 
-using FloatT = float32;
+using FloatT = float64;
 
 using uint32 = unsigned int;
 using int32 = int;

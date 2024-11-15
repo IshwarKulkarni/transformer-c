@@ -253,4 +253,10 @@ template void split<FloatT, Identity<FloatT>>(
     std::vector<Matrix<FloatT> *, std::allocator<Matrix<FloatT> *>> &, Matrix<FloatT> const &,
     Identity<FloatT>);
 
-template void dropout<FloatT>(Matrix<FloatT> &, Matrix<bool> &, FloatT);
+template void dropout<FloatT>(Matrix<FloatT> &, Matrix<bool> &, float32);
+
+template void transpose<FloatT, TanH<FloatT>::TanhB>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                     TanH<FloatT>::TanhB);
+
+template void transpose<FloatT, Sigmoid<FloatT>::SigmoidB>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                           Sigmoid<FloatT>::SigmoidB);

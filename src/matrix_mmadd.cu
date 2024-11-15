@@ -277,3 +277,7 @@ template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, DividebBy<FloatT>>>
 template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>(
     Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, Matrix<FloatT> const *,
     Composition<FloatT, Neg<FloatT>, Identity<FloatT>>);
+
+template void mmadd<FloatT, GELU<FloatT>::GELUF>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                 Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                                 GELU<FloatT>::GELUF);

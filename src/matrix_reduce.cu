@@ -265,7 +265,8 @@ void reduce_kernel_launcher(const T *A, T *result, ReduceOp op, uint32 n_reducti
 {
     if (n_outputs != n_reductions)
     {
-        throw_rte_with_backtrace("Number of outputs must be equal to number of reductions");
+        throw_rte_with_backtrace("Number of outputs must be equal to number of reductions ",
+                                 n_outputs, " != ", n_reductions);
     }
     else if (aspan <= 8 and n_reductions <= 16)
     {
@@ -330,7 +331,7 @@ void reduce_column_vec(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp,
             throw_rte_with_backtrace("A is scalar consider copying instead");
         }
         throw_rte_with_backtrace("Invalid dimensions for column-reduction ", A.shape_str, " to ",
-                                 result.shape_str, " or invalid postProcess");
+                                 result.shape_str);
     }
     reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, 1, A.height, 1, identity,
                            postProcess);
@@ -355,6 +356,18 @@ void reduce(Matrix<T> &result, const Matrix<T> &A, ReduceOp reduceOp, T identity
         }
         throw_rte_with_backtrace("Invalid dimensions for row-reduction ", A.shape_str, " to ",
                                  result.shape_str, " or invalid postProcess");
+    }
+
+    if (result.height == 1)  // allow reducing a matrix to a row vector
+    {
+        if (result.width != A.height)
+        {
+            throw_rte_with_backtrace("Invalid dimensions for row-reduction ", A.shape_str, " to ",
+                                     result.shape_str);
+        }
+        reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, A.width, A.width, A.width,
+                               identity, postProcess);
+        return;
     }
     reduce_kernel_launcher(A.begin(), result.begin(), reduceOp, A.height, A.width, result.height,
                            identity, postProcess);

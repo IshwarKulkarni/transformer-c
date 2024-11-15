@@ -125,3 +125,7 @@ template void mmTadd<FloatT, DividebBy<FloatT>>(Matrix<FloatT> &, Matrix<FloatT>
 template void mmTadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>(
     Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, Matrix<FloatT> const *,
     Composition<FloatT, Neg<FloatT>, Identity<FloatT>>);
+
+template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                                  TanH<FloatT>::TanhF);

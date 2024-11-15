@@ -207,6 +207,11 @@ struct TanH
     } backward;
 };
 
+/*
+cdf = 0.5 * (1 + torch.erf(data/2.0**0.5))
+return data * cdf
+
+*/
 template <typename T>
 struct GELU
 {
@@ -214,16 +219,16 @@ struct GELU
     {
         __host__ __device__ inline T operator()(T a) const
         {
-            return 0.5 * a * (1 + tanh(sqrt(2 / M_PI) * (a + 0.044715 * a * a * a)));
+            return a * 0.5 * (1 + erff(a / sqrtf(2)));
         }
     } forward;
 
     typedef struct GELUB
     {
-        __host__ __device__ inline T operator()(T a) const
+        GELUB() = delete;  // broken
+        __host__ __device__ inline T operator()(T x) const
         {
-            T t = tanh(0.0356774 * a * a * a);
-            return 0.5 * (1 + t + a * (1 - t * t));
+            return 0.5 * (1 + erff(x / sqrtf(2))) + x * (1 / sqrtf(2 * M_PI)) * expf(-0.5 * x * x);
         }
     } backward;
 };
@@ -296,6 +301,24 @@ template <typename T>
 struct FunctorName<WeightUpdate<T>>
 {
     static const char *name() { return "WeightUpdate"; }
+};
+
+template <typename T>
+struct FunctorName<TanH<T>>
+{
+    static const char *name() { return "TanH"; }
+};
+
+template <typename T>
+struct FunctorName<Relu<T>>
+{
+    static const char *name() { return "Relu"; }
+};
+
+template <typename T>
+struct FunctorName<Sigmoid<T>>
+{
+    static const char *name() { return "Sigmoid"; }
 };
 
 #endif

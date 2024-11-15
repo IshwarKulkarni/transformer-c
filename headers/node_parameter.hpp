@@ -32,7 +32,7 @@ struct Node : Matrix<T>
     }
 
     virtual void
-    compute()  // calls compute on all previous nodes to populate their output, then calls forward
+    compute()  // call compute on all previous nodes to populate their outputs, then call forward
     {
         for (auto& p : prev_nodes)
         {
@@ -113,13 +113,12 @@ struct Parameter : Matrix<TW>
         std::swap(this->data, updatedWeights.data);
         fill(grads, (TG*)nullptr);
     }
-    Parameter(uint32_t height, uint32_t width, TW* wValues = nullptr, std::string name = "Param")
+    Parameter(uint32_t height, uint32_t width, std::string name = "Param")
         : Matrix<TW>(xavier_init<TW>(height, width)),
           grads(Matrix<TG>(height, width)),
           name(name),
           updatedWeights(height, width)
     {
-        if (wValues) fill(*this, wValues);
         fill(updatedWeights, (TW*)nullptr);
         fill(grads, (TW*)nullptr);
     }

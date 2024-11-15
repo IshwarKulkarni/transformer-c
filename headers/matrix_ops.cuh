@@ -71,10 +71,10 @@ template <typename T, typename Op = Identity<T>>
 void transpose(Matrix<T> &res, const Matrix<T> &A, Op op = Op());
 
 template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Op>
-void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op);
+void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op = Op());
 
 template <typename Ta, typename Tr = Ta, typename Op>
-void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op);
+void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op = Op());
 
 template <typename T, typename Op = Identity<T>>
 void concat(Matrix<T> &res, const std::vector<Matrix<T> *> &inputs, Op op = Op());
@@ -337,7 +337,14 @@ bool check_mmTadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb
             " -> Result: ", result.shape_str);
         throw_rte_with_backtrace("Dimension mismatch");
     }
-    if ((C and C->shape() != result.shape()))
+    if (C == nullptr) return true;
+
+    // check if C is broadcastable
+    bool C_shape_valid = C->shape() == result.shape() or
+                         (C->height == 1 and C->width == result.width) or
+                         (C->width == 1 and C->height == result.height);
+
+    if (!C_shape_valid)
     {
         LOG(RED, "Dimension mismatch in mmTadd: Result: ", result.shape_str,
             " & C: ", C->shape_str);

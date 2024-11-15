@@ -26,7 +26,7 @@ inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool 
     if (abort) throw_rte_with_backtrace("CUDA ERROR")
 }
 
-typedef struct MatrixIds
+typedef struct MatrixInitUitls
 {
     template <typename T>
     static uint32 get(uint32 height, uint32 width)
@@ -37,10 +37,10 @@ typedef struct MatrixIds
     static uint32 get_alloced_bytes() { return alloced_byes; }
 
  private:
-    MatrixIds() = delete;
+    MatrixInitUitls() = delete;
     static uint32 id;
     static uint32 alloced_byes;
-} MatrixIds;
+} MatrixInitUitls;
 
 template <typename T>
 struct Matrix
@@ -65,7 +65,7 @@ struct Matrix
     CudaPtr data;
 
     Matrix(uint32 height, uint32 width, const std::string& name_ = "Matrix")
-        : id(MatrixIds::get<T>(height, width)),
+        : id(MatrixInitUitls::get<T>(height, width)),
           height(height),
           width(width),
           shape_str('[' + std::to_string(height) + "x" + std::to_string(width) + ']'),

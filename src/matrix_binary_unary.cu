@@ -146,3 +146,11 @@ template void binary_apply<FloatT, FloatT, FloatT, CrossEntropy<FloatT, FloatT>>
 
 template void unary_apply<FloatT, FloatT, Sign<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                         Sign<FloatT>);
+
+template void unary_apply<FloatT, FloatT, GELU<FloatT>::GELUB>(Matrix<FloatT> &,
+                                                               Matrix<FloatT> const &,
+                                                               GELU<FloatT>::GELUB);
+
+template void unary_apply<FloatT, FloatT, GELU<FloatT>::GELUF>(Matrix<FloatT> &,
+                                                               Matrix<FloatT> const &,
+                                                               GELU<FloatT>::GELUF);

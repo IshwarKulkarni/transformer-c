@@ -13,13 +13,13 @@ int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const Matrix<
     {
         LOG(RED, BOLD, test_name, " mismatch at ", mismatches, " locations, for  ", matrix.name,
             matrix.shape_str, " with eps: ", eps);
-        // LOG(RED, matrix, RESET, " and with expected");
-        // LOG(GREEN, expected);
+        LOG(RED, matrix, RESET, " and with expected");
+        LOG(GREEN, expected);
         return 1;
     }
     else
     {
-        LOG(YELLOW, test_name, " passed matching ", matrix.name, matrix.shape_str);
+        // LOG(YELLOW, test_name, " passed matching ", matrix.name, matrix.shape_str);
     }
     return 0;
 }
@@ -32,8 +32,8 @@ int test_fc()
     uint32 inner = 5;
     Input<> x(xh, xw, "x");
 
-    FullyConnected<FloatT, Sigmoid<FloatT>> L0(xh, inner, xw, {&x}, true, "Linear-L0");
-    FullyConnected<FloatT, TanH<FloatT>> L1(inner, th, xw, {&L0}, true, "Linear-L1");
+    FullyConnected<FloatT, Sigmoid<FloatT>> L0(inner, {&x}, true, "Linear-L0");
+    FullyConnected<FloatT, TanH<FloatT>> L1(th, {&L0}, true, "Linear-L1");
     SoftmaxDim0<FloatT> S({&L1}, "Softmax-Dim0");
     Input<> t(S.shape(), "target");
     CrossEntropyLoss<FloatT> loss({&t, &S}, "L2Error");
@@ -41,20 +41,18 @@ int test_fc()
     fillCPU(x, 1);
     fillCPU(t, 5);
 
-    Matrix<FloatT> W0_grad = Matrix<FloatT>(L0.W.grads.shape());
-    Matrix<FloatT> b0_grad = Matrix<FloatT>(L0.b.grads.shape());
-    Matrix<FloatT> W1_grad = Matrix<FloatT>(L1.W.grads.shape());
-    Matrix<FloatT> b1_grad = Matrix<FloatT>(L1.b.grads.shape());
-
     std::ifstream golden("static_data/fc.txt");
-    golden >> L0.W >> L0.b >> L1.W >> L1.b >> W0_grad >> b0_grad >> W1_grad >> b1_grad;
+    golden >> x >> L0.W >> L0.b >> L1.W >> L1.b;
 
     loss.compute();
     loss.backward();
 
-    uint32 err = values_mismatch("Linear-L0.W", L0.W.grads, W0_grad) +
-                 values_mismatch("Linear-L1.W", L1.W.grads, W1_grad) +
-                 values_mismatch("Linear-L1.b", L1.b.grads, b1_grad);
+    print(loss, "Loss");
+
+    uint32 err = values_mismatch("Linear-L0.W", L0.W.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("Linear-L0.b", L0.b.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("Linear-L1.W", L1.W.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("Linear-L1.b", L1.b.grads, read_csv<FloatT>(golden));
 
     if (err == 0) LOG(GREEN, "Test FC passed");
     return err;
@@ -227,7 +225,7 @@ int time_attention()
     cudaErrCheck(cudaDeviceSynchronize());
     LOG(GREEN, "Time per iteration: ", timer.stop() / max_iters, "ms");
     LOG(BLUE, "Allocated memory: ",
-        float64(MatrixIds::get_alloced_bytes()) / (sizeof(FloatT) * (1 << 20)), "MB");
+        float64(MatrixInitUitls::get_alloced_bytes()) / (sizeof(FloatT) * (1 << 20)), "MB");
     return 0;
 }
 
@@ -251,8 +249,9 @@ int test_multihead()
     return 0;
 }
 
-int test_dropout(uint32 h, uint32 w, FloatT p)
+int test_dropout(FloatT p)
 {
+    uint32 h = 100, w = 100;
     Matrix<FloatT> A(h, w);
     fillCPU(A, 1);
     Matrix<bool> mask(A.shape());
@@ -266,23 +265,77 @@ int test_dropout(uint32 h, uint32 w, FloatT p)
     dropout(B, mask, -1);
     cudaErrCheck(cudaDeviceSynchronize());
     uint32 sumB = std::accumulate(B.begin(), B.end(), 0);
-    if (sumB != sum or std::abs(FloatT(sum)/A.numels() + p - 1) > 0.02)
+    if (sumB != sum or std::abs(FloatT(sum) / A.numels() + p - 1) > 0.02)
     {
-        LOG(RED, "Dropout failed: ", sum, " vs ", sumB, " or ", sum/A.numels(), " vs ", p);
+        LOG(RED, "Dropout failed: ", sum, " vs ", sumB, " or ", sum / A.numels(), " vs ", p);
         return -1;
     }
     LOG(GREEN, "Dropout passed");
     return 0;
 }
 
+int test_gelu()
+{
+    Input<> input(3, 4, "input");
+    FullyConnected<FloatT, TanH<FloatT>> L(4, {&input}, true, "Linear");
+    Input<> target(L.shape(), "target");
+    L2Loss<FloatT> loss({&L, &target}, "L2Error");
+
+    fillCPU(target, 1);
+    std::ifstream golden("static_data/gelu.txt");
+    golden >> input >> L.W >> L.b;
+
+    loss.compute();
+    loss.backward();
+
+    uint32 err = values_mismatch("Output", L, read_csv<FloatT>(golden)) +
+                 values_mismatch("L.W.grads", L.W.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("L.b.grads", L.b.grads, read_csv<FloatT>(golden));
+
+    if (err == 0) LOG(GREEN, "Test GELU passed");
+    return 0;
+}
+
+int test_linearb()
+{
+    uint32 Ei = 3;
+    uint32 Sl = 4;
+    uint32 I1 = 5;
+    uint32 I2 = 6;
+    Input<> x(Sl, Ei, "x");
+    LinearBiasAct<FloatT, Sigmoid<FloatT>> L0(I1, {&x}, true, "Linear-L0");
+    LinearBiasAct<FloatT, TanH<FloatT>> L1(I2, {&L0}, true, "Linear-L1");
+
+    std::ifstream golden("static_data/linearb.txt");
+    golden >> x >> L0.W >> L0.b >> L1.W >> L1.b;
+
+    Input<> t(L1.shape(), "target");
+    fillCPU(t, 1);
+    L2Loss<> loss({&L1, &t}, "L2Error");
+
+    loss.compute();
+    loss.backward();
+    cudaErrCheck(cudaDeviceSynchronize());
+
+    uint32 err = values_mismatch("Output", L1, read_csv<FloatT>(golden)) +
+                 values_mismatch("L1.W.grads", L1.W.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("L1.b.grads", L1.b.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("L0.W.grads", L0.W.grads, read_csv<FloatT>(golden)) +
+                 values_mismatch("L0.b.grads", L0.b.grads, read_csv<FloatT>(golden));
+
+    if (err == 0) LOG(GREEN, "Test LinearBiasAct passed");
+    return err;
+}
+
 int main()
 {
-    //test_fc();
-    //test_linear();
-    //test_ProductT();
-    //test_attention();
-    //time_attention();
-    //test_multihead();
-    test_dropout(100, 100, 0.25);
+    // test_fc();
+    // test_linear();
+    // test_ProductT();
+    // test_attention();
+    // time_attention();
+    // test_multihead();
+    // test_dropout(0.25);
+    test_linearb();
     return 0;
 }
