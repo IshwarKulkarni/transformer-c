@@ -23,172 +23,37 @@ void print_ln(const Matrix<T>& x, const std::string& name, const char* file, int
 }
 
 /*
-Implements a Fully connected layer with activation, that takes column vectors
-as inputs and produces `outW` column vectors as output, each of size `outH`;
-Here's an equivalent python code:
-def Linear(x, W, b, Activation_):
-    assert x.shape[1] == W.shape[0]
-    return Activatation_(torch.mm(W, x) + b)
+Implements torch.Linear with Bias, y = Act(X @ W^T + b)
+X: stack of row vectors, W: weight matrix, b: bias vector, Act: activation function
 */
-template <typename T = FloatT, typename ActivationT = IdentityActivation<T>>
-struct FullyConnected : public Node<T>
-{
-    Parameter<T, T> W;
-    Parameter<T, T> b;
-    using Forward = typename ActivationT::forward;
-    using Backward = typename ActivationT::backward;
-
- private:
-    Matrix<T> actGrad;        // gradient of activation ( i.e. backward(output))
-    Matrix<T> actGxGradIn;    // temp for dEdy * dydz
-    Matrix<T> actGxGradIn1D;  // 1D version of actGxGradIn
-    Matrix<T> retGradient1D;  // temp for W transpose * dEdy
-    Matrix<T> WtTranspose;    // temp for W transpose
-    bool useBias;
-
- public:
-    // outW is default 1 => Vector transform, > 1 is batch of input vectors
-    FullyConnected(uint32 out_size, NodePtrs<T> inputs, bool bias = true,
-                   const std::string& name_ = "Linear")
-        : Node<T>(out_size, inputs[0]->width, inputs, name_, 1),
-          W(out_size, inputs[0]->height, this->name + "_W"),
-          b(out_size, 1, this->name + "_b"),
-          actGrad(this->shape()),
-          actGxGradIn(this->shape()),
-          actGxGradIn1D(out_size, 1),
-          retGradient1D(inputs[0]->height, 1),  // gradient sum from all input Columns
-          WtTranspose(W.t_shape()),
-          useBias(bias)
-    {
-        this->params.push_back(&W);
-        this->params.push_back(&b);
-    }
-
-    void forward() override
-    {
-        Matrix<T>& x = this->prev(0);
-        const auto* bias = useBias ? &b : nullptr;
-        mmadd<T, Forward>(*this, W, x, bias);
-    }
-
-    // gradientIn: gradient from "next" node,
-    // returns gradient from "prev" node if it exists, otherwise returns gradient of this node
-    void backward(const Matrix<T>* gradientIn) override
-    {
-        //  for W gradient is:  gradientIn * backward(output) * inputT
-        Matrix<T>* temp = this;
-        if (!std::is_same<Backward, Identity<T>>::value)
-        {
-            unary_apply(actGrad, *this, Backward());  // backward(output)
-            temp = &actGrad;
-        }
-
-        binary_apply(actGxGradIn, *gradientIn, *temp,
-                     Mul<T>());  // a = gradientIn x backward(output)
-        mmTadd<T>(W.grads, actGxGradIn, this->prev(0), nullptr);  // a @ input
-
-        temp = actGxGradIn.width > 1 ? &actGxGradIn1D : &actGxGradIn;
-
-        // for b gradient is: gradientIn * backward(output)
-        if (actGxGradIn.width > 1)
-        {
-            reduce_mean(*temp, actGxGradIn);
-            if (useBias) unary_apply(b.grads, *temp, MultiplyBy<T>(actGxGradIn.width));
-        }
-        else if (useBias)
-        {
-            fill(b.grads, *temp);
-        }
-
-        transpose(WtTranspose, W);
-        mmadd<T>(retGradient1D, WtTranspose, *temp, nullptr);
-        this->prev_nodes[0]->backward(&retGradient1D);
-    }
-};
-
-/*
-Implements a torch.Linear, y = x @ W^T (no Bias).
-def Linear(x, W):
-    assert x.shape[1] == W.shape[1]
-    return torch.mm(x, W.t())
-expectation is that x is a (height-wise)batch of row vectors, each size Ei, Size:(batch_size, Ei)
-and produce a matrix of size (batch_size, out_size)
-because W is a matrix of size (out_size, Ei)
-*/
-template <typename T = FloatT>
+template <typename T = FloatT, typename Act = IdentityActivation<T>>
 struct Linear : Node<T>
 {
     Parameter<T, T> W;
-    Matrix<T> gradInT;
-    Matrix<T> gradOut;
-
-    // out_size is width of each output row.
-    Linear(uint32 out_size, NodePtrs<T>& prev, const std::string& name)
-        : Node<T>(prev[0]->height, out_size, prev, name, 1),
-          W(out_size, prev[0]->width, name + "_W"),
-          gradInT(this->t_shape()),
-          gradOut(prev[0]->shape())
-    {
-        this->params.push_back(&W);
-    }
-
-    void forward() override { mmTadd<T>(*this, this->prev(0), W, nullptr); }
-
-    void backward(const Matrix<T>* gradientIn) override
-    {
-        transpose(gradInT, *gradientIn);
-        mmadd<T>(W.grads, gradInT, this->prev(0), nullptr);
-        mmadd<T>(gradOut, *gradientIn, W, nullptr);
-        this->prev_nodes[0]->backward(&gradOut);
-    }
-};
-
-/*
-Implements a torch.Linear with Bias, y = Dropout(Act(X @ W^T + b))
-*/
-template <typename T = FloatT, typename Act = Identity<T>>
-struct LinearBiasAct : Node<T>
-{
-    Parameter<T, T> W;
     Parameter<T, T> b;
-    Matrix<T> actGrad;  // gradient of activation ( i.e. backward(output))
     Matrix<T> gradInT;
     Matrix<T> gradOut;
     bool useBias;
+    typename Act::forward ActForward;
+    typename Act::backward ActBackward;
 
-    using Forward = typename Act::forward;
-    using Backward = typename Act::backward;
-
-    LinearBiasAct(uint32 out_size, NodePtrs<T>& prev, bool useBias, const std::string& name)
-        : Node<T>(prev[0]->height, out_size, prev, name, 1),
-          W(out_size, prev[0]->width, name + "_W"),
+    Linear(uint32 out_size, Node<T>* prev, bool useBias, const std::string& name)
+        : Node<T>(prev->height, out_size, {prev}, name, 1),
+          W(out_size, prev->width, name + "_W"),
           b(1, out_size, name + "_b"),
-          actGrad(this->t_shape()),
           gradInT(this->t_shape()),
-          gradOut(prev[0]->shape()),
+          gradOut(prev->shape()),
           useBias(useBias)
     {
         this->params.push_back(&W);
-
-        if (!useBias)
-            b.data = nullptr;
-        else
-            this->params.push_back(&b);
-
-        LOG(BLUE, "LinearBiasAct: ", this->name, this->shape_str, " for W: ", W.shape_str,
-            ", b: ", b.shape_str, " useBias:", useBias, " for input: ", prev[0]->name,
-            prev[0]->shape_str);
+        if (useBias) this->params.push_back(&b);
     }
 
-    void forward() override
-    {
-        Matrix<T>* b_ptr = useBias ? &b : nullptr;
-        mmTadd<T, Forward>(*this, this->prev(0), W, b_ptr);
-    }
+    void forward() override { mmTadd(*this, this->prev(0), W, useBias ? &b : nullptr, ActForward); }
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        transpose(gradInT, *gradientIn, Backward());
+        transpose(gradInT, *gradientIn, ActBackward);
         mmadd<T>(W.grads, gradInT, this->prev(0), nullptr);
         if (useBias) reduce_sum(b.grads, gradInT);
         mmadd<T>(gradOut, *gradientIn, W, nullptr);
@@ -197,9 +62,9 @@ struct LinearBiasAct : Node<T>
 };
 
 /* Implementes the scaled dot product attention mechanism
- * https://arxiv.org/pdf/1706.03762.pdf with single head
- * Here's an equivalent python code:
-def Atten(q_, k_, v_, q_size, v_size):  #q_ `emb_size`d rows vectors
+https://arxiv.org/pdf/1706.03762.pdf with single head
+Here's an equivalent python code:
+def Atten(q_, k_, v_):  #q_ `emb_size`d rows vectors
     Q = torch.nn.Parameter(torch.randn(q_size, embed_size))
     K = torch.nn.Parameter(torch.randn(q_size, embed_size))
     V = torch.nn.Parameter(torch.randn(v_size, embed_size))
@@ -222,18 +87,15 @@ struct Attention : Node<T>
     Attention(uint32 q_size, uint32 v_size, NodePtrs<T>& _qkt,
               const std::string& name = "Attention")
         : Node<T>(_qkt[0]->height, v_size, _qkt, name, 3),
-          Q(q_size, {_qkt[0]}, name + "_Q"),
-          K(q_size, {_qkt[1]}, name + "_K"),
-          V(v_size, {_qkt[2]}, name + "_V"),
+          Q(q_size, {_qkt[0]}, false, name + "_Q"),
+          K(q_size, {_qkt[1]}, false, name + "_K"),
+          V(v_size, {_qkt[2]}, false, name + "_V"),
           denom(sqrt(q_size)),
           qkT({&Q, &K}, denom, name + "_Q*K^T"),
           attention_weights({&qkT}, name + "_Softmax"),
           attention({&attention_weights, &V}, Identity<T>(), name + "_Softmax*V")
     {
         this->data = attention.data;
-        LOG(BLUE, "Attention output size: ", this->shape_str, " for Q: ", Q.shape_str,
-            " K: ", K.shape_str, " V: ", V.shape_str, " Q.W.shape: ", Q.W.shape_str,
-            " K.W.shape: ", K.W.shape_str, " V.W.shape: ", V.W.shape_str);
     }
 
     void compute() override
@@ -246,7 +108,12 @@ struct Attention : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override { attention.backward(gradientIn); }
 
-    uint32 n_trainable_params() override { return attention.n_trainable_params(); }
+    void print_desc()
+    {
+        LOG(BLUE, "Attention output size: ", this->shape_str, " for Q: ", Q.shape_str,
+            " K: ", K.shape_str, " V: ", V.shape_str, " Q.W.shape: ", Q.W.shape_str,
+            " K.W.shape: ", K.W.shape_str, " V.W.shape: ", V.W.shape_str);
+    }
 };
 
 /*
@@ -276,15 +143,8 @@ struct MultiHeadAttention : Node<T>
             head_ptrs.push_back(att);
         }
         concat = std::make_unique<Concat<T>>(head_ptrs, name + "_Concat");
-        NodePtrs<T> concat_ptr = {concat.get()};
-        linear = std::make_unique<Linear<T>>(out_size, concat_ptr, name + "_Linear");
-
+        linear = std::make_unique<Linear<T>>(out_size, concat.get(), false, name + "_Linear");
         this->data = linear->data;
-
-        LOG(BLUE, "MultiHeadAttention with ", n_heads,
-            " heads, Each Attentions Head's output size is ", this->shape_str,
-            " Linear projection matrix shape: ", linear->W.shape_str,
-            " to output: ", this->shape_str);
     }
 
     void compute() override { linear->compute(); }
@@ -292,6 +152,14 @@ struct MultiHeadAttention : Node<T>
     void forward() override {}
 
     void backward(const Matrix<T>* gradientIn) override { linear->backward(gradientIn); }
+
+    void print_desc()
+    {
+        LOG(BLUE, "MultiHeadAttention with ", heads.size(),
+            " heads, Each Attentions Head's output size is ", this->shape_str,
+            " Linear projection matrix shape: ", linear->W.shape_str,
+            " to output: ", this->shape_str);
+    }
 };
 
 #endif  // LEARNING_NODES_HPP

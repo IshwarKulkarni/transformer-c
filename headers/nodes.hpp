@@ -1,7 +1,6 @@
 #ifndef NODES_HPP
 #define NODES_HPP
 
-#include "learning_nodes.hpp"
 #include "matrix.cuh"
 #include "node_parameter.hpp"
 #include "types"
@@ -200,8 +199,6 @@ struct Concat : Node<T>  // Concatenates two matrices along width
             grads.push_back(shaped_like(*p));
             prevs_as_mats.push_back((Matrix<T>*)p);
         }
-        LOG(BLUE, "Concatenating ", prevs.size(), " inputs in ", this->name, " each of shape ",
-            prevs[0]->shape_str);
         grad_ptrs.resize(prevs.size());
         for (uint32 i = 0; i < grads.size(); ++i) grad_ptrs[i] = &grads[i];
     }
@@ -213,6 +210,12 @@ struct Concat : Node<T>  // Concatenates two matrices along width
         split(grad_ptrs, *gradientIn);
         for (uint32 i = 0; i < this->prev_nodes.size(); ++i)
             this->prev_node(i)->backward(&grads[i]);
+    }
+
+    void print_desc()
+    {
+        LOG(BLUE, "Concatenating ", this->prev_nodes.size(), " inputs in ", this->name,
+            " each of shape ", this->prev_nodes[0]->shape_str);
     }
 };
 

@@ -24,40 +24,6 @@ int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const Matrix<
     return 0;
 }
 
-int test_fc()
-{
-    uint32 xh = 3;
-    uint32 xw = 4;
-    uint32 th = 2;
-    uint32 inner = 5;
-    Input<> x(xh, xw, "x");
-
-    FullyConnected<FloatT, Sigmoid<FloatT>> L0(inner, {&x}, true, "Linear-L0");
-    FullyConnected<FloatT, TanH<FloatT>> L1(th, {&L0}, true, "Linear-L1");
-    SoftmaxDim0<FloatT> S({&L1}, "Softmax-Dim0");
-    Input<> t(S.shape(), "target");
-    CrossEntropyLoss<FloatT> loss({&t, &S}, "L2Error");
-
-    fillCPU(x, 1);
-    fillCPU(t, 5);
-
-    std::ifstream golden("static_data/fc.txt");
-    golden >> x >> L0.W >> L0.b >> L1.W >> L1.b;
-
-    loss.compute();
-    loss.backward();
-
-    print(loss, "Loss");
-
-    uint32 err = values_mismatch("Linear-L0.W", L0.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("Linear-L0.b", L0.b.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("Linear-L1.W", L1.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("Linear-L1.b", L1.b.grads, read_csv<FloatT>(golden));
-
-    if (err == 0) LOG(GREEN, "Test FC passed");
-    return err;
-}
-
 int test_word2vec()
 {
     const char* filename = "/home/ishwark/word2vecdata//wiki.multi.en.vec";
@@ -165,45 +131,6 @@ int test_attention()
     return err;
 }
 
-int test_ProductT()
-{
-    Input<> A(3, 4, "A");
-    Input<> B(5, 4, "B");
-    Input<> target(3, 5, "target");
-    ProductT<FloatT, DividebBy<FloatT>> P({&A, &B}, DividebBy<FloatT>(5), "ProductT");
-
-    L2Loss<FloatT> loss({&target, &P}, "L2Error");
-
-    fillCPU(A, 1);
-    fillCPU(B, 2);
-    fillCPU(target, 3);
-    loss.compute();
-    loss.backward();
-    return 0;
-}
-
-int test_linear()
-{
-    Input<> x(3, 4, "A");
-    Linear<FloatT> L0(5, {&x}, "Linear0");
-    Linear<FloatT> L1(6, {&L0}, "Linear1");
-
-    std::ifstream golden("static_data/linear.txt");
-    golden >> L0.W >> L1.W >> x;
-
-    Input<> target(L1.shape(), "target");
-    fillCPU(target, 1);
-    L2Loss<FloatT> loss({&L1, &target}, "L2Error");
-
-    loss.compute();
-    loss.backward();
-
-    uint32 err = values_mismatch("L0.W.grads", L0.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("L1.W.grads", L1.W.grads, read_csv<FloatT>(golden));
-    if (err == 0) LOG(GREEN, "Test Linear passed");
-    return err;
-}
-
 int time_attention()
 {
     uint32 Ei = 640;  //  input embedding size
@@ -274,28 +201,6 @@ int test_dropout(FloatT p)
     return 0;
 }
 
-int test_gelu()
-{
-    Input<> input(3, 4, "input");
-    FullyConnected<FloatT, TanH<FloatT>> L(4, {&input}, true, "Linear");
-    Input<> target(L.shape(), "target");
-    L2Loss<FloatT> loss({&L, &target}, "L2Error");
-
-    fillCPU(target, 1);
-    std::ifstream golden("static_data/gelu.txt");
-    golden >> input >> L.W >> L.b;
-
-    loss.compute();
-    loss.backward();
-
-    uint32 err = values_mismatch("Output", L, read_csv<FloatT>(golden)) +
-                 values_mismatch("L.W.grads", L.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("L.b.grads", L.b.grads, read_csv<FloatT>(golden));
-
-    if (err == 0) LOG(GREEN, "Test GELU passed");
-    return 0;
-}
-
 int test_linearb()
 {
     uint32 Ei = 3;
@@ -303,8 +208,8 @@ int test_linearb()
     uint32 I1 = 5;
     uint32 I2 = 6;
     Input<> x(Sl, Ei, "x");
-    LinearBiasAct<FloatT, Sigmoid<FloatT>> L0(I1, {&x}, true, "Linear-L0");
-    LinearBiasAct<FloatT, TanH<FloatT>> L1(I2, {&L0}, true, "Linear-L1");
+    Linear<FloatT, Sigmoid<FloatT>> L0(I1, &x, true, "Linear-L0");
+    Linear<FloatT, TanH<FloatT>> L1(I2, &L0, true, "Linear-L1");
 
     std::ifstream golden("static_data/linearb.txt");
     golden >> x >> L0.W >> L0.b >> L1.W >> L1.b;
@@ -329,13 +234,10 @@ int test_linearb()
 
 int main()
 {
-    // test_fc();
-    // test_linear();
-    // test_ProductT();
-    // test_attention();
-    // time_attention();
-    // test_multihead();
-    // test_dropout(0.25);
+    test_attention();
+    test_multihead();
+    test_dropout(0.25);
     test_linearb();
+    time_attention();
     return 0;
 }
