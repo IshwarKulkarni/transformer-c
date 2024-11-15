@@ -234,4 +234,4 @@ struct MultiHeadAttention : Node<T>
     void backward(const Matrix<T>* gradientIn) override { linear->backward(gradientIn); }
 };
 
-#endif  // NODES_HPP
+#endif  // LEARNING_NODES_HPP

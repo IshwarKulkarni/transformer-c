@@ -82,6 +82,15 @@ void concat(Matrix<T> &res, const std::vector<Matrix<T> *> &inputs, Op op = Op()
 template <typename T, typename Op = Identity<T>>
 void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res, Op op = Op());
 
+// ```
+//    if  0<p<=1
+//      res[x,y] = (mask[x, y] = (rand() < drop_prob)) ? 0 : res[x, y];
+//    else:
+//      res[x,y] = A[x,y] * mask[x,y]
+// ```
+template <typename T>
+void dropout(Matrix<T> &res, Matrix<bool> &mask, float32 drop_prob);
+
 //////////////////////////////////////////////////////////////////////////////////////
 // Matrix initializations
 //////////////////////////////////////////////////////////////////////////////////////

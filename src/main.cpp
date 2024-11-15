@@ -5,21 +5,21 @@
 #include "fstream"
 
 int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const Matrix<FloatT>& expected,
-                    FloatT eps = 1e-6)
+                    FloatT eps = FloatT(1e-6))
 {
     cudaErrCheck(cudaDeviceSynchronize());
     uint32 mismatches = sameCPU(matrix, expected, eps);
     if (mismatches)
     {
-        LOG(RED, BOLD, "Test ", test_name, " failed to match at ", mismatches,
-            " locations, for shape ", matrix.shape_str, " with eps: ", eps);
+        LOG(RED, BOLD, test_name, " mismatch at ", mismatches, " locations, for  ", matrix.name,
+            matrix.shape_str, " with eps: ", eps);
         // LOG(RED, matrix, RESET, " and with expected");
         // LOG(GREEN, expected);
         return 1;
     }
     else
     {
-        LOG(YELLOW, "Test ", test_name, " passed");
+        LOG(YELLOW, test_name, " passed matching ", matrix.name, matrix.shape_str);
     }
     return 0;
 }
@@ -145,10 +145,10 @@ int test_attention()
 
     Input<> q(S, Ei, "Query"), k(S, Ei, "Key"), v(S, Ei, "Value");
 
-    Attention<float64> A(Eq, Ev, {&q, &k, &v}, "Attention");
+    Attention<FloatT> A(Eq, Ev, {&q, &k, &v}, "Attention");
     Input<> target(A.shape(), "target");
     fillCPU(target, 1);
-    L2Loss<float64> loss({&A, &target}, "L2Error");
+    L2Loss<FloatT> loss({&A, &target}, "L2Error");
 
     golden >> A.Q.W >> A.K.W >> A.V.W;
     golden >> q >> k >> v;
@@ -251,13 +251,38 @@ int test_multihead()
     return 0;
 }
 
+int test_dropout(uint32 h, uint32 w, FloatT p)
+{
+    Matrix<FloatT> A(h, w);
+    fillCPU(A, 1);
+    Matrix<bool> mask(A.shape());
+    dropout(A, mask, p);
+
+    cudaErrCheck(cudaDeviceSynchronize());
+    FloatT sum = std::accumulate(A.begin(), A.end(), 0);
+
+    Matrix<FloatT> B(h, w);
+    fillCPU(B, 1);
+    dropout(B, mask, -1);
+    cudaErrCheck(cudaDeviceSynchronize());
+    uint32 sumB = std::accumulate(B.begin(), B.end(), 0);
+    if (sumB != sum or std::abs(FloatT(sum)/A.numels() + p - 1) > 0.02)
+    {
+        LOG(RED, "Dropout failed: ", sum, " vs ", sumB, " or ", sum/A.numels(), " vs ", p);
+        return -1;
+    }
+    LOG(GREEN, "Dropout passed");
+    return 0;
+}
+
 int main()
 {
-    // test_fc();
-    // test_linear();
-    // test_ProductT();
-    test_attention();
-    // time_attention();
-    // test_multihead();
+    //test_fc();
+    //test_linear();
+    //test_ProductT();
+    //test_attention();
+    //time_attention();
+    //test_multihead();
+    test_dropout(100, 100, 0.25);
     return 0;
 }

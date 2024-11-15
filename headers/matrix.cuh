@@ -51,11 +51,6 @@ struct Matrix
     const std::string shape_str;
     const std::string name;
 
-    struct CudaDeleter
-    {
-        void operator()(T* ptr) { cudaErrCheck(cudaFree(ptr)); }
-    };
-
     T* CudaAllocator(size_t numElems)
     {
         T* ptr = nullptr;
@@ -75,7 +70,7 @@ struct Matrix
           width(width),
           shape_str('[' + std::to_string(height) + "x" + std::to_string(width) + ']'),
           name(name_ + '{' + std::to_string(id) + '}'),
-          data(CudaAllocator(height * width), CudaDeleter())
+          data(CudaAllocator(height * width), [](T* ptr) { cudaErrCheck(cudaFree(ptr)); })
     {
         moveToDevice(0);
     }
@@ -84,12 +79,6 @@ struct Matrix
         : Matrix(shape.first, shape.second, name_)
     {
     }
-
-    Matrix(Matrix<T>&& m) = default;
-
-    Matrix() = delete;
-
-    Matrix(const Matrix<T>& m) = delete;
 
     const T& operator()(uint32 y, uint32 x) const
     {

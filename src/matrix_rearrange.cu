@@ -1,4 +1,5 @@
 #include "../headers/matrix_ops.cuh"
+#include "curand_kernel.h"
 
 template <typename T, uint32 BLOCK_SIZE, typename Op>
 __global__ void transpose_kernel(T *__restrict__ result, const T *__restrict__ A, uint32 height,
@@ -164,6 +165,80 @@ void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res, Op op)
         <<<gridDim, blockDim>>>(split_matrix_ptrs, res.begin(), shape.first, shape.second, op);
 }
 
+static std::shared_ptr<curandState> dropout_states{};
+static constexpr uint32 Ks = 512;
+static constexpr uint32 DROPOUT_MAX_SIZE = Ks * 1024;
+
+template <typename T>
+__global__ void dropout_kernel(T *__restrict__ mat, bool *__restrict__ mask, uint32 height,
+                               uint32 width, float32 drop_prob, curandState *states)
+{
+    uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
+    uint32 offset = y * width + x;
+
+    if (x >= width || y >= height) return;
+
+    bool dropping = false;
+    if (drop_prob > 0 and drop_prob < 1)  // valid dropout probability, generate
+    {
+        dropping = curand_uniform(&states[offset % DROPOUT_MAX_SIZE]) < drop_prob;
+        mask[offset] = dropping;
+    }
+    else  // else use
+    {
+        dropping = mask[offset];
+    }
+    if (dropping)
+    {
+        mat[offset] = T(0);
+    }
+}
+
+__global__ void init_curand_states(curandState *states, uint32 size, uint32 seed)
+{
+    uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
+    uint32 idx = y * blockDim.x + x;
+    if (idx < size)
+    {
+        curand_init(seed, idx, 0, &states[idx]);
+    }
+}
+
+// ```
+//    if  0<p<=1
+//      res[x,y] = (mask[x, y] = (rand() < drop_prob)) ? 0 : res[x, y];
+//    else:
+//      res[x,y] = res[x,y] * mask[x,y]
+// ```
+template <typename T>
+void dropout(Matrix<T> &mat, Matrix<bool> &mask, float32 drop_prob)
+{
+    if (dropout_states == nullptr)
+    {
+        curandState *_states = nullptr;
+        cudaErrCheck(cudaMallocManaged(&_states, DROPOUT_MAX_SIZE * sizeof(curandState)));
+        dropout_states =
+            std::shared_ptr<curandState>(_states, [](curandState *ptr) { cudaFree(ptr); });
+
+        init_curand_states<<<1024, Ks>>>(_states, DROPOUT_MAX_SIZE, time(NULL));
+        cudaErrCheck(cudaDeviceSynchronize());
+    }
+    auto shape = mat.shape();
+    if (shape != mask.shape())
+    {
+        LOG(BOLD, RED, "Matrix shapes do not match for dropout operation: ", mat.shape_str, " -> ",
+            mask.shape_str);
+        throw_rte_with_backtrace("Dimension mismatch for dropout");
+    }
+
+    dim3 blockDim(32, 32);
+    dim3 gridDim(iDivUp(shape.second, 32), iDivUp(shape.first, 32));
+    dropout_kernel<T><<<gridDim, blockDim>>>(mat.begin(), mask.begin(), mat.height, mat.width,
+                                             drop_prob, dropout_states.get());
+}
+
 template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A, Identity<FloatT>);
 
 template void transpose<FloatT, Exp<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &, Exp<FloatT>);
@@ -177,3 +252,5 @@ template void concat<FloatT, Identity<FloatT>>(
 template void split<FloatT, Identity<FloatT>>(
     std::vector<Matrix<FloatT> *, std::allocator<Matrix<FloatT> *>> &, Matrix<FloatT> const &,
     Identity<FloatT>);
+
+template void dropout<FloatT>(Matrix<FloatT> &, Matrix<bool> &, FloatT);

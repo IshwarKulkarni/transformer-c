@@ -231,4 +231,19 @@ struct Input : Node<T>
     void backward(const Matrix<T>*) override {}
 };
 
+template <typename T>
+struct Dropout : Node<T>
+{
+    Matrix<bool> mask;
+    FloatT p;
+    Dropout(float32 p, NodePtrs<T>& prev, const std::string& name = "Dropout")
+        : Node<T>(prev[0]->shape(), prev, name, 1), mask(prev[0]->shape()), p(p)
+    {
+    }
+
+    void forward() override { dropout(this->prev(0), mask, p); }
+
+    void backward(const Matrix<T>* gradientIn) override { dropout(*gradientIn, mask, -1); }
+};
+
 #endif  // NODES_HPP

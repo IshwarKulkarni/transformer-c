@@ -208,6 +208,27 @@ struct TanH
 };
 
 template <typename T>
+struct GELU
+{
+    typedef struct GELUF
+    {
+        __host__ __device__ inline T operator()(T a) const
+        {
+            return 0.5 * a * (1 + tanh(sqrt(2 / M_PI) * (a + 0.044715 * a * a * a)));
+        }
+    } forward;
+
+    typedef struct GELUB
+    {
+        __host__ __device__ inline T operator()(T a) const
+        {
+            T t = tanh(0.0356774 * a * a * a);
+            return 0.5 * (1 + t + a * (1 - t * t));
+        }
+    } backward;
+};
+
+template <typename T>
 struct IdentityActivation
 {
     typedef Identity<T> forward;
