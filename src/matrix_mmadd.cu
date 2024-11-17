@@ -243,7 +243,6 @@ void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matr
             result.begin(), A.begin(), A.height, A.width, B.begin(), B.width,
             C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
     }
-    cudaErrCheck(cudaGetLastError());
 }
 
 template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<FloatT> const &,

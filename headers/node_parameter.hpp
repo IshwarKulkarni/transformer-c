@@ -7,11 +7,19 @@
 template <typename TW, typename TG>
 struct Parameter;
 
+template <typename T>
+struct Node;
+template <typename T = FloatT>
+using NodePtr = Node<T>*;
+
+template <typename T = FloatT>
+using NodePtrs = std::vector<NodePtr<T>>;
+
 template <typename T = FloatT>
 struct Node : Matrix<T>
 {
-    Node(uint32_t height, uint32_t width, const std::vector<Node<T>*>& prev,
-         const std::string& name_, uint32 prev_count)
+    Node(uint32_t height, uint32_t width, const NodePtrs<T>& prev, const std::string& name_,
+         uint32 prev_count)
         : Matrix<T>(height, width, name_)
     {
         if (prev.size() != prev_count)
@@ -21,12 +29,11 @@ struct Node : Matrix<T>
         {
             if (p == nullptr) throw_rte_with_backtrace("Input node is nullptr");
             prev_nodes.push_back(p);
-            p->next_nodes.push_back(this);
         }
     }
 
-    Node(std::pair<uint32_t, uint32_t> shape, const std::vector<Node<T>*>& prev,
-         const std::string& name_, uint32 prev_count)
+    Node(std::pair<uint32_t, uint32_t> shape, const NodePtrs<T>& prev, const std::string& name_,
+         uint32 prev_count)
         : Node(shape.first, shape.second, prev, name_, prev_count)
     {
     }
@@ -45,19 +52,16 @@ struct Node : Matrix<T>
     virtual void update_weights(FloatT lr)
     {
         for (auto& p : params) p->update(lr);
-        for (auto& n : next_nodes)
+        for (auto& n : prev_nodes)
         {
             n->update_weights(lr);
         }
     }
 
     std::vector<Parameter<T, T>*> params;
-    std::vector<Node<T>*> next_nodes{};
-    std::vector<Node<T>*> prev_nodes{};
+    NodePtrs<T> prev_nodes{};
 
     Matrix<T>& prev(uint32 i) { return *((Matrix<T>*)(prev_nodes[i])); }
-
-    Node<T>* prev_node(uint32 i) { return prev_nodes[i]; }
 
     virtual uint32 n_trainable_params()
     {
@@ -76,14 +80,14 @@ struct Node : Matrix<T>
 
     virtual uint32 n_untrainable_params() { return 0; }
 
-    virtual std::string dot_repr() { return ""; }
+    virtual std::string dot_repr() { return " [label=\"" + this->name + "\"]"; }
 };
 
 template <typename T = FloatT>
-void graph_to_dot(Node<T>* node, std::ostream& os, std::string header = "digraph G")
+void graph_to_dot(NodePtr<T> node, std::ostream& os, std::string header = "digraph G")
 {
     os << header << "{\n";
-    std::vector<Node<T>*> nodes;
+    NodePtrs<T> nodes;
     nodes.push_back(node);
     while (!nodes.empty())
     {
@@ -94,18 +98,15 @@ void graph_to_dot(Node<T>* node, std::ostream& os, std::string header = "digraph
             os << p->id << "->" << n->id << " [label=\"" << p->shape_str << "\"]\n";
             nodes.push_back(p);
         }
-        os << n->id << " [label=\"" << n->name << "\"]\n";
-        os << n->dot_repr();
+        os << n->id << n->dot_repr() << '\n';
     }
     os << "}\n";
 }
 
-template <typename T = FloatT>
-using NodePtrs = const std::vector<Node<T>*>&;
-
 template <typename TW, typename TG = TW>  // weight and gradient
 struct Parameter : Matrix<TW>
 {
+    Matrix<TG> grads;
     void update(float32 lr)
     {
         WeightUpdate<TW, TG> updateFunc(lr);
@@ -114,18 +115,13 @@ struct Parameter : Matrix<TW>
         fill(grads, (TG*)nullptr);
     }
     Parameter(uint32_t height, uint32_t width, std::string name = "Param")
-        : Matrix<TW>(xavier_init<TW>(height, width)),
-          grads(Matrix<TG>(height, width)),
-          name(name),
-          updatedWeights(height, width)
+        : Matrix<TW>(xavier_init<TW>(height, width, name)),
+          grads(height, width, name + "_grads"),
+          updatedWeights(height, width, name + "_updated")
     {
         fill(updatedWeights, (TW*)nullptr);
         fill(grads, (TW*)nullptr);
     }
-
- public:
-    Matrix<TG> grads;
-    const std::string name;
 
  private:
     Matrix<TW> updatedWeights;

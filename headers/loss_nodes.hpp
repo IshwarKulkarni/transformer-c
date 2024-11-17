@@ -8,7 +8,8 @@
 template <typename T = FloatT>
 struct Loss2Node : Node<T>  // 2 input loss node
 {
-    Loss2Node(NodePtrs<T>& prevs, const std::string& name = "Loss") : Node<T>(1, 1, prevs, name, 2)
+    Loss2Node(const NodePtrs<T>& prevs, const std::string& name = "Loss")
+        : Node<T>(1, 1, prevs, name, 2)
     {
         if (this->prev(0).height != this->prev(1).height ||
             this->prev(0).width != this->prev(1).width)
@@ -17,17 +18,22 @@ struct Loss2Node : Node<T>  // 2 input loss node
                 " and input 2: " + this->prev(1).shape_str);
     }
 
-    virtual void backward(const Matrix<T>* null)
+    virtual void backward(const Matrix<T>* null) override
     {
         if (null)
             throw_rte_with_backtrace(
-                "LossNode backward should not be called with a non-null argument");
+                "LossNode backward should not be called with a null argument or call the backward "
+                "with no arguments");
         this->backward();
     }
 
     virtual void backward() = 0;
-};
 
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name + "\", shape=diamond]";
+    }
+};
 /*
 L2 loss computes (Y - Yt)^2 , first input is value, second is target
 */
@@ -40,7 +46,7 @@ struct L2Loss : Loss2Node<T>
     Matrix<T> gradientOut;  // storage for output  of reduction for backward
     MultiplyBy<T> times2ByNumels;
 
-    L2Loss(NodePtrs<T>& inputs, const std::string& name = "L2Loss")
+    L2Loss(const NodePtrs<T>& inputs, const std::string& name = "L2Loss")
         : Loss2Node<T>(inputs, name),
           diff(inputs[0]->shape()),
           nDiff(inputs[0]->shape()),
@@ -161,7 +167,5 @@ struct CrossEntropyLoss : Loss2Node<T>  // y is target, second is y
         return tOverY.numels() + gradientOut.numels() + ce.numels() + temp1d.numels();
     }
 };
-
-typedef L2Loss<FloatT> L2ErrorF;
 
 #endif  // ERROR_NODES_HPP

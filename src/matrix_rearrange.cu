@@ -44,7 +44,6 @@ void transpose(Matrix<T> &res, const Matrix<T> &A, Op op)
     dim3 gridDim(iDivUp(max_dim, BLOCK_SIZE), iDivUp(max_dim, BLOCK_SIZE));
     transpose_kernel<T, BLOCK_SIZE, Op>
         <<<gridDim, blockDim>>>(res.begin(), A.begin(), A.height, A.width, op);
-    cudaErrCheck(cudaGetLastError());
 }
 
 template <typename T, typename Op = Identity<T>>

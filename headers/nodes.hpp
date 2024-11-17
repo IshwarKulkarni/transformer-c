@@ -21,7 +21,7 @@ struct SoftmaxDim0 : Node<T>
     Matrix<T> gradientInT;
     Exp<T> ExpOp;
 
-    SoftmaxDim0(NodePtrs<T>& prev, const std::string& name)
+    SoftmaxDim0(const NodePtrs<T>& prev, const std::string& name)
         : Node<T>(prev[0]->shape(), prev, name, 1),
           exp(prev[0]->t_shape()),
           sumExps(prev[0]->width, 1),
@@ -47,6 +47,12 @@ struct SoftmaxDim0 : Node<T>
         softmax_gradient(gradientOut, softmax, gradientInT);
         this->prev_nodes[0]->backward(&gradientOut);
     }
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name +
+               "\", style=fill, fillcolor=antiquewhite, shape=octagon] ";
+    }
 };
 
 template <typename T = FloatT>
@@ -58,7 +64,7 @@ struct SoftmaxDim1 : Node<T>
     Matrix<T> gradientOutT;
     Exp<T> expOp;
 
-    SoftmaxDim1(NodePtrs<T>& prev, const std::string& name)
+    SoftmaxDim1(const NodePtrs<T>& prev, const std::string& name)
         : Node<T>(prev[0]->shape(), prev, name, 1),
           exp(prev[0]->t_shape()),
           sumExps(prev[0]->width, 1),
@@ -81,6 +87,12 @@ struct SoftmaxDim1 : Node<T>
         softmax_gradient(gradientOut, *this, *gradientIn);
         transpose(gradientOutT, gradientOut);
         this->prev_nodes[0]->backward(&gradientOutT);
+    }
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name +
+               "\", style=fill, fillcolor=antiquewhite, shape=octagon] ";
     }
 };
 
@@ -113,8 +125,14 @@ struct Product : Node<T>
         transpose(aT, this->prev(0), Neg<T>());  // disable this in inference only mode.
         mmTadd(a_grad_in, *gradientIn, this->prev(1), (Matrix<T>*)nullptr, pProcess);
         mmadd(b_grad_in, aT, *gradientIn, (Matrix<T>*)nullptr, pProcessN);
-        this->prev_node(0)->backward(&a_grad_in);
-        this->prev_node(1)->backward(&b_grad_in);
+        this->prev_nodes[0]->backward(&a_grad_in);
+        this->prev_nodes[1]->backward(&b_grad_in);
+    }
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name +
+               "\", style=fill, fillcolor=aquamarine, shape=parallelogram] ";
     }
 };
 
@@ -154,8 +172,14 @@ struct ProductT : Node<T>
         mmadd(a_grad_inN, *gradientIn, this->prev(1), (Matrix<T>*)nullptr, pProcess);
         transpose(gradInT, *gradientIn, Neg<T>());
         mmadd(b_grad_in, gradInT, this->prev(0), (Matrix<T>*)nullptr, pProcessN);
-        this->prev_node(0)->backward(&a_grad_inN);
-        this->prev_node(1)->backward(&b_grad_in);
+        this->prev_nodes[0]->backward(&a_grad_inN);
+        this->prev_nodes[1]->backward(&b_grad_in);
+    }
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name +
+               "\", style=fill, fillcolor=aquamarine, shape=parallelogram] ";
     }
 };
 
@@ -177,12 +201,12 @@ struct Transpose : Node<T>
     void backward(const Matrix<T>* gradientIn) override
     {
         transpose(gradientOut, *gradientIn);
-        this->prev_node(0)->backward(&gradientOut);
+        this->prev_nodes[0]->backward(&gradientOut);
     }
 };
 
 template <typename T = FloatT>
-struct Concat : Node<T>  // Concatenates two matrices along width
+struct Concat : Node<T>  // Concatenates many matrices along width, to produce a wider matrix
 {
     std::vector<Matrix<T>> grads;
     std::vector<Matrix<T>*> prevs_as_mats;
@@ -209,7 +233,7 @@ struct Concat : Node<T>  // Concatenates two matrices along width
     {
         split(grad_ptrs, *gradientIn);
         for (uint32 i = 0; i < this->prev_nodes.size(); ++i)
-            this->prev_node(i)->backward(&grads[i]);
+            this->prev_nodes[i]->backward(&grads[i]);
     }
 
     void print_desc()
@@ -233,6 +257,11 @@ struct Input : Node<T>
     void forward() override {}
 
     void backward(const Matrix<T>*) override {}
+
+    virtual std::string dot_repr()
+    {
+        return " [label=\"" + this->name + "\", pos=\"0, 10!\" shape=cylinder]";
+    }
 };
 
 template <typename T>
@@ -250,7 +279,7 @@ struct Dropout : Node<T>
     void backward(const Matrix<T>* gradientIn) override
     {
         dropout(*gradientIn, mask, -1);
-        this->prev_node(0)->backward(gradientIn);
+        this->prev_nodes[0]->backward(gradientIn);
     }
 };
 

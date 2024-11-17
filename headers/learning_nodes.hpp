@@ -6,7 +6,6 @@
 #include <driver_types.h>
 #include <cmath>
 #include <cstdlib>
-#include <memory>
 #include "functors.cuh"
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
@@ -22,6 +21,14 @@ void print_ln(const Matrix<T>& x, const std::string& name, const char* file, int
     std::cout << name << " @ " << file << ":" << line << " " << x << std::endl;
 }
 
+template <typename T = FloatT>
+struct LinearInputT  // a consolidated input arguments for Linear.
+{
+    uint32 out_size;
+    NodePtr<T> prev;
+    bool useBias;
+    std::string name;
+};
 /*
 Implements torch.Linear with Bias, y = Act(X @ W^T + b)
 X: stack of row vectors, W: weight matrix, b: bias vector, Act: activation function
@@ -37,7 +44,9 @@ struct Linear : Node<T>
     typename Act::forward ActForward;
     typename Act::backward ActBackward;
 
-    Linear(uint32 out_size, Node<T>* prev, bool useBias, const std::string& name)
+    typedef LinearInputT<T> LinearInput;
+
+    Linear(uint32 out_size, NodePtr<T> prev, bool useBias, const std::string& name)
         : Node<T>(prev->height, out_size, {prev}, name, 1),
           W(out_size, prev->width, name + "_W"),
           b(1, out_size, name + "_b"),
@@ -49,6 +58,8 @@ struct Linear : Node<T>
         if (useBias) this->params.push_back(&b);
     }
 
+    Linear(const LinearInput& inp) : Linear(inp.out_size, inp.prev, inp.useBias, inp.name) {}
+
     void forward() override { mmTadd(*this, this->prev(0), W, useBias ? &b : nullptr, ActForward); }
 
     void backward(const Matrix<T>* gradientIn) override
@@ -58,6 +69,11 @@ struct Linear : Node<T>
         if (useBias) reduce_sum(b.grads, gradInT);
         mmadd<T>(gradOut, *gradientIn, W, nullptr);
         this->prev_nodes[0]->backward(&gradOut);
+    }
+
+    std::string dot_repr() override
+    {
+        return " [label=\"" + this->name + "\", shape=rect, style=filled, fillcolor=lightblue]";
     }
 };
 
@@ -75,34 +91,44 @@ def Atten(q_, k_, v_):  #q_ `emb_size`d rows vectors
     s = torch.softmax(qkt, dim=-1)
     return s @ v
  */
-template <typename T = FloatT>
+template <typename T = FloatT, typename ActQ = IdentityActivation<T>, typename ActK = ActQ,
+          typename ActV = ActQ, typename ActOut = IdentityActivation<T>>
 struct Attention : Node<T>
 {
-    Linear<T> Q, K, V;                  // The projection matrices
+    using LinQ = Linear<T, ActQ>;
+    using LinK = Linear<T, ActK>;
+    using LinV = Linear<T, ActV>;
+    using LinQi = typename LinQ::LinearInput;
+    using LinKi = typename LinK::LinearInput;
+    using LinVi = typename LinV::LinearInput;
+
+    Linear<T, ActQ> Q;
+    Linear<T, ActK> K;
+    Linear<T, ActV> V;                  // The projection nodes.
     DividebBy<T> denom;                 // The denominator for scaling, sqrt(emb_size)
     ProductT<T, DividebBy<T>> qkT;      // The product of Q and K^T
     SoftmaxDim1<T> attention_weights;   // The softmax of qkT (along the dim=-1)
     Product<T, Identity<T>> attention;  // Product of Attention Weights and V
 
-    Attention(uint32 q_size, uint32 v_size, NodePtrs<T>& _qkt,
-              const std::string& name = "Attention")
-        : Node<T>(_qkt[0]->height, v_size, _qkt, name, 3),
-          Q(q_size, {_qkt[0]}, false, name + "_Q"),
-          K(q_size, {_qkt[1]}, false, name + "_K"),
-          V(v_size, {_qkt[2]}, false, name + "_V"),
-          denom(sqrt(q_size)),
+    Attention(const LinQi& Qinp, const LinKi& Kinp, const LinVi& Vinp, bool causal = false,
+              std::string name = "Attention")
+        : Node<T>(Qinp.prev->height, Vinp.out_size, {Qinp.prev, Kinp.prev, Vinp.prev}, name, 3),
+          Q(Qinp),
+          K(Kinp),
+          V(Vinp),
+          denom(sqrt(Qinp.out_size)),
           qkT({&Q, &K}, denom, name + "_Q*K^T"),
           attention_weights({&qkT}, name + "_Softmax"),
           attention({&attention_weights, &V}, Identity<T>(), name + "_Softmax*V")
     {
         this->data = attention.data;
+        if (Qinp.out_size != Kinp.out_size)
+            throw_rte_with_backtrace("Q and V output sizes do not match for Attention ",
+                                     Qinp.out_size, " != ", Kinp.out_size);
+        this->prev_nodes = attention.prev_nodes;
     }
 
-    void compute() override
-    {
-        attention.compute();
-        cudaErrCheck(cudaDeviceSynchronize());
-    }
+    void compute() override { attention.compute(); }
 
     void forward() override {}
 
@@ -110,9 +136,13 @@ struct Attention : Node<T>
 
     void print_desc()
     {
-        LOG(BLUE, "Attention output size: ", this->shape_str, " for Q: ", Q.shape_str,
-            " K: ", K.shape_str, " V: ", V.shape_str, " Q.W.shape: ", Q.W.shape_str,
-            " K.W.shape: ", K.W.shape_str, " V.W.shape: ", V.W.shape_str);
+        LOG(BLUE, "Attention output size: ", this->shape_str, " for Q, K: ", Q.shape_str,
+            " V: ", V.shape_str, " Q.W and K.W: ", Q.W.shape_str, " V.W.shape: ", V.W.shape_str);
+    }
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name + "\", shape=rect]";
     }
 };
 
@@ -124,27 +154,38 @@ to generate attention and, values are projected to `S x v_size` to generate each
 that are concatenated to `S x n_heads * v_size`, which are then linearly transformed to
 `S x out_size`.
 */
-template <typename T = FloatT>
+template <typename T = FloatT, typename ActQ = IdentityActivation<T>, typename ActK = ActQ,
+          typename ActV = ActQ, typename OutAct = IdentityActivation<T>>
 struct MultiHeadAttention : Node<T>
 {
-    std::vector<std::unique_ptr<Attention<T>>> heads;
-    std::unique_ptr<Concat<T>> concat;
-    std::unique_ptr<Linear<T>> linear;
+    using Att = Attention<T, ActQ, ActK, ActV>;
+    using LinO = Linear<T, OutAct>;
+    using LinOi = typename LinO::LinearInput;
+    using LinQi = typename Att::LinQi;
+    using LinKi = typename Att::LinKi;
+    using LinVi = typename Att::LinVi;
 
-    MultiHeadAttention(uint32 n_heads, uint32 q_size, uint32 v_size, uint32 out_size,
-                       NodePtrs<T>& _qkt, const std::string& name = "MultiHeadAttention")
-        : Node<T>(_qkt[0]->height, out_size, _qkt, name, 3)
+    std::vector<std::unique_ptr<Att>> heads;
+    std::unique_ptr<Concat<T>> concat;
+    std::unique_ptr<LinO> linear;
+
+    MultiHeadAttention(uint32 num_heads, LinQi Qinp, LinKi Kinp, LinVi Vinp, LinOi Oinp,
+                       const std::string& name = "MultiHeadAttention")
+        : Node<T>(Qinp.prev->height, Oinp.out_size, {Qinp.prev, Kinp.prev, Vinp.prev}, name, 3)
     {
-        std::vector<Node<T>*> head_ptrs;
-        for (uint32 i = 0; i < n_heads; ++i)
+        NodePtrs<T> head_ptrs;
+        for (uint32 i = 0; i < num_heads; ++i)
         {
-            auto att = new Attention<T>(q_size, v_size, _qkt, name + "_Head_" + std::to_string(i));
+            auto att = new Att(Qinp, Kinp, Vinp, name + "_Head_" + std::to_string(i));
             heads.emplace_back(att);
             head_ptrs.push_back(att);
         }
         concat = std::make_unique<Concat<T>>(head_ptrs, name + "_Concat");
-        linear = std::make_unique<Linear<T>>(out_size, concat.get(), false, name + "_Linear");
+        Oinp.prev = concat.get();
+        Oinp.name = name + "_Linear";
+        linear = std::make_unique<LinO>(Oinp);
         this->data = linear->data;
+        this->prev_nodes = linear->prev_nodes;
     }
 
     void compute() override { linear->compute(); }
@@ -156,9 +197,14 @@ struct MultiHeadAttention : Node<T>
     void print_desc()
     {
         LOG(BLUE, "MultiHeadAttention with ", heads.size(),
-            " heads, Each Attentions Head's output size is ", this->shape_str,
-            " Linear projection matrix shape: ", linear->W.shape_str,
-            " to output: ", this->shape_str);
+            " heads; Linear projection matrix shape: ", linear->W.shape_str,
+            " to output: ", this->shape_str, " each attention looks like: ");
+        heads[0]->print_desc();
+    }
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name + "\", shape=box3d]";
     }
 };
 

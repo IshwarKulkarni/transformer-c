@@ -111,20 +111,35 @@ struct rdm
 
 template <class T>
 inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> normal_init(
-    uint32 height, uint32 width, float32 mean = 0.f, float32 std = 1.f)
+    uint32 height, uint32 width, float32 mean = 0.f, float32 std = 1.f, std::string name = "Matrix")
 {
     using gen_type = typename AccumT<T>::type;
     std::normal_distribution<gen_type> dist(mean, std);
-    Matrix<T> out(height, width);
+    Matrix<T> out(height, width, name);
     std::generate(out.begin(), out.end(), [&dist]() { return dist(rdm::gen()); });
     return out;
 }
 
-template <class T>
-inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> xavier_init(
-    uint32 height, uint32 width)
+template <typename T>
+inline void normal_init(Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> &out,
+                        float32 mean = 0.f, float32 std = 1.f)
 {
-    return normal_init<T>(height, width, 0.f, std::sqrt(2.0 / (height + width)));
+    using gen_type = typename AccumT<T>::type;
+    std::normal_distribution<gen_type> dist(mean, std);
+    std::generate(out.begin(), out.end(), [&dist]() { return dist(rdm::gen()); });
+}
+
+template <typename T>
+inline Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> xavier_init(
+    uint32 height, uint32 width, std::string name = "Matrix")
+{
+    return normal_init<T>(height, width, 0.f, std::sqrt(2.0 / (height + width)), name);
+}
+
+template <typename T>
+inline void xavier_init(Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> &out)
+{
+    return normal_init<T>(out, 0.f, std::sqrt(2.0 / (out.height + out.width)));
 }
 
 // uniform random initialization, enabled only for floating point types

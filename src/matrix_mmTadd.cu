@@ -106,7 +106,6 @@ void mmTadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Mat
             result.begin(), A.begin(), A.height, A.width, B.begin(), B.height,
             C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
     }
-    cudaErrCheck(cudaGetLastError());
 }
 
 template void mmTadd<FloatT, Identity<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
