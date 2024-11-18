@@ -114,7 +114,7 @@ static bool read_binary(const std::string& filename, std::vector<WordVecPair>& w
     {
         return false;
     }
-    Timer timer("Reading Binary");
+    Timer timer("Reading Word2Vec Binary");
     uint32 n_words, vec_size, max_word_len;
     file.read((char*)&n_words, sizeof(uint32));
     file.read((char*)&vec_size, sizeof(uint32));

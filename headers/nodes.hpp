@@ -21,13 +21,13 @@ struct SoftmaxDim0 : Node<T>
     Matrix<T> gradientInT;
     Exp<T> ExpOp;
 
-    SoftmaxDim0(const NodePtrs<T>& prev, const std::string& name)
-        : Node<T>(prev[0]->shape(), prev, name, 1),
-          exp(prev[0]->t_shape()),
-          sumExps(prev[0]->width, 1),
-          softmax(prev[0]->t_shape()),
-          gradientOut(prev[0]->shape()),
-          gradientInT(prev[0]->t_shape()),
+    SoftmaxDim0(NodePtr<T> prev, const std::string& name)
+        : Node<T>(prev->shape(), {prev}, name, 1),
+          exp(prev->t_shape()),
+          sumExps(prev->width, 1),
+          softmax(prev->t_shape()),
+          gradientOut(prev->shape()),
+          gradientInT(prev->t_shape()),
           ExpOp(sqrt(this->height))
     {
     }
@@ -51,7 +51,7 @@ struct SoftmaxDim0 : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=fill, fillcolor=antiquewhite, shape=octagon] ";
+               "\", style=filled, fillcolor=antiquewhite, shape=octagon] ";
     }
 };
 
@@ -64,11 +64,11 @@ struct SoftmaxDim1 : Node<T>
     Matrix<T> gradientOutT;
     Exp<T> expOp;
 
-    SoftmaxDim1(const NodePtrs<T>& prev, const std::string& name)
-        : Node<T>(prev[0]->shape(), prev, name, 1),
-          exp(prev[0]->t_shape()),
-          sumExps(prev[0]->width, 1),
-          gradientOut(prev[0]->shape()),
+    SoftmaxDim1(NodePtr<T> prev, const std::string& name)
+        : Node<T>(prev->shape(), {prev}, name, 1),
+          exp(prev->t_shape()),
+          sumExps(prev->width, 1),
+          gradientOut(prev->shape()),
           gradientOutT(gradientOut.t_shape()),
           expOp(sqrt(this->width))
     {
@@ -92,7 +92,7 @@ struct SoftmaxDim1 : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=fill, fillcolor=antiquewhite, shape=octagon] ";
+               "\", style=filled, fillcolor=antiquewhite, shape=octagon] ";
     }
 };
 
@@ -132,7 +132,7 @@ struct Product : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=fill, fillcolor=aquamarine, shape=parallelogram] ";
+               "\", style=filled, fillcolor=aquamarine, shape=parallelogram] ";
     }
 };
 
@@ -179,7 +179,7 @@ struct ProductT : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=fill, fillcolor=aquamarine, shape=parallelogram] ";
+               "\", style=filled, fillcolor=aquamarine, shape=parallelogram] ";
     }
 };
 
@@ -258,9 +258,9 @@ struct Input : Node<T>
 
     void backward(const Matrix<T>*) override {}
 
-    virtual std::string dot_repr()
+    virtual std::string dot_repr() override
     {
-        return " [label=\"" + this->name + "\", pos=\"0, 10!\" shape=cylinder]";
+        return " [label=\"" + this->name + "\", shape=cylinder]";
     }
 };
 
@@ -268,9 +268,13 @@ template <typename T>
 struct Dropout : Node<T>
 {
     Matrix<bool> mask;
-    FloatT p;
-    Dropout(float32 p, NodePtrs<T>& prev, const std::string& name = "Dropout")
-        : Node<T>(prev[0]->shape(), prev, name, 1), mask(prev[0]->shape()), p(p)
+    Matrix<T> gradientOut;
+    const FloatT p;
+    Dropout(float32 p, NodePtr<T> prev, const std::string& name = "Dropout")
+        : Node<T>(prev->shape(), {prev}, name, 1),
+          mask(prev->shape()),
+          gradientOut(this->shape()),
+          p(p)
     {
     }
 
@@ -278,8 +282,9 @@ struct Dropout : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        dropout(*gradientIn, mask, -1);
-        this->prev_nodes[0]->backward(gradientIn);
+        fill(gradientOut, *gradientIn);
+        dropout(gradientOut, mask, -1);
+        this->prev_nodes[0]->backward(&gradientOut);
     }
 };
 

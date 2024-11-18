@@ -107,17 +107,17 @@ void concat(Matrix<T> &res, const std::vector<Matrix<T> *> &inputs, Op op)
 
 template <typename T, typename Op>
 __global__ void split_kernel(T **__restrict__ outputs, const T *__restrict__ input, uint32 height,
-                             uint32 width, Op op)
+                             uint32 width, uint32 num_outputs, Op op)
 {
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
-    uint32 z = blockIdx.z;
-    uint32 num_outputs = gridDim.z;
+    uint32 z = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (x >= width || y >= height) return;
+    if (x >= width || y >= height || z >= num_outputs) return;
     uint32 in_offset =
         (width * num_outputs) * y + z * width + x;  // (larger width) * y + z * width + x
-    outputs[z][y * width + x] = input[in_offset];
+
+    outputs[z][y * width + x] = op(input[in_offset]);
 }
 
 static FloatT **split_matrix_ptrs = nullptr;
@@ -125,10 +125,11 @@ static constexpr uint32 SPLIT_MAX = 128;
 std::mutex split_mtx;
 
 template <typename T, typename Op>
-void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res, Op op)
+void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &input, Op op)
 {
-    std::lock_guard<std::mutex> lock(split_mtx);
-    if (split_matrix_ptrs == nullptr)
+    // std::lock_guard<std::mutex> lock(split_mtx);
+    bool need_alloc = split_matrix_ptrs == nullptr;
+    if (need_alloc)
     {
         cudaErrCheck(cudaMallocManaged(&split_matrix_ptrs, SPLIT_MAX * sizeof(FloatT *)));
     }
@@ -151,21 +152,22 @@ void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res, Op op)
         split_matrix_ptrs[i] = outputs[i]->begin();
     }
 
-    if (shape.first != res.height || shape.second * outputs.size() != res.width)
+    if (shape.first != input.height || shape.second * outputs.size() != input.width)
     {
-        LOG(BOLD, RED, "Matrix dimensions do not match for split operation: ", res.shape_str,
+        LOG(BOLD, RED, "Matrix dimensions do not match for split operation: ", input.shape_str,
             " -> ", shape.first, "x", shape.second);
         throw_rte_with_backtrace("Dimension mismatch for split");
     }
 
-    dim3 blockDim(32, 32);
-    dim3 gridDim(iDivUp(shape.second, 32), iDivUp(shape.first, 32), outputs.size());
-    split_kernel<T, Op>
-        <<<gridDim, blockDim>>>(split_matrix_ptrs, res.begin(), shape.first, shape.second, op);
+    dim3 blockDim(128, 2, 2);
+    dim3 gridDim(iDivUp(shape.second, blockDim.x), iDivUp(shape.first, blockDim.y),
+                 iDivUp(outputs.size(), 2));
+    split_kernel<T, Op><<<gridDim, blockDim>>>(split_matrix_ptrs, input.begin(), shape.first,
+                                               shape.second, outputs.size(), op);
 }
 
 static std::shared_ptr<curandState> dropout_states{};
-static constexpr uint32 Ks = 512;
+static constexpr uint32 Ks = 16;
 static constexpr uint32 DROPOUT_MAX_SIZE = Ks * 1024;
 
 template <typename T>
@@ -259,3 +261,6 @@ template void transpose<FloatT, TanH<FloatT>::TanhB>(Matrix<FloatT> &, Matrix<Fl
 
 template void transpose<FloatT, Sigmoid<FloatT>::SigmoidB>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                            Sigmoid<FloatT>::SigmoidB);
+
+template void transpose<FloatT, Relu<FloatT>::ReluB>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                     Relu<FloatT>::ReluB);

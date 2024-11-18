@@ -76,11 +76,6 @@ struct L2Loss : Loss2Node<T>
         unary_apply(gradientOut, diff, times2ByNumels);
         for (auto& p : this->prev_nodes) p->backward(&gradientOut);
     }
-
-    virtual uint32 n_untrainable_params() override
-    {
-        return diff.numels() + nDiff.numels() + temp1d.numels() + gradientOut.numels();
-    }
 };
 
 template <typename T = FloatT>
@@ -120,15 +115,10 @@ struct L1Loss : Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is target,
         unary_apply(gradientOut, diff, Sign<T>{FloatT(1) / diff.numels()});
         for (auto& p : this->prev_nodes) p->backward(&gradientOut);
     }
-
-    virtual uint32 n_untrainable_params() override
-    {
-        return diff.numels() + nDiff.numels() + temp1d.numels() + gradientOut.numels();
-    }
 };
 
 template <typename T = FloatT>
-struct CrossEntropyLoss : Loss2Node<T>  // y is target, second is y
+struct CrossEntropyLoss : Loss2Node<T>  // first input is target, second is Y
 {
     Matrix<T> tOverY;
     Matrix<T> gradientOut;
@@ -160,11 +150,6 @@ struct CrossEntropyLoss : Loss2Node<T>  // y is target, second is y
     {
         binary_apply(gradientOut, this->prev(0), this->prev(1), NegDiv<T>());
         for (auto& p : this->prev_nodes) p->backward(&gradientOut);
-    }
-
-    virtual uint32 n_untrainable_params() override
-    {
-        return tOverY.numels() + gradientOut.numels() + ce.numels() + temp1d.numels();
     }
 };
 

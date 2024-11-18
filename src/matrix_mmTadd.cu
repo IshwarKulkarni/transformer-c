@@ -88,7 +88,16 @@ void mmTadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Mat
             result.begin(), A.begin(), A.height, A.width, B.begin(), B.height,
             C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
     }
-    else if (A.height <= 1536 and false)
+    else if (A.height <= 1024)
+    {
+        constexpr uint32 BLOCK_SIZE_MM = 8;
+        dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
+        dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.height, BLOCK_SIZE_MM));
+        tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(
+            result.begin(), A.begin(), A.height, A.width, B.begin(), B.height,
+            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
+    }
+    else if (A.height <= 2048)
     {
         constexpr uint32 BLOCK_SIZE_MM = 16;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
@@ -128,3 +137,7 @@ template void mmTadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>
 template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                   Matrix<FloatT> const &, Matrix<FloatT> const *,
                                                   TanH<FloatT>::TanhF);
+
+template void mmTadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                                  Relu<FloatT>::ReluF);

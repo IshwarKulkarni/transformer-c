@@ -34,6 +34,7 @@ typedef struct MatrixInitUitls
         alloced_byes += height * width * sizeof(T);
         return id++;
     }
+    static uint32 peek_id() { return id; }
     static uint32 get_alloced_bytes() { return alloced_byes; }
 
  private:
@@ -72,7 +73,6 @@ struct Matrix
           name(name_ + '{' + std::to_string(id) + '}'),
           data(CudaAllocator(height * width), [](T* ptr) { cudaErrCheck(cudaFree(ptr)); })
     {
-        moveToDevice(0);
     }
 
     Matrix(std::pair<uint32, uint32> shape, const std::string& name_ = "Matrix")
@@ -126,13 +126,13 @@ struct Matrix
                                      shape_str);
         }
     }
+
     void moveToDevice(int32_t device = 0)
     {
         cudaErrCheck(cudaMemAdvise(data.get(), height * width * sizeof(T),
                                    cudaMemAdviseSetPreferredLocation, device));
         cudaErrCheck(cudaMemAdvise(data.get(), height * width * sizeof(T),
                                    cudaMemAdviseSetAccessedBy, device));
-        cudaErrCheck(cudaMemPrefetchAsync(data.get(), height * width * sizeof(T), device));
     }
 };
 

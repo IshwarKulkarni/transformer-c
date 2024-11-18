@@ -4,8 +4,29 @@
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
 
-template <typename TW, typename TG>
-struct Parameter;
+template <typename TW, typename TG = TW>  // weight and gradient
+struct Parameter : Matrix<TW>
+{
+    Matrix<TG> grads;
+    void update(float32 lr)
+    {
+        WeightUpdate<TW, TG> updateFunc(lr);
+        binary_apply(updatedWeights, *this, grads, updateFunc);
+        std::swap(this->data, updatedWeights.data);
+        fill(grads, (TG*)nullptr);
+    }
+    Parameter(uint32_t height, uint32_t width, std::string name = "Param")
+        : Matrix<TW>(xavier_init<TW>(height, width, name)),
+          grads(height, width, name + "_grads"),
+          updatedWeights(height, width, name + "_updated")
+    {
+        fill(updatedWeights, (TW*)nullptr);
+        fill(grads, (TW*)nullptr);
+    }
+
+ private:
+    Matrix<TW> updatedWeights;
+};
 
 template <typename T>
 struct Node;
@@ -63,69 +84,52 @@ struct Node : Matrix<T>
 
     Matrix<T>& prev(uint32 i) { return *((Matrix<T>*)(prev_nodes[i])); }
 
-    virtual uint32 n_trainable_params()
+    virtual uint32 n_trainable_params(std::set<Parameter<T, T>*>& seen = {})
     {
         uint32 total = 0;
+
         for (auto& p : params)
         {
-            LOG('\n', this->name, " ", p->shape_str, " : ", p->numels());
+            if (seen.find(p) != seen.end()) continue;
+            seen.insert(p);
             total += p->numels();
         }
         for (auto& n : prev_nodes)
         {
-            total += n->n_trainable_params();
+            total += n->n_trainable_params(seen);
         }
         return total;
     }
-
-    virtual uint32 n_untrainable_params() { return 0; }
-
     virtual std::string dot_repr() { return " [label=\"" + this->name + "\"]"; }
 };
 
 template <typename T = FloatT>
 void graph_to_dot(NodePtr<T> node, std::ostream& os, std::string header = "digraph G")
 {
-    os << header << "{\n";
     NodePtrs<T> nodes;
     nodes.push_back(node);
+    std::set<std::string> edge_strs;
+    std::set<std::string> node_strs;
+    char edge_buffer[256];
     while (!nodes.empty())
     {
         auto* n = nodes.back();
         nodes.pop_back();
         for (auto* p : n->prev_nodes)
         {
-            os << p->id << "->" << n->id << " [label=\"" << p->shape_str << "\"]\n";
+            snprintf(edge_buffer, 256, "%d -> %d [label=\"%s\", splines=\"ortho\"]\n", p->id, n->id,
+                     p->shape_str.c_str());
+            edge_strs.insert(edge_buffer);
             nodes.push_back(p);
         }
-        os << n->id << n->dot_repr() << '\n';
+        node_strs.insert(std::to_string(n->id) + n->dot_repr());
     }
-    os << "}\n";
+    os << header << "{\n"
+       << "compound=true;\n";
+    for (const auto& edge : edge_strs) os << edge << "\n";
+    for (const auto& node_str : node_strs) os << node_str << "\n";
+    os << "}\n" << std::endl;
 }
-
-template <typename TW, typename TG = TW>  // weight and gradient
-struct Parameter : Matrix<TW>
-{
-    Matrix<TG> grads;
-    void update(float32 lr)
-    {
-        WeightUpdate<TW, TG> updateFunc(lr);
-        binary_apply(updatedWeights, *this, grads, updateFunc);
-        std::swap(this->data, updatedWeights.data);
-        fill(grads, (TG*)nullptr);
-    }
-    Parameter(uint32_t height, uint32_t width, std::string name = "Param")
-        : Matrix<TW>(xavier_init<TW>(height, width, name)),
-          grads(height, width, name + "_grads"),
-          updatedWeights(height, width, name + "_updated")
-    {
-        fill(updatedWeights, (TW*)nullptr);
-        fill(grads, (TW*)nullptr);
-    }
-
- private:
-    Matrix<TW> updatedWeights;
-};
 
 template <typename Ta, typename Tb = Ta>
 std::ostream& operator<<(std::ostream& os, const Parameter<Ta, Tb>& p)
