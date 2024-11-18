@@ -259,3 +259,6 @@ template void transpose<FloatT, TanH<FloatT>::TanhB>(Matrix<FloatT> &, Matrix<Fl
 
 template void transpose<FloatT, Sigmoid<FloatT>::SigmoidB>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                            Sigmoid<FloatT>::SigmoidB);
+
+template void transpose<FloatT, Relu<FloatT>::ReluB>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                     Relu<FloatT>::ReluB);

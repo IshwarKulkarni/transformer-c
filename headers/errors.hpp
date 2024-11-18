@@ -96,7 +96,7 @@ inline void print_backtrace()
 
 #define throw_rte_with_backtrace(...)      \
     {                                      \
-        LOG(__VA_ARGS__);                  \
+        LOG(RED, __VA_ARGS__);             \
         print_backtrace();                 \
         throw std::runtime_error("Error"); \
     }

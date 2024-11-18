@@ -73,7 +73,7 @@ struct Linear : Node<T>
 
     std::string dot_repr() override
     {
-        return " [label=\"" + this->name + "\", shape=rect, style=filled, fillcolor=lightblue]";
+        return " [label=\"" + this->name + "\", shape=octagon, style=filled, fillcolor=lightblue]";
     }
 };
 
@@ -110,7 +110,7 @@ struct Attention : Node<T>
     SoftmaxDim1<T> attention_weights;   // The softmax of qkT (along the dim=-1)
     Product<T, Identity<T>> attention;  // Product of Attention Weights and V
 
-    Attention(const LinQi& Qinp, const LinKi& Kinp, const LinVi& Vinp, bool causal = false,
+    Attention(const LinQi& Qinp, const LinKi& Kinp, const LinVi& Vinp,
               std::string name = "Attention")
         : Node<T>(Qinp.prev->height, Vinp.out_size, {Qinp.prev, Kinp.prev, Vinp.prev}, name, 3),
           Q(Qinp),
@@ -142,7 +142,21 @@ struct Attention : Node<T>
 
     virtual std::string dot_repr() override
     {
-        return " [label=\"" + this->name + "\", shape=rect]";
+        std::stringstream ss;
+        ss << " [label=\"" << this->name << "\", shape=box3d]\n";
+        ss << "subgraph cluster_" << this->id
+           << " {\n"
+              "label = \""
+           << this->name << "\"\n"
+           << Q.id << "\n"
+           << K.id << "\n"
+           << V.id << "\n"
+           << qkT.id << "\n"
+           << attention_weights.id << "\n"
+           << "}\n";
+
+        // return " [label=\"" + this->name + "\", shape=rect]";
+        return ss.str();
     }
 };
 
@@ -170,7 +184,7 @@ struct MultiHeadAttention : Node<T>
     std::unique_ptr<LinO> linear;
 
     MultiHeadAttention(uint32 num_heads, LinQi Qinp, LinKi Kinp, LinVi Vinp, LinOi Oinp,
-                       const std::string& name = "MultiHeadAttention")
+                       std::string name = "MHA")
         : Node<T>(Qinp.prev->height, Oinp.out_size, {Qinp.prev, Kinp.prev, Vinp.prev}, name, 3)
     {
         NodePtrs<T> head_ptrs;
@@ -186,6 +200,14 @@ struct MultiHeadAttention : Node<T>
         linear = std::make_unique<LinO>(Oinp);
         this->data = linear->data;
         this->prev_nodes = linear->prev_nodes;
+    }
+
+    MultiHeadAttention(uint32 num_heads, uint32 out_size, LinQi Qinp, std::string name = "SelfMHA")
+        : MultiHeadAttention(num_heads, {Qinp.out_size, Qinp.prev, Qinp.useBias, "Q_" + Qinp.name},
+                             {Qinp.out_size, Qinp.prev, Qinp.useBias, "K_" + Qinp.name},
+                             {Qinp.out_size, Qinp.prev, Qinp.useBias, "V_" + Qinp.name},
+                             {out_size, nullptr, true, name + "_Linear"})
+    {
     }
 
     void compute() override { linear->compute(); }
@@ -204,7 +226,63 @@ struct MultiHeadAttention : Node<T>
 
     virtual std::string dot_repr() override
     {
-        return " [label=\"" + this->name + "\", shape=box3d]";
+        std::stringstream ss;
+        ss << " [label=\"" << this->name << "_linear\", shape=box3d]\n";
+        ss << "subgraph cluster_" << this->id << " {\nlabel = \"" << this->name << "\"\n";
+        for (auto& h : heads) ss << h->id << "\n";
+        ss << concat->id << "\n" << this->id << "\n}\n";
+        return ss.str();
+    }
+};
+
+template <typename T = FloatT, typename Act1 = IdentityActivation<T>, typename Act2 = Relu<T>>
+struct MLP : Node<T>
+{
+    using Linear1 = Linear<T, Act1>;
+    using Linear2 = Linear<T, Act2>;
+    using Lin1i = typename Linear1::LinearInput;
+    using Lin2i = typename Linear2::LinearInput;
+
+    std::unique_ptr<Dropout<T>> dropout;
+    std::unique_ptr<Linear1> l1;
+    std::unique_ptr<Linear2> l2;
+
+    MLP(Lin1i l1i, Lin2i l2i, FloatT dropout_ratio, const std::string& name = "MLP")
+        : Node<T>(l1i.prev->height, l2i.out_size, {l1i.prev}, name, 1)
+    {
+        if (l2i.prev != nullptr)
+        {
+            throw_rte_with_backtrace(
+                "MLP: Linear2 should not have a previous node (it's assigned to as yet "
+                "non-existent Linear1)");
+        }
+        l1 = std::make_unique<Linear1>(l1i);
+        dropout = std::make_unique<Dropout<T>>(dropout_ratio, l1.get(), name + "_Dropout");
+        l2i.prev = dropout.get();
+        l2 = std::make_unique<Linear2>(l2i);
+
+        this->data = l2->data;
+        this->prev_nodes = l2->prev_nodes;
+    }
+    MLP(uint32 out_size, Lin1i l1i, FloatT dropout_ratio, const std::string& name = "MLP")
+        : MLP(l1i, {out_size, nullptr, false, "Lin2"}, dropout_ratio, name)
+    {
+    }
+
+    void forward() override { l2->forward(); }
+
+    void backward(const Matrix<T>* gradientIn) override { l2->backward(gradientIn); }
+
+    virtual std::string dot_repr() override
+    {
+        std::stringstream ss;
+        ss << " [label=\"" << this->name
+           << "\", shape=doubleoctagon, style=filled, fillcolor=\"#46bfe8\"]\n"
+           << "subgraph cluster_" << this->id << " {\nlabel = \"" << this->name << "\"\n"
+           << l1->id << "\n"
+           << dropout->id << "\n"
+           << this->id << "\n}\n";
+        return ss.str();
     }
 };
 

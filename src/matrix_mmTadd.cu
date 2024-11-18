@@ -128,3 +128,7 @@ template void mmTadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>
 template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                   Matrix<FloatT> const &, Matrix<FloatT> const *,
                                                   TanH<FloatT>::TanhF);
+
+template void mmTadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
+                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,
+                                                  Relu<FloatT>::ReluF);

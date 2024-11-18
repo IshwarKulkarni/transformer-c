@@ -34,6 +34,7 @@ typedef struct MatrixInitUitls
         alloced_byes += height * width * sizeof(T);
         return id++;
     }
+    static uint32 peek_id() { return id; }
     static uint32 get_alloced_bytes() { return alloced_byes; }
 
  private:
