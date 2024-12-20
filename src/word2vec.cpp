@@ -1,8 +1,8 @@
 #include "../headers/word2vec.hpp"
 #include <fstream>
 #include <iostream>
-#include <random>
 #include "../headers/logger.hpp"
+#include "../headers/matrix_ops.hpp"
 #include "../headers/utils.hpp"
 
 using Node = WordVecNode;
@@ -35,22 +35,20 @@ std::ostream& operator<<(std::ostream& os, const WordVecNode& node)
     return os;
 }
 
-FloatT add_noise(Vec300& vec, FloatT mean, FloatT std, uint32* seed)
+FloatT add_noise(Vec300& vec, FloatT mean, FloatT std)
 {
     Vec300 orig = vec;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    if (seed) gen.seed(*seed);
+    auto& gen = rdm::gen();
     std::normal_distribution<FloatT> d(mean, std);
     for (uint32 i = 0; i < N; i++) vec[i] += d(gen);
 
     return l2_dist2(orig, vec);
 }
 
-FloatT add_noise_normal(Vec300& vec, FloatT mean, FloatT std, uint32* seed)
+FloatT add_noise_normal(Vec300& vec, FloatT mean, FloatT std)
 {
     Vec300 orig = vec;
-    add_noise(vec, mean, std, seed);
+    add_noise(vec, mean, std);
     FloatT norm = 0;
     for (uint32 i = 0; i < N; i++) norm += vec[i] * vec[i];
     norm = std::sqrt(norm);

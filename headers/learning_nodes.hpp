@@ -12,15 +12,6 @@
 #include "node_parameter.hpp"
 #include "nodes.hpp"
 
-#define print(x, name) print_ln(x, name, __FILE__, __LINE__)
-
-template <typename T = FloatT>
-void print_ln(const Matrix<T>& x, const std::string& name, const char* file, int line)
-{
-    cudaErrCheck(cudaDeviceSynchronize());
-    std::cout << name << " @ " << file << ":" << line << " " << x << std::endl;
-}
-
 template <typename T = FloatT>
 struct LinearInputT  // a consolidated input arguments for Linear.
 {
@@ -30,32 +21,48 @@ struct LinearInputT  // a consolidated input arguments for Linear.
     std::string name;
 };
 /*
-Implements torch.Linear with Bias, y = Act(X @ W^T + b)
+Implements torch.Linear with Bias and activation, y = Act(X @ W^T + b)
 X: stack of row vectors, W: weight matrix, b: bias vector, Act: activation function
 */
-template <typename T = FloatT, typename Act = IdentityActivation<T>>
+template <typename T = FloatT, typename Act = IActivation<T>>
 struct Linear : Node<T>
 {
     Parameter<T, T> W;
     Parameter<T, T> b;
-    Matrix<T> gradInT;
-    Matrix<T> gradOut;
+    Matrix<T> WGradUpdate = Matrix<T>(W.shape(), this->name + "_WGradUpdate");
+    Matrix<T> bGradUpdate = Matrix<T>(b.shape(), this->name + "_bGradUpdate");
+    Matrix<T> gradInT = Matrix<T>(this->t_shape(), this->name + "_gradInT");
+    Matrix<T> gradientOut;
     bool useBias;
     typename Act::forward ActForward;
     typename Act::backward ActBackward;
 
     typedef LinearInputT<T> LinearInput;
 
-    Linear(uint32 out_size, NodePtr<T> prev, bool useBias, const std::string& name)
-        : Node<T>(prev->height, out_size, {prev}, name, 1),
-          W(out_size, prev->width, name + "_W"),
-          b(1, out_size, name + "_b"),
-          gradInT(this->t_shape()),
-          gradOut(prev->shape()),
+    Linear(uint32 out_width, NodePtr<T> prev, bool useBias, const std::string& name)
+        : Node<T>(prev->height, out_width, {prev}, name, 1),
+          W(out_width, prev->width, name + "_W"),
+          b(1, out_width, name + "_b"),
+          gradientOut(prev->shape(), name + "_gradientOut"),
           useBias(useBias)
     {
         this->params.push_back(&W);
-        if (useBias) this->params.push_back(&b);
+        std::string bias_str = "";
+        if (useBias)
+        {
+            this->params.push_back(&b);
+            fill(b, (T*)nullptr);
+            bias_str = " + " + b.shape_str + "(" + std::to_string(b.numels()) + ")";
+        }
+        LOG(BLUE, this->name, "\t", prev->shape_str, "\t-> ", this->shape_str,
+            "\t|W: ", W.shape_str, "(", W.numels(), ")", bias_str);
+    }
+
+    void init()
+    {
+        auto act = Act();
+        if (dynamic_cast<Relu<T>*>(&act))  // else xavier is default
+            kaiming_init(W);
     }
 
     Linear(const LinearInput& inp) : Linear(inp.out_size, inp.prev, inp.useBias, inp.name) {}
@@ -65,15 +72,38 @@ struct Linear : Node<T>
     void backward(const Matrix<T>* gradientIn) override
     {
         transpose(gradInT, *gradientIn, ActBackward);
-        mmadd<T>(W.grads, gradInT, this->prev(0), nullptr);
-        if (useBias) reduce_sum(b.grads, gradInT);
-        mmadd<T>(gradOut, *gradientIn, W, nullptr);
-        this->prev_nodes[0]->backward(&gradOut);
+        mmadd<T>(WGradUpdate, gradInT, this->prev(0), nullptr);
+
+        W.accumulate_grad(WGradUpdate);
+        if (useBias)
+        {
+            if (gradInT.width > 1)
+            {
+                reduce_sum(bGradUpdate, gradInT);
+                b.accumulate_grad(bGradUpdate);
+            }
+            else
+            {
+                cudaMemcpy(bGradUpdate.data.get(), gradInT.data.get(), gradInT.numels() * sizeof(T),
+                           cudaMemcpyDefault);
+                b.accumulate_grad(bGradUpdate);
+            }
+        }
+        mmadd<T>(gradientOut, *gradientIn, W, nullptr);
+        this->prev_nodes[0]->backward(&gradientOut);
     }
 
     std::string dot_repr() override
     {
-        return " [label=\"" + this->name + "\", shape=octagon, style=filled, fillcolor=lightblue]";
+        auto label = this->name + '\n' + W.shape_str + ':' + std::to_string(W.numels());
+        label += this->useBias ? ('\n' + b.shape_str + ':' + std::to_string(b.numels())) : "";
+        return " [label=\"" + label + "\", shape=octagon, style=filled, fillcolor=lightblue]";
+    }
+
+    void debug_print()
+    {
+        LOG("Debug print for ", this->name, "\n", *this, W, WGradUpdate, gradInT, gradientOut);
+        if (useBias) LOG(b, bGradUpdate);
     }
 };
 
@@ -91,8 +121,8 @@ def Atten(q_, k_, v_):  #q_ `emb_size`d rows vectors
     s = torch.softmax(qkt, dim=-1)
     return s @ v
  */
-template <typename T = FloatT, typename ActQ = IdentityActivation<T>, typename ActK = ActQ,
-          typename ActV = ActQ, typename ActOut = IdentityActivation<T>>
+template <typename T = FloatT, typename ActQ = IActivation<T>, typename ActK = ActQ,
+          typename ActV = ActQ>
 struct Attention : Node<T>
 {
     using LinQ = Linear<T, ActQ>;
@@ -125,10 +155,8 @@ struct Attention : Node<T>
         if (Qinp.out_size != Kinp.out_size)
             throw_rte_with_backtrace("Q and V output sizes do not match for Attention ",
                                      Qinp.out_size, " != ", Kinp.out_size);
-        this->prev_nodes = attention.prev_nodes;
+        this->prev_nodes = {&attention};
     }
-
-    void compute() override { attention.compute(); }
 
     void forward() override {}
 
@@ -142,21 +170,30 @@ struct Attention : Node<T>
 
     virtual std::string dot_repr() override
     {
+        uint32 learnable_count = Q.param_count() + K.param_count() + V.param_count();
         std::stringstream ss;
         ss << " [label=\"" << this->name << "\", shape=box3d]\n";
-        ss << "subgraph cluster_" << this->id
-           << " {\n"
-              "label = \""
-           << this->name << "\"\n"
-           << Q.id << "\n"
-           << K.id << "\n"
-           << V.id << "\n"
-           << qkT.id << "\n"
-           << attention_weights.id << "\n"
-           << "}\n";
 
-        // return " [label=\"" + this->name + "\", shape=rect]";
+        ss << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "\n["
+           << learnable_count << "]\"\n"
+           << '\t' << Q.id << ' ' << K.id << ' ' << V.id << ' ' << qkT.id << '\n'
+           << '\t' << attention_weights.id << '\n'
+           << '\t' << attention.id << '\n'
+           << '\t' << this->id << "\n"
+           << "{rank=same; " << Q.id << ' ' << K.id << ' ' << V.id << " }"
+           << "}\n";  // is attention.
         return ss.str();
+    }
+};
+
+template <typename T = FloatT>
+struct SelfAttention : Attention<T>
+{
+    using LinQi = typename Attention<T>::LinQi;
+    SelfAttention(uint32 out_size, const NodePtr<T> prev, std::string name = "SelfAttention")
+        : Attention<T>({out_size, prev, false, name + "_Q"}, {out_size, prev, false, name + "_K"},
+                       {out_size, prev, false, name + "_V"}, name)
+    {
     }
 };
 
@@ -168,8 +205,8 @@ to generate attention and, values are projected to `S x v_size` to generate each
 that are concatenated to `S x n_heads * v_size`, which are then linearly transformed to
 `S x out_size`.
 */
-template <typename T = FloatT, typename ActQ = IdentityActivation<T>, typename ActK = ActQ,
-          typename ActV = ActQ, typename OutAct = IdentityActivation<T>>
+template <typename T = FloatT, typename OutAct = Sigmoid<T>, typename ActQ = IActivation<T>,
+          typename ActK = ActQ, typename ActV = ActQ>
 struct MultiHeadAttention : Node<T>
 {
     using Att = Attention<T, ActQ, ActK, ActV>;
@@ -202,15 +239,12 @@ struct MultiHeadAttention : Node<T>
         this->prev_nodes = linear->prev_nodes;
     }
 
-    MultiHeadAttention(uint32 num_heads, uint32 out_size, LinQi Qinp, std::string name = "SelfMHA")
-        : MultiHeadAttention(num_heads, {Qinp.out_size, Qinp.prev, Qinp.useBias, "Q_" + Qinp.name},
-                             {Qinp.out_size, Qinp.prev, Qinp.useBias, "K_" + Qinp.name},
-                             {Qinp.out_size, Qinp.prev, Qinp.useBias, "V_" + Qinp.name},
-                             {out_size, nullptr, true, name + "_Linear"})
+    MultiHeadAttention(uint32 num_heads, uint32 out_size, NodePtr<T> prev, std::string name = "MHA")
+        : MultiHeadAttention(
+              num_heads, {out_size, prev, false, "Q_" + name}, {out_size, prev, false, "K_" + name},
+              {out_size, prev, false, "V_" + name}, {out_size, nullptr, false, name + "_Linear"})
     {
     }
-
-    void compute() override { linear->compute(); }
 
     void forward() override {}
 
@@ -227,27 +261,29 @@ struct MultiHeadAttention : Node<T>
     virtual std::string dot_repr() override
     {
         std::stringstream ss;
-        ss << " [label=\"" << this->name << "_linear\", shape=box3d]\n";
-        ss << "subgraph cluster_" << this->id << " {\nlabel = \"" << this->name << "\"\n";
-        for (auto& h : heads) ss << h->id << "\n";
-        ss << concat->id << "\n" << this->id << "\n}\n";
+        ss << " [label=\"" << this->name << '\n'
+           << linear->W.shape_str << ':' << linear->W.numels()
+           << " \", shape=box3d,  style=filled, fillcolor=azure ]\n";
+        ss << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "\"\n";
+        ss << '\t' << concat->id << '\n';
+        ss << '\t' << this->id << "\n}\n";
         return ss.str();
     }
 };
 
-template <typename T = FloatT, typename Act1 = IdentityActivation<T>, typename Act2 = Relu<T>>
-struct MLP : Node<T>
+template <typename T = FloatT, typename Act1 = Relu<T>, typename Act2 = IActivation<T>>
+struct FeedForward : Node<T>
 {
-    using Linear1 = Linear<T, Act1>;
-    using Linear2 = Linear<T, Act2>;
-    using Lin1i = typename Linear1::LinearInput;
-    using Lin2i = typename Linear2::LinearInput;
+    using LinearIn = Linear<T, Act1>;
+    using LinearOut = Linear<T, Act2>;
+    using LinIni = typename LinearIn::LinearInput;
+    using LinOuti = typename LinearOut::LinearInput;
 
+    std::unique_ptr<LinearIn> l_in;
     std::unique_ptr<Dropout<T>> dropout;
-    std::unique_ptr<Linear1> l1;
-    std::unique_ptr<Linear2> l2;
+    std::unique_ptr<LinearOut> l_out;
 
-    MLP(Lin1i l1i, Lin2i l2i, FloatT dropout_ratio, const std::string& name = "MLP")
+    FeedForward(LinIni l1i, LinOuti l2i, FloatT dropout_ratio, const std::string& name = "MLP")
         : Node<T>(l1i.prev->height, l2i.out_size, {l1i.prev}, name, 1)
     {
         if (l2i.prev != nullptr)
@@ -256,33 +292,47 @@ struct MLP : Node<T>
                 "MLP: Linear2 should not have a previous node (it's assigned to as yet "
                 "non-existent Linear1)");
         }
-        l1 = std::make_unique<Linear1>(l1i);
-        dropout = std::make_unique<Dropout<T>>(dropout_ratio, l1.get(), name + "_Dropout");
+        l_in = std::make_unique<LinearIn>(l1i);
+        dropout = std::make_unique<Dropout<T>>(dropout_ratio, l_in.get(), name + "_Dropout");
         l2i.prev = dropout.get();
-        l2 = std::make_unique<Linear2>(l2i);
+        l_out = std::make_unique<LinearOut>(l2i);
 
-        this->data = l2->data;
-        this->prev_nodes = l2->prev_nodes;
+        this->data = l_out->data;
+        this->prev_nodes = {l_out.get()};
     }
-    MLP(uint32 out_size, Lin1i l1i, FloatT dropout_ratio, const std::string& name = "MLP")
-        : MLP(l1i, {out_size, nullptr, false, "Lin2"}, dropout_ratio, name)
+
+    FeedForward(uint32 l1_size, uint32 l2_size, const NodePtr<T> prev, FloatT dropout_ratio,
+                const std::string& name = "MLP")
+        : FeedForward({l1_size, prev, false, name + "_Lin1"},
+                      {l2_size, nullptr, true, name + "_Lin2"}, dropout_ratio, name)
     {
     }
 
-    void forward() override { l2->forward(); }
+    void forward() override {}
 
-    void backward(const Matrix<T>* gradientIn) override { l2->backward(gradientIn); }
+    void backward(const Matrix<T>* gradientIn) override { l_out->backward(gradientIn); }
 
     virtual std::string dot_repr() override
     {
+        uint32 learnable_count = l_in->param_count() + l_out->param_count();
         std::stringstream ss;
         ss << " [label=\"" << this->name
            << "\", shape=doubleoctagon, style=filled, fillcolor=\"#46bfe8\"]\n"
-           << "subgraph cluster_" << this->id << " {\nlabel = \"" << this->name << "\"\n"
-           << l1->id << "\n"
-           << dropout->id << "\n"
-           << this->id << "\n}\n";
+           << "subgraph cluster_" << this->id << "   {\nlabel = \"" << this->name << "\n["
+           << learnable_count << "]\"\n"
+           << '\t' << l_in->id << '\n'
+           << '\t' << dropout->id << '\n'
+           << '\t' << l_out->id << '\n'
+           << '\t' << this->id << "\n}\n";
         return ss.str();
+    }
+
+    void debug_print()
+    {
+        LOG("Debug print for ", this->name);
+        l_in->debug_print();
+        dropout->debug_print();
+        l_out->debug_print();
     }
 };
 

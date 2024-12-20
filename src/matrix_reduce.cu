@@ -415,3 +415,8 @@ template void reduce_column_vec<FloatT, Plus<FloatT, FloatT>, Neg<FloatT>>(Matri
 
 template void softmax_gradient<FloatT>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                        Matrix<FloatT> const &);
+
+template void reduce<FloatT, Plus<FloatT, FloatT>, Loge<FloatT>>(Matrix<FloatT> &,
+                                                                 Matrix<FloatT> const &,
+                                                                 Plus<FloatT, FloatT>, FloatT,
+                                                                 Loge<FloatT>);

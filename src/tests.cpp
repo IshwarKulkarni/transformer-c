@@ -2,6 +2,13 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 #include "../headers/learning_nodes.hpp"
 #include "../headers/logger.hpp"
 #include "../headers/loss_nodes.hpp"
@@ -10,12 +17,6 @@
 #include "../headers/types"
 #include "../headers/utils.hpp"
 #include "../headers/word2vec.hpp"
-
-#include <iomanip>
-#include <iostream>
-#include <map>
-#include <sstream>
-#include <string>
 
 using MatrixT = Matrix<FloatT>;
 
@@ -71,30 +72,37 @@ void run_transpose_timing(const MatrixT& A)
 int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
 {
     FloatT max = std::max(C.numels(), D.numels());
-    FloatT eps = 1e-2 * max;
+    FloatT eps = 1e-6 * max;
     cudaErrCheck(cudaDeviceSynchronize());
 
     // check sizes match
     if (C.height != D.height || C.width != D.width)
     {
-        LOG(RED, msg, "-> Size mismatch for ", C.name, " and ", D.name);
+        LOG(RED, msg, "-> Size mismatch for ", C.name, C.shape_str, " and ", D.name, D.shape_str);
         return -1;
     }
 
-    bool match = sameCPU(D, C, eps);
-    if (match)
+    auto any_nan = std::any_of(D.begin(), D.end(), [](FloatT x) { return std::isnan(x); });
+    if (any_nan)
+    {
+        LOG(RED, msg, " -> D has NaNs");
+        return -1;
+    }
+
+    auto diffs = sameCPU(D, C, eps);
+    if (diffs == 0)
     {
         LOG(GREEN, msg, " -> Match!");
         return 0;
     }
-    LOG(RED, BOLD, msg, " -> Mismatch with eps: ", eps, RESET, RED, ", Writing diff to diff.csv ");
+    LOG(RED, BOLD, msg, " -> Mismatch at ", diffs, " locations out of ", C.numels(),
+        ", with eps: ", eps, RESET, RED, ", Writing diff to diff.csv ");
 
     std::ofstream("C.csv") << C;
     std::ofstream("D.csv") << D;
     std::ofstream diff("diff.csv");
 
     diff << std::setprecision(8);
-    uint32 diffs = 0;
     for (uint32 y = 0; y < D.height; y++)
     {
         for (uint32 x = 0; x < D.width; x++)
@@ -103,7 +111,6 @@ int32 test_match(const MatrixT& C, const MatrixT& D, const char* msg = "")
             auto c = C(y, x);
             if (std::abs(c - d) > eps)
             {
-                diffs++;
                 std::cout << "Mismatch at " << y << ", " << x << " : " << c << ", " << d
                           << std::endl;
                 diff << y << ", " << x << " :\t" << std::setprecision(6) << std::setfill(' ')
@@ -206,7 +213,7 @@ int run_tests(int argc, char const* argv[])
     {
         auto A = init_argv(argv);
         uint32 k = (argc > 4) ? strtoul(argv[4], nullptr, 10) : A.width;
-        auto B = xavier_init<FloatT>(A.width, k);
+        auto B = xavier_uniform_init<FloatT>(A.width, k);
         run_mm_timing(A, B);
     }
     else if (argv[1] == std::string("time_transpose"))
@@ -441,15 +448,15 @@ int run_tests(int argc, char const* argv[])
 static tests:
 */
 
-int values_mismatch(std::string test_name, Matrix<FloatT>& matrix, const Matrix<FloatT>& expected,
-                    FloatT eps = FloatT(1e-6))
+int values_mismatch(std::string test_name, const Matrix<FloatT>& matrix,
+                    const Matrix<FloatT>& expected, FloatT eps = FloatT(1e-6))
 {
     cudaErrCheck(cudaDeviceSynchronize());
     uint32 mismatches = sameCPU(matrix, expected, eps);
     if (mismatches)
     {
-        LOG(RED, BOLD, test_name, " mismatch at ", mismatches, " locations, for  ", matrix.name,
-            matrix.shape_str, " with eps: ", eps);
+        LOG(RED, BOLD, "`", test_name, "` mismatch at ", mismatches, " locations, for  ",
+            matrix.name, matrix.shape_str, " with eps: ", eps);
         LOG(RED, matrix, RESET, " and with expected");
         LOG(GREEN, expected);
         return 1;
@@ -526,7 +533,7 @@ int test_word2vec(const char* filename)
     return 0;
 }
 
-int test_linearb()
+int test_linearb()  // tests 2 Linear layers, softmax and NLL Loss.
 {
     uint32 Ei = 3;
     uint32 Sl = 4;
@@ -536,23 +543,24 @@ int test_linearb()
 
     Linear<FloatT, Sigmoid<FloatT>> L0(LinearInputT<FloatT>{I1, &x, true, "Linear-L0"});
     Linear<FloatT, TanH<FloatT>> L1(LinearInputT<FloatT>{I2, &L0, true, "Linear-L1"});
+    SoftmaxDim1<FloatT> softmax(&L1, "Softmax");
 
     std::ifstream golden("static_data/linearb.txt");
     golden >> x >> L0.W >> L0.b >> L1.W >> L1.b;
 
     Input<> t(L1.shape(), "target");
     fillCPU(t, 1);
-    CrossEntropyLoss<> loss({&L1, &t}, "L2Error");
+    NLLLoss<> loss({&softmax, &t}, "L2Error");
 
     loss.compute();
     loss.backward();
     cudaErrCheck(cudaDeviceSynchronize());
 
     uint32 err = values_mismatch("Output", L1, read_csv<FloatT>(golden)) +
-                 values_mismatch("L1.W.grads", L1.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("L1.b.grads", L1.b.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("L0.W.grads", L0.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("L0.b.grads", L0.b.grads, read_csv<FloatT>(golden));
+                 values_mismatch("L1.W.grads", L1.W.grads(), read_csv<FloatT>(golden)) +
+                 values_mismatch("L1.b.grads", L1.b.grads(), read_csv<FloatT>(golden)) +
+                 values_mismatch("L0.W.grads", L0.W.grads(), read_csv<FloatT>(golden)) +
+                 values_mismatch("L0.b.grads", L0.b.grads(), read_csv<FloatT>(golden));
 
     if (err == 0) LOG(GREEN, "Test LinearBiasAct passed");
     return err;
@@ -566,7 +574,7 @@ int test_attention()
     golden >> Eq >> Ei;
     golden.seekg(0, std::ios::beg);
     uint32 Ev = Ei;  //  value, i.e. output embedding size
-    uint32 S = 10;   //  sequence length
+    uint32 S = 8;    //  sequence length
 
     Input<> q(S, Ei, "Qi"), k(S, Ei, "Ki"), v(S, Ei, "Vi");
 
@@ -587,9 +595,9 @@ int test_attention()
     uint32 err = values_mismatch("Attn. qkt", A.qkT, read_csv<FloatT>(golden)) +
                  values_mismatch("Attn. smx", A.attention_weights, read_csv<FloatT>(golden)) +
                  values_mismatch("Attn. out", A.attention, read_csv<FloatT>(golden)) +
-                 values_mismatch("Q.W.grads", A.Q.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("K.W.grads", A.K.W.grads, read_csv<FloatT>(golden)) +
-                 values_mismatch("V.W.grads", A.V.W.grads, read_csv<FloatT>(golden));
+                 values_mismatch("Q.W.grads", A.Q.W.grads(), read_csv<FloatT>(golden)) +
+                 values_mismatch("K.W.grads", A.K.W.grads(), read_csv<FloatT>(golden)) +
+                 values_mismatch("V.W.grads", A.V.W.grads(), read_csv<FloatT>(golden));
 
     if (err == 0) LOG(GREEN, "Test Attention passed");
     return err;
@@ -627,7 +635,7 @@ int time_attention()
     return 0;
 }
 
-int test_multihead()
+int run_multihead()
 {
     uint32 Ei = 6;   //  input embedding size
     uint32 Eq = 4;   //  query embedding size
@@ -639,14 +647,14 @@ int test_multihead()
     using Sig = Sigmoid<FloatT>;
     using Tan = TanH<FloatT>;
     using MHA = MultiHeadAttention<FloatT, Sig, Sig, Sig, Tan>;
-    xavier_init<FloatT>(q);
-    xavier_init<FloatT>(k);
-    xavier_init<FloatT>(v);
+    xavier_uniform_init<FloatT>(q);
+    xavier_uniform_init<FloatT>(k);
+    xavier_uniform_init<FloatT>(v);
 
     // clang-format off
-    MHA M(3, {Eq, &q, true, "Q"},
-             {Eq, &k, true, "K"},
-             {Ev, &v, true, "V"},
+    MHA M(3, {Eq, &q, true, "MHA_Q"},
+             {Eq, &k, true, "MHA_K"},
+             {Ev, &v, true, "MHA_V"},
              {Eo, nullptr, true, "O"},
              "MultiHeadAttention");
     // clang-format on
@@ -670,44 +678,26 @@ int test_dropout(FloatT p)
 {
     uint32 h = 100, w = 100;
     Matrix<FloatT> A(h, w);
+    Matrix<FloatT> resA(h, w);
     fillCPU(A, 1);
-    Matrix<bool> mask(A.shape());
-    dropout(A, mask, p);
+    Matrix<float32> mask(A.shape());
+    dropout(resA, A, mask, p);
 
     cudaErrCheck(cudaDeviceSynchronize());
-    FloatT sum = std::accumulate(A.begin(), A.end(), 0);
+    FloatT sum = std::accumulate(resA.begin(), resA.end(), 0);
 
     Matrix<FloatT> B(h, w);
     fillCPU(B, 1);
-    dropout(B, mask, -1);
+    Matrix<FloatT> resB(h, w);
+    dropout(resB, B, mask, -1);
     cudaErrCheck(cudaDeviceSynchronize());
-    uint32 sumB = std::accumulate(B.begin(), B.end(), 0);
+    uint32 sumB = std::accumulate(resB.begin(), resB.end(), 0);
     if (sumB != sum or std::abs(FloatT(sum) / A.numels() + p - 1) > 0.02)
     {
         LOG(RED, "Dropout failed: ", sum, " vs ", sumB, " or ", sum / A.numels(), " vs ", p);
         return -1;
     }
     LOG(GREEN, "Dropout passed");
-    return 0;
-}
-
-int test_mlp()
-{
-    Input<> inp1(15, 6, "inp1");
-    LinearInputT<> l1i = {15, &inp1, true, "Lin1"};
-    LinearInputT<> l2i = {5, nullptr, false, "Lin2"};
-    MLP<> mlp(l1i, l2i, 0.25, "MLP1");
-
-    Input<> target(mlp.shape(), "target");
-    L2Loss<> loss({&mlp, &target}, "L2Loss");
-    fillCPU(target, 1);
-
-    xavier_init<FloatT>(inp1);
-    loss.compute();
-    loss.backward();
-
-    std::ofstream dot("mlp.dot");
-    graph_to_dot(&loss, dot);
     return 0;
 }
 
@@ -725,9 +715,349 @@ int test_concat()
     Matrix<FloatT> D(h, 3 * w);
     concat(D, {&A, &B, &C});
 
-    Matrix<FloatT> E(h, 3 * w);
-    fillCPU(E, 1);
-    return test_match(D, E, "Concat");
+    Matrix<FloatT> E(h, w);
+    Matrix<FloatT> F(h, w);
+    Matrix<FloatT> G(h, w);
+
+    std::vector<Matrix<FloatT>*> efg = {&E, &F, &G};
+    split(efg, D, Identity<FloatT>());  // they both work or both fail.
+
+    return test_match(E, A, "Concat A") + test_match(F, B, "Concat B") +
+           test_match(G, C, "Concat C");
 }
 
-int main() { return test_concat(); }
+int train_MLP()  // train to generate a zero vector
+{
+    Input<> inp1(5, 10, "inp1");
+    FeedForward<> Model({5, &inp1, true, "Lin1"}, {3, nullptr, false, "Lin2"}, 0.25, "MLP1");
+    Input<> target(Model.shape(), "target");
+    L2Loss<> loss({&Model, &target}, "L2Loss");
+    fillCPU(target, 0);
+    xavier_uniform_init<FloatT>(inp1);
+    std::ofstream dot("simple.dot");
+    graph_to_dot(&loss, dot);
+
+    uint32 max_iter = 2;
+    for (uint32 i = 0; i < max_iter; i++)
+    {
+        LOG(GREEN, "Iteration: ", i);
+        xavier_uniform_init<FloatT>(inp1);
+        loss.compute();
+        loss.backward();
+        if ((i + 1) % 10 == 0)
+        {
+            std::cout << i << ", " << loss.value() << std::endl;
+        }
+        LOG_SYNC("W1_grads", Model.l_in->W.grads());
+        LOG_SYNC("W1", Model.l_in->W);
+        loss.update_weights(0.01);
+        LOG_SYNC("W1", Model.l_in->W);
+    }
+    return 0;
+}
+
+int test_softmaxDim1()
+{
+    Input<FloatT> x(4, 3, "x");
+    Linear<FloatT> L(5, &x, true, "Linear");
+    SoftmaxDim1<FloatT> S(&L, "Softmax");
+    Input<FloatT> t(S.shape(), "target");
+    L2Loss<FloatT> loss({&S, &t}, "L2Error");
+    // clang-format off
+    x <<= {
+         0.2712765038, -1.2729183435,  0.5026970506,
+         0.4180806875, -0.6394201517, -0.6607707143,
+        -0.1433143616, -0.1043147221, -1.5312546492,
+         0.6318014860, -1.3447675705,  1.4309413433
+    };
+
+    L.W <<= {
+        -0.9390084147,  2.2027332783,  1.1013969183,
+         0.8988130689,  1.0883737803,  0.1770063341,
+        -0.4262194633, -0.1981084794,  0.3587698340,
+        -2.2124066353,  0.9306892753, -1.3067414761,
+        -0.2272174954,  0.8636371493,  0.4374507666
+    };
+    Matrix<FloatT> golden(5, 3);
+    golden <<= {
+        -0.0016302123,  0.0046665790, -0.0011383580,
+        -0.0029686582,  0.0107183568, -0.0030933935,
+         0.0108569972, -0.0288101584,  0.0243558977,
+        -0.0023388953,  0.0013220122, -0.0173543170,
+        -0.0039192275,  0.0121032111, -0.0027698346
+    };
+    // clang-format on
+    fillCPU(t, 1.0);
+    loss.compute();
+    loss.backward();
+    return test_match(L.W.grads(), golden, "SoftmaxDim1");
+}
+
+int test_softmaxDim1_1Row()
+{
+    Input<FloatT> x(1, 3, "x");
+    Linear<FloatT> L(4, &x, true, "Linear");
+    SoftmaxDim1<FloatT> S(&L, "Softmax");
+    Input<FloatT> t(S.shape(), "target");
+    L2Loss<FloatT> loss({&S, &t}, "L2Error");
+
+    Matrix<FloatT> golden_wgrad(4, 3);
+    Matrix<FloatT> golden_bgrad(1, 4);
+    Matrix<FloatT> golden_loss(1, 1);
+    // clang-format off
+    x <<= {
+        -1.3905061483, -0.8152379990, -0.3204376996
+    };
+
+    L.W <<= {
+         0.7377384901, -1.7533630133,  0.6032932401,
+        -0.2519559562, -0.4373176098, -0.5727743506,
+        -3.2022840977,  0.5632690191,  0.2153037637,
+        -2.1961724758, -0.2166298330, -0.7261615992
+    };
+
+    L.b <<= {
+        1.8464213610, 0.2486646771, 0.2778656185, 1.6178737879
+    };
+
+    t <<= {1.0, 0.0, 0.0, 0.0};
+
+    golden_wgrad <<= {
+         0.0334466845,  0.0196094122,  0.0077076815,
+         0.0044421102,  0.0026043588,  0.0010236701,
+         0.0430880412,  0.0252620298,  0.0099295015,
+        -0.0809768289, -0.0474757962, -0.0186608508
+    };
+    golden_bgrad <<= {
+        -0.0240536034, -0.0031945994, -0.0309873074,  0.0582355037
+    };
+    golden_loss <<= {0.3671470284};
+    // clang-format on
+
+    loss.compute();
+    test_match(loss, golden_loss, "SoftmaxDim1Row loss val");
+    loss.backward();
+
+    return test_match(L.W.grads(), golden_wgrad, "SoftmaxDim1");
+}
+
+int test_LSMCELoss1Row()
+{
+    Input<> x(1, 3, "x");
+    Linear<> L(6, &x, true, "Linear");
+    Input<> t(L.shape(), "target");
+    LogSoftmaxCELoss<> loss({&L, &t}, "LogSoftmaxCELoss");
+
+    Matrix<FloatT> golden_wgrad(L.W.shape());
+    Matrix<FloatT> golden_bgrad(L.b.shape());
+    Matrix<FloatT> golden_loss(1, 1);
+    // clang-format off
+    x <<= {
+        -0.6013928056, -1.0122097731, -0.3022692502
+    };
+    t <<= {1.0,  0.0,  0.0,  0.0,  0.0, 0.0 };
+    L.W <<= {
+        -0.3649137020, -0.8900567293, -0.0944025069,
+         0.0525722094,  0.2386320382, -1.5565147400,
+         1.6471320391, -1.0891081095,  1.3290292025,
+         1.1973766088, -0.4995271564,  0.3127064705,
+        -0.0772454813,  0.3426032066, -0.7574429512,
+        -1.5660330057, -1.0804982185, -0.8832487464
+    };
+    L.b <<= {
+       -1.2276864052,  0.6963071823,  1.1649594307, -1.4343018532, -1.4460918903,  0.4119544625
+    };
+    golden_wgrad <<= {
+         0.5752448440,  0.9681998491,  0.2891268730,
+        -0.0691427961, -0.1163748726, -0.0347522274,
+        -0.0678710490, -0.1142343953, -0.0341130309,
+        -0.0049493262, -0.0083302567, -0.0024876071,
+        -0.0062032328, -0.0104407184, -0.0031178400,
+        -0.4270784259, -0.7188196182, -0.2146561593
+    };
+    golden_bgrad <<= {
+        -0.9565209746,  0.1149711013,  0.1128564402,  0.0082297726,  0.0103147775,  0.7101488709 
+    };
+    golden_loss <<= {3.1354768276};
+    // clang-format on
+
+    loss.compute();
+    loss.backward();
+
+    test_match(loss, golden_loss, "CrossEntropy loss");
+    return test_match(L.W.grads(), golden_wgrad, "LogSoftmaxCE Dim1");
+}
+
+int test_LSMCELoss()
+{
+    Input<> x(6, 3, "x");
+    Linear<> L(6, &x, true, "Linear");
+    Input<> t(L.shape(), "target");
+    LogSoftmaxCELoss<> loss({&L, &t}, "LogSoftmaxCELoss");
+
+    Matrix<FloatT> golden_wgrad(L.W.shape());
+    Matrix<FloatT> golden_bgrad(L.b.shape());
+    Matrix<FloatT> golden_loss(1, 1);
+    // clang-format off
+    x <<= {
+        -0.8173339963, -0.5555685163,  0.9999132752,
+         1.1166944504,  1.0762836933, -0.0662285835,
+         0.1315269619,  0.1680933982,  0.0178458858,
+        -0.1281662285,  0.9534983039,  0.3553397954,
+         0.2120935619, -0.3377707005, -0.3536095917,
+        -0.2729077935, -0.1459826231, -0.2311491221
+    };
+    t <<= {
+        1.0,  0.0,  0.0,  0.0,  0.0, 0.0,
+        0.0,  1.0,  0.0,  0.0,  0.0, 0.0,
+        0.0,  0.0,  1.0,  0.0,  0.0, 0.0,
+        0.0,  0.0,  0.0,  1.0,  0.0, 0.0,
+        0.0,  0.0,  0.0,  0.0,  1.0, 0.0,
+        0.0,  0.0,  0.0,  0.0,  0.0, 1.0,
+    };
+    L.W <<= {
+        -1.2645164728, -0.4344386458,  0.3690196276,
+         1.3373314142, -0.9179764986, -0.9615129232,
+        -0.8896581531,  1.0617526770, -0.3206027448,
+        -0.3137696981,  0.4300913513,  0.1496529877,
+        -0.2459997088, -1.4636487961, -0.7755851746,
+        -0.2594423592, -1.9790446758,  2.4860122204
+    };
+    L.b <<= {
+       -0.1278416216,  1.8899183273, -0.5093404651,  0.2017536014,  1.3686803579,  0.3851935565
+    };
+    golden_wgrad <<= {
+         0.7591180205,  0.6232376099, -0.9292756319,
+        -0.1800749302, -0.1901088506, -0.1818061471,
+        -0.1129867509,  0.0903223008,  0.0508168563,
+         0.1818662733, -0.6099193692, -0.2726876736,
+        -0.2369795144,  0.3352141380,  0.2690480351,
+        -0.4109431803, -0.2487460077,  1.0639045238
+    };
+    golden_bgrad <<= {
+       -0.6799113750,  1.5246317387, -0.6191952825, -0.4168024063,  0.0833148509,  0.1079621390
+    };
+    golden_loss <<= {1.8877154589};
+    // clang-format on
+
+    loss.compute();
+    loss.backward();
+
+    test_match(loss, golden_loss, "CrossEntropy loss");
+    return test_match(L.W.grads(), golden_wgrad, "LogSoftmaxCE Dim1");
+}
+
+int test_adam()
+{
+    Matrix<FloatT> mat_v = read_csv<FloatT>("static_data/adam_v.csv");
+
+    Matrix<FloatT> grad_d(2, 1, "grad");
+    Parameter<FloatT> p(2, 1, "p");
+    p <<= {300.001 / mat_v.height, 120.001 / mat_v.width};
+    std::ofstream xy("xy.csv");
+    xy << "x0,x1,gx,gy,v\n";
+
+    struct Res
+    {
+        float32 p0, p1;
+        float32 g0, g1;
+        float32 v;
+    };
+    std::vector<Res> res;
+    for (uint32 i = 0; i < 301; i++)
+    {
+        auto x0 = p(0, 0), x1 = p(1, 0);
+        auto [g0, g1] = gradient_xy(mat_v, x0, x1);
+        grad_d <<= {g0, g1};
+
+        p.accumulate_grad(grad_d);
+        if (std::abs(g0) < 1e-3 and std::abs(g1) < 1e-3) break;
+        auto p0 = x0 * mat_v.height, p1 = x1 * mat_v.width;
+        auto v = sample(mat_v, x0, x1);
+        // clang-format off
+        if(i % 10 == 0 and false)
+            LOG(i, 
+                std::setprecision(6), GREEN, "\tpixel: [", p0, ' ', p1, ']', 
+                std::setprecision(6), CYAN,  "\tmetric:[", x0, ' ', x1, ']', 
+                std::setprecision(6), BLUE,  "\tgrads: [", g0, ' ', g1, ']',
+                std::setprecision(6), RED,   "\tvalue: [", v, ']');
+        // clang-format on
+        p.update(3e-2);
+        if (x0 < 0 or x0 > 1 or x1 < 0 or x1 > 1) break;
+        xy << std::setprecision(12) << p0 << ',' << p1 << ',' << g0 << ',' << g1 << ',' << v
+           << '\n';
+        res.push_back({p0, p1, g0, g1, v});
+    }
+
+    uint32 last_n = 5;
+    auto mean_v = std::accumulate(std::end(res) - last_n, std::end(res), 0.0,
+                                  [last_n](auto acc, auto& r) { return acc + r.v / last_n; });
+    if (std::abs(mean_v + 0.677601) > 0.0001)
+    {
+        LOG(RED, "Adam failed, mean value: ", mean_v);
+        return -1;
+    }
+
+    if (res.size() > 196)  // must converge in 195 steps
+        throw_rte_with_backtrace("Adam failed, did not converge in ", res.size(), " steps");
+
+    uint32 converged_by = 128;
+    float32 mean_gx = 0, mean_gy = 0;
+    mean_v = std::accumulate(std::begin(res) + converged_by,
+                             std::begin(res) + converged_by + last_n, 0.0, [&](auto acc, auto& r) {
+                                 mean_gx += (r.g0 * r.g0) / last_n;
+                                 mean_gy += (r.g1 * r.g1) / last_n;
+                                 return acc + r.v / last_n;
+                             });
+
+    if (std::abs(mean_v + 0.677587) > 0.0001)
+    {
+        LOG(RED, "Adam failed, mean value: ", mean_v);
+        return -1;
+    }
+
+    if (mean_gx > 0.02 or mean_gy > 0.05)
+    {
+        LOG(RED, "Adam failed, mean grads: ", mean_gx, ' ', mean_gy);
+        return -1;
+    }
+    return 0;
+}
+
+int main(int argc, char const* argv[])
+{
+    try
+    {
+        if (argc > 1)
+        {
+            return run_tests(argc, argv);
+        }
+
+        // test Node<> level stuff, uses data from compare.ipynb
+        test_linearb();
+        test_attention();
+        test_softmaxDim1();
+        test_softmaxDim1_1Row();
+        test_LSMCELoss();
+        test_LSMCELoss1Row();
+
+        // Test kernel calls, self consistency tests.
+        test_dropout(0.5);
+        test_concat();
+
+        // not really tests
+        time_attention();
+        run_multihead();
+
+        // Test Adam optimizer against known values
+        test_adam();
+
+        // Word2Vec test
+        // test_word2vec("static_data/word2vec.txt");
+    }
+    catch (std::exception& e)
+    {
+        LOG(RED, e.what());
+    }
+    return 0;
+}

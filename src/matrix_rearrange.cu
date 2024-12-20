@@ -171,8 +171,9 @@ static constexpr uint32 Ks = 16;
 static constexpr uint32 DROPOUT_MAX_SIZE = Ks * 1024;
 
 template <typename T>
-__global__ void dropout_kernel(T *__restrict__ mat, bool *__restrict__ mask, uint32 height,
-                               uint32 width, float32 drop_prob, curandState *states)
+__global__ void dropout_kernel(T *__restrict__ res, const T *__restrict__ in,
+                               float32 *__restrict__ mask, uint32 height, uint32 width,
+                               float32 drop_prob, curandState *states)
 {
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -180,20 +181,18 @@ __global__ void dropout_kernel(T *__restrict__ mat, bool *__restrict__ mask, uin
 
     if (x >= width || y >= height) return;
 
-    bool dropping = false;
+    float32 mask_val = 0.f;
     if (drop_prob > 0 and drop_prob < 1)  // valid dropout probability, generate
     {
-        dropping = curand_uniform(&states[offset % DROPOUT_MAX_SIZE]) < drop_prob;
-        mask[offset] = dropping;
+        bool keep = (curand_uniform(&states[offset % DROPOUT_MAX_SIZE]) > drop_prob);
+        mask_val = keep ? 1.f / (1 - drop_prob) : 0.f;
+        mask[offset] = mask_val;
     }
-    else  // else use
+    else  // use existing mask value at offset
     {
-        dropping = mask[offset];
+        mask_val = mask[offset];
     }
-    if (dropping)
-    {
-        mat[offset] = T(0);
-    }
+    res[offset] = in[offset] * mask_val;
 }
 
 __global__ void init_curand_states(curandState *states, uint32 size, uint32 seed)
@@ -214,7 +213,7 @@ __global__ void init_curand_states(curandState *states, uint32 size, uint32 seed
 //      res[x,y] = res[x,y] * mask[x,y]
 // ```
 template <typename T>
-void dropout(Matrix<T> &mat, Matrix<bool> &mask, float32 drop_prob)
+void dropout(Matrix<T> &res, const Matrix<T> &in, Matrix<float32> &mask, float32 drop_prob)
 {
     if (dropout_states == nullptr)
     {
@@ -226,18 +225,18 @@ void dropout(Matrix<T> &mat, Matrix<bool> &mask, float32 drop_prob)
         init_curand_states<<<1024, Ks>>>(_states, DROPOUT_MAX_SIZE, time(NULL));
         cudaErrCheck(cudaDeviceSynchronize());
     }
-    auto shape = mat.shape();
+    auto shape = res.shape();
     if (shape != mask.shape())
     {
-        LOG(BOLD, RED, "Matrix shapes do not match for dropout operation: ", mat.shape_str, " -> ",
+        LOG(BOLD, RED, "Matrix shapes do not match for dropout operation: ", res.shape_str, " -> ",
             mask.shape_str);
         throw_rte_with_backtrace("Dimension mismatch for dropout");
     }
 
     dim3 blockDim(32, 32);
     dim3 gridDim(iDivUp(shape.second, 32), iDivUp(shape.first, 32));
-    dropout_kernel<T><<<gridDim, blockDim>>>(mat.begin(), mask.begin(), mat.height, mat.width,
-                                             drop_prob, dropout_states.get());
+    dropout_kernel<T><<<gridDim, blockDim>>>(res.begin(), in.begin(), mask.begin(), in.height,
+                                             in.width, drop_prob, dropout_states.get());
 }
 
 template void transpose(Matrix<FloatT> &res, const Matrix<FloatT> &A, Identity<FloatT>);
@@ -254,7 +253,8 @@ template void split<FloatT, Identity<FloatT>>(
     std::vector<Matrix<FloatT> *, std::allocator<Matrix<FloatT> *>> &, Matrix<FloatT> const &,
     Identity<FloatT>);
 
-template void dropout<FloatT>(Matrix<FloatT> &, Matrix<bool> &, float32);
+template void dropout<FloatT>(Matrix<FloatT> &res, const Matrix<FloatT> &in, Matrix<float32> &mask,
+                              float32 drop_prob);
 
 template void transpose<FloatT, TanH<FloatT>::TanhB>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                      TanH<FloatT>::TanhB);
@@ -264,3 +264,7 @@ template void transpose<FloatT, Sigmoid<FloatT>::SigmoidB>(Matrix<FloatT> &, Mat
 
 template void transpose<FloatT, Relu<FloatT>::ReluB>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                      Relu<FloatT>::ReluB);
+
+template void transpose<FloatT, LeakyRelu<FloatT>::LeakyReluB>(Matrix<FloatT> &,
+                                                               Matrix<FloatT> const &,
+                                                               LeakyRelu<FloatT>::LeakyReluB);

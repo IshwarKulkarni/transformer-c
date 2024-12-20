@@ -136,21 +136,34 @@ template void unary_apply<FloatT, FloatT, Identity<FloatT>>(Matrix<FloatT> &,
 template void unary_apply<FloatT, FloatT, Loge<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                         Loge<FloatT>);
 
-template void binary_apply<FloatT, FloatT, FloatT, NegDiv<FloatT>>(Matrix<FloatT> &,
-                                                                   Matrix<FloatT> const &,
-                                                                   Matrix<FloatT> const &,
-                                                                   NegDiv<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, NegLogLossBckwd<FloatT>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, NegLogLossBckwd<FloatT>);
 
-template void binary_apply<FloatT, FloatT, FloatT, CrossEntropy<FloatT, FloatT>>(
-    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, CrossEntropy<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, LSMCEBkwd<FloatT>>(Matrix<FloatT> &,
+                                                                      Matrix<FloatT> const &,
+                                                                      Matrix<FloatT> const &,
+                                                                      LSMCEBkwd<FloatT>);
+
+template void binary_apply<FloatT, FloatT, FloatT, NegLogLossFwd<FloatT, FloatT>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &,
+    NegLogLossFwd<FloatT, FloatT>);
 
 template void unary_apply<FloatT, FloatT, Sign<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                         Sign<FloatT>);
 
-template void unary_apply<FloatT, FloatT, GELU<FloatT>::GELUB>(Matrix<FloatT> &,
-                                                               Matrix<FloatT> const &,
-                                                               GELU<FloatT>::GELUB);
+template void binary_apply<FloatT, FloatT, FloatT, ClippedWeightUpdate<FloatT, FloatT>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &,
+    ClippedWeightUpdate<FloatT, FloatT>);
 
-template void unary_apply<FloatT, FloatT, GELU<FloatT>::GELUF>(Matrix<FloatT> &,
-                                                               Matrix<FloatT> const &,
-                                                               GELU<FloatT>::GELUF);
+template void binary_apply<FloatT, FloatT, FloatT, MomentUpdate<FloatT>>(Matrix<FloatT> &,
+                                                                         Matrix<FloatT> const &,
+                                                                         Matrix<FloatT> const &,
+                                                                         MomentUpdate<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, SecondMomentUpdate<FloatT>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, SecondMomentUpdate<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, AdamWeightUpdate<FloatT>>(
+    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, AdamWeightUpdate<FloatT>);
+
+template void unary_apply<FloatT, FloatT, NLSToSoftmax<FloatT>>(Matrix<FloatT> &,
+                                                                Matrix<FloatT> const &,
+                                                                NLSToSoftmax<FloatT>);

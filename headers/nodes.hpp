@@ -6,10 +6,12 @@
 #include "types"
 
 /*
-Implements softmax along width of x => output rows sum to 1
+Implements softmax along width of x => output column sum to 1 <br>
+```
 inp = this_prev_0_
 assert inp.dim == 2
 s = inp.exp() / inp.exp().sum(dim=0, keepdim=True)
+```
 */
 template <typename T = FloatT>
 struct SoftmaxDim0 : Node<T>
@@ -24,10 +26,10 @@ struct SoftmaxDim0 : Node<T>
     SoftmaxDim0(NodePtr<T> prev, const std::string& name)
         : Node<T>(prev->shape(), {prev}, name, 1),
           exp(prev->t_shape()),
-          sumExps(prev->width, 1),
+          sumExps(exp.height, 1),
           softmax(prev->t_shape()),
-          gradientOut(prev->shape()),
-          gradientInT(prev->t_shape()),
+          gradientOut(prev->shape(), name + "_gradientOut"),
+          gradientInT(prev->t_shape(), name + "_gradientOutT"),
           ExpOp(sqrt(this->height))
     {
     }
@@ -51,10 +53,11 @@ struct SoftmaxDim0 : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=filled, fillcolor=antiquewhite, shape=octagon] ";
+               "\", style=filled, fillcolor=LightSkyBlue, shape=octagon] ";
     }
 };
 
+// computes softmax along Width of x => each output row sums to 1
 template <typename T = FloatT>
 struct SoftmaxDim1 : Node<T>
 {
@@ -64,17 +67,16 @@ struct SoftmaxDim1 : Node<T>
     Matrix<T> gradientOutT;
     Exp<T> expOp;
 
-    SoftmaxDim1(NodePtr<T> prev, const std::string& name)
+    SoftmaxDim1(NodePtr<T> prev, const std::string& name = "Softmax")
         : Node<T>(prev->shape(), {prev}, name, 1),
-          exp(prev->t_shape()),
-          sumExps(prev->width, 1),
-          gradientOut(prev->shape()),
-          gradientOutT(gradientOut.t_shape()),
-          expOp(sqrt(this->width))
+          exp(prev->shape()),
+          sumExps(exp.height, 1),
+          gradientOut(prev->t_shape(), name + "_gradientOut"),
+          gradientOutT(prev->shape()),
+          expOp()
     {
     }
 
-    // computes softmax along height of x => each output column sums to 1
     void forward() override
     {
         unary_apply(exp, this->prev(0), expOp);
@@ -92,7 +94,7 @@ struct SoftmaxDim1 : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=filled, fillcolor=antiquewhite, shape=octagon] ";
+               "\", style=filled, fillcolor=LightSkyBlue, shape=octagon] ";
     }
 };
 
@@ -132,7 +134,7 @@ struct Product : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=filled, fillcolor=aquamarine, shape=parallelogram] ";
+               "\", style=filled, fillcolor=azure2, shape=parallelogram] ";
     }
 };
 
@@ -179,7 +181,7 @@ struct ProductT : Node<T>
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
-               "\", style=filled, fillcolor=aquamarine, shape=parallelogram] ";
+               "\", style=filled, fillcolor=azure, shape=parallelogram] ";
     }
 };
 
@@ -188,12 +190,13 @@ struct Transpose : Node<T>
 {
     Matrix<T> gradientOut;
 
-    Transpose(NodePtrs<T> prev, const std::string& name)
-        : Node<T>(prev[0]->t_shape(), prev, name, 1), gradientOut(this->t_shape())
+    Transpose(NodePtr<T> prev, const std::string& name)
+        : Node<T>(prev->t_shape(), {prev}, name, 1),
+          gradientOut(this->t_shape(), name + "_gradientOut")
     {
-        if (!(prev[0]->height == this->width && prev[0]->width == this->height))
+        if (!(prev->height == this->width && prev->width == this->height))
             throw_rte_with_backtrace("Matrix dimensions do not match for Transpose between ",
-                                     prev[0]->name, " and ", this->name);
+                                     prev->name, " and ", this->name);
     }
 
     void forward() override { transpose(*this, this->prev(0)); }
@@ -246,8 +249,8 @@ struct Concat : Node<T>  // Concatenates many matrices along width, to produce a
 template <typename T = FloatT>
 struct Input : Node<T>
 {
-    Input(uint32_t height, uint32_t width, const std::string& name)
-        : Node<T>(height, width, {}, name, 0)
+    Input(uint32_t num_samples, uint32_t row_vec_size, const std::string& name)
+        : Node<T>(num_samples, row_vec_size, {}, name, 0)
     {
     }
     Input(std::pair<uint32_t, uint32_t> shape, const std::string& name)
@@ -258,6 +261,14 @@ struct Input : Node<T>
 
     void backward(const Matrix<T>*) override {}
 
+    void eye()
+    {
+        if (this->height != this->width)
+            throw_rte_with_backtrace("Input matrix should be square for eye operation");
+        fillCPU(*this, 0);
+        for (uint32 i = 0; i < this->height; i++) (*this)(i, i) = 1;
+    }
+
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name + "\", shape=cylinder]";
@@ -267,24 +278,52 @@ struct Input : Node<T>
 template <typename T>
 struct Dropout : Node<T>
 {
-    Matrix<bool> mask;
+    Matrix<float32> mask;
     Matrix<T> gradientOut;
-    const FloatT p;
+    const FloatT drop_probability;
     Dropout(float32 p, NodePtr<T> prev, const std::string& name = "Dropout")
         : Node<T>(prev->shape(), {prev}, name, 1),
           mask(prev->shape()),
           gradientOut(this->shape()),
-          p(p)
+          drop_probability(p)
     {
+        if (p < 0 or p >= 1)
+            throw_rte_with_backtrace("Dropout probability should be in the range [0, 1): ", p);
     }
 
-    void forward() override { dropout(this->prev(0), mask, p); }
+    void forward() override
+    {
+        if (drop_probability > 0 and this->is_training)
+            dropout(*this, *this->prev_nodes[0], mask, drop_probability);
+        else
+            fill(*this, *this->prev_nodes[0]);
+    }
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        fill(gradientOut, *gradientIn);
-        dropout(gradientOut, mask, -1);
-        this->prev_nodes[0]->backward(&gradientOut);
+        if (drop_probability > 0 and this->is_training)
+        {
+            dropout(gradientOut, *gradientIn, mask, -1);
+            this->prev_nodes[0]->backward(&gradientOut);
+        }
+        else
+        {
+            this->prev_nodes[0]->backward(gradientIn);
+        }
+    }
+
+    std::string dot_repr() override
+    {
+        char buff[100];
+        snprintf(buff, 100, " [label=\"%s\n%.2f\", style=filled, fillcolor=azure ]\n",
+                 this->name.c_str(), drop_probability);
+        return std::string(buff);
+    }
+
+    void debug_print()
+    {
+        LOG(BLUE, "Dropout with probability: ", drop_probability, " for ", this->name);
+        if (drop_probability > 0) LOG(" mask: ", mask);
     }
 };
 

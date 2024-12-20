@@ -7,6 +7,24 @@
 #include "matrix.cuh"
 #include "types"
 
+inline std::string convertMemorySting(size_t raw_bytes)
+{
+    double bytes = static_cast<double>(raw_bytes);
+    if (bytes < 1024)
+    {
+        return std::to_string(bytes) + "B";
+    }
+    else if (bytes < 1024 * 1024)
+    {
+        return std::to_string(bytes / 1024) + "KB";
+    }
+    else if (bytes < 1024 * 1024 * 1024)
+    {
+        return std::to_string(bytes / (1024 * 1024)) + "MB";
+    }
+    return std::to_string(bytes / (1024 * 1024 * 1024)) + "GB";
+}
+
 inline std::string exec_cli(const char* cmd)
 {
     std::array<char, 128> buffer;
@@ -34,6 +52,7 @@ inline bool startswith(const std::string& str, const std::string& head)
     if (str.size() < head.size()) return false;
     return str.compare(0, head.size(), head) == 0;
 }
+
 struct Timer
 {
     std::string name;
@@ -94,5 +113,19 @@ struct CudaEventTimer
         return elapsed;
     }
 };
+
+// Poor man's TQDM
+inline std::ostream& progress_bar(uint32 cur, uint32 limit)
+{
+    using namespace std;
+    uint32 pct = uint32((float32(cur) * 100) / limit);
+    string bar = "[" + std::string(pct, '=') + ">" + std::string(100 - pct, ' ') + "]";
+    static Timer timer("Progress");
+    float32 rate = float32(cur) / timer.get_duration();
+    float32 eta = float32(limit - cur) / rate;
+    cout << "\r" << setw(3) << cur << '/' << limit << " " << setw(4) << pct << "% " << bar << " "
+         << setprecision(4) << setw(5) << rate << "it/s | " << setw(6) << eta << "s.";
+    return cout;
+}
 
 #endif

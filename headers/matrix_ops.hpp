@@ -130,7 +130,7 @@ uint32 sameCPU(const Matrix<T> &A, const Matrix<T> &B, float32 eps = 1e-5)
 
 template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Reduction>
 inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B,
-                            Reduction &op)
+                            const Reduction &op)
 {
     // a and b's dimensions should match result dimensions either on height or
     // width or have numels
@@ -138,8 +138,8 @@ inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<T
     if ((A.height != res.height && A.width != res.width && A.numels() != 1) ||
         (B.height != res.height && B.width != res.width && B.numels() != 1))
     {
-        LOG(RED, "Matrix dimensions do not match for binary operation");
-        throw_rte_with_backtrace("Dimension mismatch");
+        throw_rte_with_backtrace("Dimension mismatch, A: ", A.shape_str, " B: ", B.shape_str,
+                                 " Res: ", res.shape_str);
     }
 
     // always broadcast either axis on either matrix
@@ -150,8 +150,11 @@ inline void binary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<T
             uint32 ax = A.width > 1 ? x : 0;
             uint32 ay = A.height > 1 ? y : 0;
             uint32 by = B.height > 1 ? y : 0;
+            uint32 bx = B.width > 1 ? x : 0;
 
-            res(x, y) = op(A(ay, ax), B(by, by));
+            auto a = A(ay, ax);
+            auto b = B(by, bx);
+            res(y, x) = op(a, b);
         }
     }
 }
@@ -168,6 +171,48 @@ void unary_applyCPU(Matrix<Tr> &res, const Matrix<Ta> &A, Reduction op)
             res(y, x) = op(A(ay, ax));
         }
     }
+}
+
+template <typename T>
+float64 sum_absCPU(const Matrix<T> &A)
+{
+    float64 sum = 0;
+    for (uint32 y = 0; y < A.height; y++)
+    {
+        for (uint32 x = 0; x < A.width; x++)
+        {
+            sum += std::abs(A(y, x));
+        }
+    }
+    return sum;
+}
+
+template <typename T>
+float64 sum_squaredCPU(const Matrix<T> &A)
+{
+    float64 sum = 0;
+    for (uint32 y = 0; y < A.height; y++)
+    {
+        for (uint32 x = 0; x < A.width; x++)
+        {
+            sum += A(y, x) * A(y, x);
+        }
+    }
+    return sum;
+}
+
+template <typename T>
+float64 sumCPU(const Matrix<T> &A)
+{
+    float64 sum = 0;
+    for (uint32 y = 0; y < A.height; y++)
+    {
+        for (uint32 x = 0; x < A.width; x++)
+        {
+            sum += A(y, x);
+        }
+    }
+    return sum;
 }
 
 #endif

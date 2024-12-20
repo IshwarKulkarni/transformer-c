@@ -85,9 +85,9 @@ inline Vec300 make_vec300(const FloatT* arr)
     return vec;
 }
 
-FloatT add_noise(Vec300& vec, FloatT mean = 0, FloatT std = 1, uint32* seed = nullptr);
+FloatT add_noise(Vec300& vec, FloatT mean = 0, FloatT std = 1);
 
-FloatT add_noise_normal(Vec300& vec, FloatT mean = 0, FloatT std = 1, uint32* seed = nullptr);
+FloatT add_noise_normal(Vec300& vec, FloatT mean = 0, FloatT std = 1);
 
 struct WordVecNode
 {

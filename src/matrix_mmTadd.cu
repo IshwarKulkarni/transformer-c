@@ -81,7 +81,7 @@ void mmTadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Mat
 {
     check_mmTadd_sizes(result, A, B, C);
 
-    if (result.numels() <= 1024 and false)  // small matrices
+    if (result.numels() <= 1024)  // small matrices
     {
         // LOG("Using mmadd_kernel: ", result.numels());
         mmTadd_kernel<T><<<1, dim3(A.height, B.height)>>>(
@@ -141,3 +141,9 @@ template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<Float
 template void mmTadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
                                                   Matrix<FloatT> const &, Matrix<FloatT> const *,
                                                   Relu<FloatT>::ReluF);
+
+template void mmTadd<FloatT, LeakyRelu<FloatT>::LeakyReluF>(Matrix<FloatT> &,
+                                                            Matrix<FloatT> const &,
+                                                            Matrix<FloatT> const &,
+                                                            Matrix<FloatT> const *,
+                                                            LeakyRelu<FloatT>::LeakyReluF);

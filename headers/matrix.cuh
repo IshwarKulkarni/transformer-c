@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <ios>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -35,7 +36,11 @@ typedef struct MatrixInitUitls
         return id++;
     }
     static uint32 peek_id() { return id; }
-    static uint32 get_alloced_bytes() { return alloced_byes; }
+    static uint32 get_alloced_bytes()
+    {
+        return alloced_byes;
+    }  // inaccurate dues to free's not being account for.
+       // TODO: make wrapper for cudaFree here.
 
  private:
     MatrixInitUitls() = delete;
@@ -139,20 +144,39 @@ struct Matrix
 template <typename T>
 std::ostream& operator<<(std::ostream& os, const Matrix<T>& m)  // usable to paste in torch ()
 {
-    os << m.name << m.shape_str << std::setprecision(12) << std::fixed << std::setfill(' ') << '[';
-    for (uint32 y = 0; y < m.height; y++)
+    std::setiosflags(std::ios::fixed);
+    uint32 precision = 6;
+    os << ' ' << m.name << '\t' << m.shape_str << std::fixed << std::setfill(' ');
+
+    if (m.height == 1 or m.width == 1)
+    {
+        os << "\t[";
+        for (uint32 y = 0; y < m.height; y++)
+        {
+            for (uint32 x = 0; x < m.width; x++)
+            {
+                os << std::setw(precision + 4) << std::setprecision(precision) << m(y, x)
+                   << (x == m.width - 1 ? " " : ", ");
+            }
+        }
+        os << (m.width == 1 ? "]^T\n" : "]\n");
+    }
+    else
     {
         os << "\n[";
-        for (uint32 x = 0; x < m.width; x++)
+        for (uint32 y = 0; y < m.height; y++)
         {
-            os << std::setw(15) << m(y, x) << (x == m.width - 1 ? "" : ", ");
+            os << "\n[";
+            for (uint32 x = 0; x < m.width; x++)
+            {
+                os << std::setw(precision + 5) << std::setfill(' ') << std::setprecision(precision)
+                   << m(y, x) << (x == m.width - 1 ? " " : ",  ");
+            }
+            os << ']' << (y == m.height - 1 ? "" : ",");
         }
-        os << ']' << (y == m.height - 1 ? "" : ",");
+        os << "]\n";
     }
-    os << "]\n";
     return os;
 }
-
-typedef Matrix<FloatT> Matrixf;
 
 #endif  // MATRIX_CUH

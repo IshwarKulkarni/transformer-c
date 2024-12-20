@@ -106,7 +106,6 @@ struct Plus
 template <typename Ta, typename Tb = Ta>
 struct Sub
 {
-    static constexpr Ta Identity = 0;
     __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a - b; }
 };
 
@@ -120,30 +119,119 @@ struct Mul
 template <typename Ta, typename Tb = Ta>
 struct Div
 {
+    const Tb epsilon = Tb(1e-6);
     static constexpr Ta Identity = 1;
-    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a / b; }
+    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a / (b + epsilon); }
 };
 
 template <typename Ta, typename Tb = Ta>
-struct NegDiv
+struct NegLogLossBckwd
 {
+    const Tb epsilon = Tb(1e-6);
+    Ta normalizing_factor = 1;
     static constexpr Ta Identity = 1;
-    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return -a / b; }
+    __host__ __device__ inline Ta operator()(Ta a, Tb b) const
+    {
+        return (-a / (b + epsilon)) / normalizing_factor;
+    }
+};
+
+template <typename T>
+struct LSMCEBkwd
+{
+    // dL/dxi = exp(-nls) - t :  where, t is targeta and nls = negLogSoftmax
+    // and  -nls = [xi - log(Sum(e^xj))],
+    // exp(-nls) =  e^xi/(Sum(e^xj))
+    __host__ __device__ inline T operator()(T t, T nls) const { return exp(-nls) - t; }
+};
+
+template <typename T>
+struct NLSToSoftmax
+{
+    // dL/dxi = exp(-nls) - t :  where, t is targeta and nls = negLogSoftmax
+    // and  -nls = [xi - log(Sum(e^xj))],
+    // exp(-nls) =  e^xi/(Sum(e^xj))
+    __host__ __device__ inline T operator()(T nls) const { return exp(-nls); }
 };
 
 template <typename Ta, typename Tb = Ta>
-struct CrossEntropy
+struct NegLogLossFwd
 {
-    __host__ __device__ inline Ta operator()(Ta t, Tb o) const { return -t * log(o); }
+    Ta normalizing_factor = 1;
+    __host__ __device__ inline Ta operator()(Ta t, Tb o) const
+    {
+        return -t * log(o) / normalizing_factor;
+    }
 };
 
 template <typename WT, typename WuT = WT>
 struct WeightUpdate
 {
     static constexpr WT Identity = 0;
-    WT learning_rate;
-    WeightUpdate(WT learning_rate) : learning_rate(learning_rate) {}
+    WuT clip = 1;
+    float64 learning_rate;
+    WeightUpdate(float64 learning_rate = 1e-3) : learning_rate(learning_rate) {}
     __host__ __device__ inline WT operator()(WT a, WuT b) const { return a - learning_rate * b; }
+};
+
+template <typename WT, typename WuT = WT>
+struct ClippedWeightUpdate
+{
+    WuT clip = 0.25;
+    WT learning_rate;
+    ClippedWeightUpdate(WT learning_rate) : learning_rate(learning_rate) {}
+    __host__ __device__ inline WT operator()(WT a, WuT b) const
+    {
+        auto clipped_b = b > clip ? clip : b < -clip ? -clip : b;
+        return a - learning_rate * clipped_b;
+    }
+};
+
+template <typename WT>
+struct MomentUpdate
+{
+    const float32 beta1;
+    MomentUpdate(float64 beta1) : beta1(beta1) {}
+    __host__ __device__ inline WT operator()(WT m, WT grad) const
+    {
+        return beta1 * m + (1.f - beta1) * grad;
+    }
+};
+
+template <typename WT>
+struct SecondMomentUpdate
+{
+    const float32 beta2;
+    SecondMomentUpdate(float64 beta2) : beta2(beta2) {}
+    __host__ __device__ inline WT operator()(WT v, WT grad) const
+    {
+        return beta2 * v + (1.f - beta2) * grad * grad;
+    }
+};
+
+template <typename WT>
+struct AdamWeightUpdate
+{
+    const float32 beta1d;  // beta1 decayed
+    const float32 beta2d;  // beta2 decayed
+    const float32 epsilon = 1e-8;
+
+    AdamWeightUpdate(float32 b1d, float32 b2d, float32 eps = 1e-8)
+        : beta1d(b1d), beta2d(b2d), epsilon(eps)
+    {
+    }
+
+    __host__ __device__ inline WT operator()(WT m, WT v) const
+    {
+        if (abs(1 - beta1d) < epsilon || abs(1 - beta2d) < epsilon)
+        {
+            return m / (sqrt(v) + epsilon);
+        }
+        float32 m_hat = m / (1.0 - beta1d);
+        float32 v_hat = v / (1.0 - beta2d);
+        float32 out = m_hat / (sqrt(v_hat) + epsilon);
+        return WT(out);
+    }
 };
 
 template <typename T>
@@ -194,6 +282,27 @@ struct Relu
 };
 
 template <typename T>
+struct LeakyRelu
+{
+    float32 slope;
+    typedef struct LeakyReluF
+    {
+        float32 slope;
+        LeakyReluF(float32 negative_slope = 3e-3) : slope(negative_slope) {}
+        __host__ __device__ inline T operator()(T a) const { return a > 0 ? a : a * slope; }
+    } forward;
+
+    typedef struct LeakyReluB
+    {
+        float32 slope;
+        LeakyReluB(float32 negative_slope = 3e-3) : slope(negative_slope) {}
+        __host__ __device__ inline T operator()(T a) const { return a > 0 ? 1 : slope; }
+    } backward;
+
+    LeakyRelu(float32 neg_slope = 3e-3) : forward(neg_slope), backward(slope) {}
+};
+
+template <typename T>
 struct TanH
 {
     typedef struct TanhF
@@ -234,7 +343,7 @@ struct GELU
 };
 
 template <typename T>
-struct IdentityActivation
+struct IActivation
 {
     typedef Identity<T> forward;
     typedef Identity<T> backward;

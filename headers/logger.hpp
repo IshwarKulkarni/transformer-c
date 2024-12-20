@@ -103,5 +103,11 @@ class Logger
 #define DISABLE_LOG_FOR_FILE Log::Logger::get().disable(__FILE__);
 #define ENABLE_LOG_FOR_FILE Log::Logger::get().enable(__FILE__);
 #define LOG(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, __VA_ARGS__)
+#define LOG_SYNC(...)                                                           \
+    do                                                                          \
+    {                                                                           \
+        cudaErrCheck(cudaDeviceSynchronize());                                  \
+        Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, __VA_ARGS__); \
+    } while (0);
 
 #endif  // LOGGER_H

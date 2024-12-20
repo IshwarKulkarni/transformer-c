@@ -3,8 +3,16 @@ SRCDIR := src
 INCDIR := headers
 BUILDDIR := bin
 OBJDIR := $(BUILDDIR)/obj
-TARGET_MAIN := bin/main
-TARGET_TEST := bin/test
+TARGET_MAIN := $(BUILDDIR)/main
+TARGET_TEST := $(BUILDDIR)/test
+
+# Debug location
+ifeq ($(dbg),1)
+	OBJDIR = $(BUILDDIR)/dbg/obj
+	TARGET_MAIN = bin/dbg/main
+	TARGET_TEST = bin/dbg/test
+endif
+
 
 ALL_TARGETS := $(TARGET_MAIN) $(TARGET_TEST)
 
@@ -34,10 +42,8 @@ LDFLAGS       :=
 # Debug build flags
 ifeq ($(dbg),1)
     NVCCFLAGS += -g -G
-    BUILD_TYPE := debug
 	CCFLAGS += -g -O0 -DDEBUG
 else
-    BUILD_TYPE := release
 	CCFLAGS += -O3
 endif
 
@@ -78,7 +84,7 @@ all: build
 build: $(ALL_TARGETS)
 
 clean:
-	rm -fr $(OBJDIR) $(OBJECTSCU) $(ALL_TARGETS) *.csv temp/*
+	rm -fr bin/* temp/*
 
 $(OBJDIR)/%.cu.o: $(SRCDIR)/%.cu
 	@mkdir -p $(OBJDIR);

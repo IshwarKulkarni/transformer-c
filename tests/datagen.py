@@ -2,6 +2,9 @@
 import torch
 import sys
 import os
+import numpy as np
+from scipy.ndimage import gaussian_filter
+import math
 from pathlib import Path
 
 data_path = Path('./data')
@@ -65,6 +68,33 @@ def write_sample_mult_data(height, width, height2=None):
 
     return [str(p) for p in filenames]
 
+def gen_data_adam_heightmap(size):
+    
+    def gaussian_2d(x, y, amplitude, x_mean, y_mean, x_stddev, y_stddev, theta=0):
+        a = np.cos(theta)**2 / (2 * x_stddev**2) + np.sin(theta)**2 / (2 * y_stddev**2)
+        b = -np.sin(2 * theta) / (4 * x_stddev**2) + np.sin(2 * theta) / (4 * y_stddev**2)
+        c = np.sin(theta)**2 / (2 * x_stddev**2) + np.cos(theta)**2 / (2 * y_stddev**2)
+        exponent = a * (x - x_mean)**2 + 2 * b * (x - x_mean) * (y - y_mean) + c * (y - y_mean)**2
+        return amplitude * np.exp(-exponent)
+
+    np.random.seed(0)
+    x_lin = np.linspace(-1, 1, 400)
+    y_lin = np.linspace(-1, 1, 400)
+    X, Y = np.meshgrid(x_lin, y_lin)
+
+    Z1 = gaussian_2d(X, Y, 1.0, -.75, .5, .50, 2, math.pi/4)
+    Z2 = gaussian_2d(X, Y, 0.5, -.2, .5, .4, 2, -math.pi/4) * 2
+    Z3 = gaussian_2d(X, Y, 1.0, .75, 0.15, .25, 3, math.pi/3) * -.5
+    Z4 = gaussian_2d(X, Y, 1.0, 1.05, 0.2, .25, 3, math.pi/3) * -.5
+
+    r = np.random.randn(*Z1.shape) * 2
+    r = gaussian_filter(r, 12)
+    Z = Z1 + Z2 + Z3 + Z4 + r
+
+    #g0, g1 = np.gradient(Z)
+    #g = (g1**2 + g0**2) ** 0.5
+    save_tensor_to_csv(torch.Tensor(Z), "static_data/adam_v.csv")
+    
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -85,5 +115,9 @@ if __name__ == "__main__":
         write_sample_reduce_data(height, width, "max")
     elif sys.argv[1] == "gen_data_softmax_grad":
         write_softmax_grad_data(height, width)
+    elif sys.argv[1] == "gen_data_adam":
+        if(height != width):
+            print("Height and width must be equal for adam heightmap")
+        gen_data_adam_heightmap(height, height)
     else:
         raise ValueError("Invalid command")
