@@ -14,12 +14,13 @@ struct IrisDataset
     std::vector<uint32> indices;
     uint32 loaded = 0;
 
-    Input<> sample{1, 4, "sample"};
-    Input<> target{1, 3, "target"};
+    Input<> sample;
+    Input<> target;
 
     const std::string label_names[3] = {"Setosa", "Versicolor", "Virginica"};
 
-    IrisDataset(std::string iris_csv, uint32 max_samples = -1)
+    IrisDataset(std::string iris_csv, uint32 batch, uint32 max_samples = -1)
+        : sample({batch, 1, 4, "sample"}), target({batch, 1, 3, "target"})
     {
         std::ifstream iris_file(iris_csv);
         if (!iris_file)

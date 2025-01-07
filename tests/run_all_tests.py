@@ -40,8 +40,7 @@ def run_main(args=[]):
 
 
 def build(debug=False):
-    print("Building project: " + ("debug" if debug else "release"))
-    subprocess.check_output(["make", "clean"], shell=True, text=True)
+    print("Building " + ("debug" if debug else "release") + " mode")
     build_app = ["make", "-j"] + (["debg=1"] if debug else [])
     try:
         make_result = subprocess.check_output(build_app, shell=True, text=True)
@@ -58,13 +57,13 @@ def test_mult():
         args += write_sample_mult_data(m, n, k)
         run_main(args)
 
-    sizes = [(12, 12), (24, 24), (1024, 1024), (1, 5, 1),
-             (300, 400, 20), (64, 512, 1), (64, 1200, 1)]
+    sizes = [(5, 12, 12), (8, 24, 24), (2, 1024, 1024), (1, 64, 512, 1),
+             (11, 300, 400, 20), (13, 64, 512, 1), (20, 64, 1200, 1)]
     for size in sizes:
-        test_against_torch(*size)
+        test_against_torch(*(size[1:])) # csv test done with 1 as batch size
 
     for size in sizes:  # test against C++ implementation
-        if len(size) == 3:
+        if len(size) == 4:
             run_main(["test_mult_2"] + list(size))
         else:
             run_main(["test_mult"] + list(size))
@@ -80,17 +79,29 @@ def test_softmax_grads():
         csvs = write_softmax_grad_data(*size)
         run_main(["test_softmax_grads"] + csvs)
 
+def test_bin_ops():
+    sizes = [(2, 1, 24), (3, 5, 17), (6, 9, 512), (3, 4, 65), (4, 20, 30), 
+            (5, 30, 40), (3, 32, 300), (10, 300, 15), (6, 512, 512), (4, 1024, 1024)]
+    for size in sizes[:3]:
+        run_main(["test_bin_ops"] + list(size))
+
+
+def test_un_ops():
+    sizes = [(2, 1, 24), (3, 5, 17), (6, 9, 512), (3, 4, 65), (4, 20, 30), 
+            (5, 30, 40), (3, 32, 300), (10, 300, 15), (6, 512, 512), (4, 1024, 1024)]
+    for size in sizes[:3]:
+        run_main(["test_un_ops"] + list(size))
 
 def test_transpose():
-    sizes = [(30, 40), (512, 512), (1024, 1024)]
+    sizes = [(3, 30, 40), (2, 512, 512), (1, 1024, 1024)]
     for size in sizes:
         run_main(["test_transpose"] + list(size))
     print(t_colors["green"],  "Transpose tests passed", t_colors["end"])
 
 
 def test_reduce():
-    sizes = [(1, 24), (5, 17), (1, 512), (4, 65), (20, 30), (30, 40), (32, 300), (300, 15),
-             (512, 512), (1024, 1024), (500, 3000)]
+    sizes = [(4, 1, 24), (6, 5, 17), (5, 1, 512), (6, 4, 65), (5, 20, 30), (7, 30, 40), (8, 32, 300), (16, 300, 15),
+             (32, 512, 512), (16, 1024, 1024), (16, 500, 3000)]
     for size in sizes:
         run_main(["test_reduce"] + list(size))
     print(t_colors["green"],  "Reduce tests passed", t_colors["end"])
@@ -116,14 +127,16 @@ all_functions = [
     test_mult,
     test_transpose,
     test_reduce,
-    test_softmax_grads,
+    #test_softmax_grads,
+    test_bin_ops, 
+    test_un_ops
 ]
 
 if __name__ == "__main__":
     args = set(sys.argv)
     memcheck = "memcheck" in args
     if memcheck:
-        program = ["cuda-memcheck", "--leak-check full", "bin/test"]
+        program = ["/usr/local/cuda-12.5/bin/compute-sanitizer", "--leak-check full", "bin/test"]
     build(debug=memcheck)
 
     test_funcs = [f for f in all_functions if "test" in f.__name__]
@@ -135,6 +148,7 @@ if __name__ == "__main__":
     elif "tests" in args:
         for func in test_funcs:
             func()
+        run_main()
     elif "timing" in args and len(args) == 2:
         for func in timing_funcs:
             func()

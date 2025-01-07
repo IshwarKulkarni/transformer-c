@@ -1,24 +1,18 @@
-#include <cuda_fp16.h>
 #include <type_traits>
-#include "../headers/matrix_ops.cuh"
-#include "../headers/types"
+#include "matrix.cuh"
+#include "matrix_ops.cuh"
+#include "matrix_size_checks.hpp"
+#include "types"
 
-template <typename Tc>
-__device__ Tc getC(uint32 row, uint32 col, const Tc *C, uint32 cH, uint32 cW)
-{
-    if (C == nullptr) return Tc(0);
-    uint32 y = cH > 1 ? row : 0;
-    uint32 x = cW > 1 ? col : 0;
-    return C[y * cW + x];
-}
+//#define LOG_SIZE(...) LOG(__VA_ARGS__)
+#define LOG_SIZE(...)
 
 // computes the A * B^T + C
 // AccumNative => internal accumulation is done in T, else 32bit(T) if sizeof(T)
 // < 4 else 64bit(T).
-template <uint32 TILE_SIZE_X = 16, bool AccumNative = false, typename T, typename PProcess>
-__global__ void tiled_mmTadd_shmem(T *__restrict__ result, const T *__restrict__ A, uint32 aH,
-                                   uint32 aW, const T *__restrict__ B, uint32 bH,
-                                   const T *__restrict__ C, uint32 cH, uint32 cW, PProcess pprocess)
+template <uint32 TILE_SIZE_X = 16, bool AccumNative = false, typename T, typename PostProcess>
+__global__ void tiled_mmTadd_shmem(Matrix<T> result, const Matrix<T> A, const Matrix<T> B,
+                                   const Optional<Matrix<T>> C, PostProcess pprocess)
 {
     using SumType = typename std::conditional<AccumNative, T, typename AccumT<T>::type>::type;
     SumType sum{0};
@@ -28,16 +22,20 @@ __global__ void tiled_mmTadd_shmem(T *__restrict__ result, const T *__restrict__
 
     uint32 y = blockIdx.x * TILE_SIZE_X + threadIdx.x;
     uint32 x = blockIdx.y * TILE_SIZE_X + threadIdx.y;
+    uint32 b = blockIdx.z;
+    uint32 b_a = A.batch() > 1 ? b : 0;
+    uint32 b_b = B.batch() > 1 ? b : 0;
 
-    uint32 bW = aW;
-
+    uint32 k_max = iDivUp(A.width(), TILE_SIZE_X) * TILE_SIZE_X;
 #pragma unroll
-    for (uint32 k = 0; k < iDivUp(aW, TILE_SIZE_X) * TILE_SIZE_X; k += TILE_SIZE_X)
+    for (uint32 k = 0; k < k_max; k += TILE_SIZE_X)
     {
-        uint32 aoffset = y * aW + k + threadIdx.y;
-        uint32 boffset = (k + threadIdx.x) + bW * x;  // difference between mmadd and mmTadd;
-        As[threadIdx.x][threadIdx.y] = (k + threadIdx.y < aW && y < aH) ? A[aoffset] : T(0);
-        Bs[threadIdx.x][threadIdx.y] = (k + threadIdx.x < bW && x < bH) ? B[boffset] : T(0);
+        uint32 a_x = k + threadIdx.y;
+        uint32 b_x = k + threadIdx.x;
+
+        As[threadIdx.x][threadIdx.y] = a_x < A.width() && y < A.height() ? A(b_a, y, a_x) : T(0);
+        Bs[threadIdx.x][threadIdx.y] = b_x < B.width() && x < B.height() ? B(b_b, x, b_x) : T(0);
+
         __syncthreads();
 #pragma unroll
         for (uint32 kk = 0; kk < TILE_SIZE_X; kk++)
@@ -47,103 +45,126 @@ __global__ void tiled_mmTadd_shmem(T *__restrict__ result, const T *__restrict__
         __syncthreads();
     }
 
-    if (y < aH && x < bH)
+    if (x < result.width() && y < result.height())
     {
-        uint32 offset = y * bH + x;
-        sum += getC(y, x, C, cH, cW);
-        result[offset] = pprocess(sum);
+        sum += (C.is_valid() ? C->template broadcasting_fetch<0b111>(b, y, x) : T(0));
+        result(b, y, x) = pprocess(sum);
     }
 }
 
-template <typename T, typename PProcess>
-__global__ void mmTadd_kernel(T *__restrict__ result, const T *__restrict__ A, uint32 aH, uint32 aW,
-                              const T *__restrict__ B, uint32 bH, const T *__restrict__ C,
-                              uint32 cH, uint32 cW, PProcess pprocess)
+template <typename T, typename PostProcess>
+__global__ void mmTadd_kernel(Matrix<T> result, const Matrix<T> A, const Matrix<T> B,
+                              const Optional<Matrix<T>> C, PostProcess pProcess = Identity<T>())
 {
-    uint32 y = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32 x = blockIdx.y * blockDim.y + threadIdx.y;
-    if (y < aH && x < bH)
-    {
-        T sum = 0;
-#pragma unroll
-        for (uint32 k = 0; k < aW; k++)
-        {
-            sum += A[y * aW + k] * B[k + aW * x];
-        }
+    uint32 y = threadIdx.x;
+    uint32 x = threadIdx.y;
+    uint32 b = threadIdx.z + blockIdx.x * blockDim.z;
 
-        result[y * bH + x] = pprocess(sum + getC(y, x, C, cH, cW));
+    if (result.is_oob(b, y, x)) return;
+
+    T sum = 0;
+#pragma unroll
+    for (uint32 k = 0; k < A.width(); k++)
+    {
+        sum += A.template broadcasting_fetch<BATCH_BIT>(b, y, k) *
+               B.template broadcasting_fetch<BATCH_BIT>(b, x, k);
     }
+
+    static constexpr uint32 bits = BATCH_BIT | WIDTH_BIT | HEIGHT_BIT;
+    sum += (C.is_valid() ? C->template broadcasting_fetch<bits>(b, y, x) : T(0));
+    result(b, y, x) = pProcess(sum);
 }
 
 template <typename T, typename PProcess>
-void mmTadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> *C,
+void mmTadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Optional<Matrix<T>> C,
             PProcess pProcess)
 {
     check_mmTadd_sizes(result, A, B, C);
 
-    if (result.numels() <= 1024)  // small matrices
+    if (result.numels() <= 256)
     {
-        // LOG("Using mmadd_kernel: ", result.numels());
-        mmTadd_kernel<T><<<1, dim3(A.height, B.height)>>>(
-            result.begin(), A.begin(), A.height, A.width, B.begin(), B.height,
-            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
+        dim3 blockDim(A.height(), B.height(), result.batch());
+        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                 " gridDim: ", 1, " blockDim: ", blockDim);
+        mmTadd_kernel<T><<<1, blockDim>>>(result, A, B, C, pProcess);
     }
-    else if (A.height <= 1024)
+    else if (result.shape.size2d <= 256)
+    {
+        dim3 blockDim(A.height(), B.height());
+        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                 " gridDim: ", result.batch(), " blockDim: ", blockDim);
+        mmTadd_kernel<T><<<result.batch(), blockDim>>>(result, A, B, C, pProcess);
+    }
+    else if (A.height() <= 1024)
     {
         constexpr uint32 BLOCK_SIZE_MM = 8;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
-        dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.height, BLOCK_SIZE_MM));
-        tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(
-            result.begin(), A.begin(), A.height, A.width, B.begin(), B.height,
-            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
+        dim3 gridDim(iDivUp(result.height(), BLOCK_SIZE_MM), iDivUp(result.width(), BLOCK_SIZE_MM),
+                     result.batch());
+        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                 (C ? " C: " + C->shape.str() : " no C, "), " result.shape: ", result.shape,
+                 " gridDim: ", gridDim, " blockDim: ", blockDim);
+        tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(result, A, B, C, pProcess);
     }
-    else if (A.height <= 2048)
+    else if (A.height() <= 2048)
     {
         constexpr uint32 BLOCK_SIZE_MM = 16;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
-        dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.height, BLOCK_SIZE_MM));
-        tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(
-            result.begin(), A.begin(), A.height, A.width, B.begin(), B.height,
-            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
+        dim3 gridDim(iDivUp(result.height(), BLOCK_SIZE_MM), iDivUp(result.width(), BLOCK_SIZE_MM),
+                     result.batch());
+        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                 " gridDim: ", gridDim, " blockDim: ", blockDim);
+        tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(result, A, B, C, pProcess);
     }
     else
     {
-        constexpr uint32 BLOCK_SIZE_MM = 32;
+        constexpr uint32 BLOCK_SIZE_MM = 24;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
-        dim3 gridDim(iDivUp(A.height, BLOCK_SIZE_MM), iDivUp(B.height, BLOCK_SIZE_MM));
-        tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(
-            result.begin(), A.begin(), A.height, A.width, B.begin(), B.height,
-            C ? C->begin() : nullptr, C ? C->height : 0, C ? C->width : 0, pProcess);
+        dim3 gridDim(iDivUp(result.height(), BLOCK_SIZE_MM), iDivUp(result.width(), BLOCK_SIZE_MM),
+                     result.batch());
+        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                 " gridDim: ", gridDim, " blockDim: ", blockDim);
+        tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(result, A, B, C, pProcess);
     }
+    cudaErrCheck(cudaGetLastError());
 }
 
-template void mmTadd<FloatT, Identity<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
-                                               Matrix<FloatT> const &, Matrix<FloatT> const *,
-                                               Identity<FloatT>);
+template void mmTadd<FloatT, Identity<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                               Matrix<FloatT> const&,
+                                               const Optional<Matrix<FloatT>> C, Identity<FloatT>);
 
-template void mmTadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT> &, Matrix<FloatT> const &,
-                                                        Matrix<FloatT> const &,
-                                                        Matrix<FloatT> const *,
+template void mmTadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                        Matrix<FloatT> const&,
+                                                        const Optional<Matrix<FloatT>>,
                                                         Sigmoid<FloatT>::SigmoidF);
 
-template void mmTadd<FloatT, DividebBy<FloatT>>(Matrix<FloatT> &, Matrix<FloatT> const &,
-                                                Matrix<FloatT> const &, Matrix<FloatT> const *,
-                                                DividebBy<FloatT>);
+template void mmTadd<FloatT, DividedBy<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                Matrix<FloatT> const&,
+                                                const Optional<Matrix<FloatT>>, DividedBy<FloatT>);
 
 template void mmTadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>(
-    Matrix<FloatT> &, Matrix<FloatT> const &, Matrix<FloatT> const &, Matrix<FloatT> const *,
+    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, const Optional<Matrix<FloatT>>,
     Composition<FloatT, Neg<FloatT>, Identity<FloatT>>);
 
-template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT> &, Matrix<FloatT> const &,
-                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,
+template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                  Matrix<FloatT> const&,
+                                                  const Optional<Matrix<FloatT>>,
                                                   TanH<FloatT>::TanhF);
 
-template void mmTadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT> &, Matrix<FloatT> const &,
-                                                  Matrix<FloatT> const &, Matrix<FloatT> const *,
+template void mmTadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                  Matrix<FloatT> const&,
+                                                  const Optional<Matrix<FloatT>>,
                                                   Relu<FloatT>::ReluF);
 
-template void mmTadd<FloatT, LeakyRelu<FloatT>::LeakyReluF>(Matrix<FloatT> &,
-                                                            Matrix<FloatT> const &,
-                                                            Matrix<FloatT> const &,
-                                                            Matrix<FloatT> const *,
+template void mmTadd<FloatT, LeakyRelu<FloatT>::LeakyReluF>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                            Matrix<FloatT> const&,
+                                                            const Optional<Matrix<FloatT>>,
                                                             LeakyRelu<FloatT>::LeakyReluF);
+
+template void mmTadd<FloatT, Square<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                             Matrix<FloatT> const&, Optional<Matrix<FloatT>>,
+                                             Square<FloatT>);

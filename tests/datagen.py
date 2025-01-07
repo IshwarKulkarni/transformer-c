@@ -10,10 +10,15 @@ from pathlib import Path
 data_path = Path('./data')
 os.makedirs(data_path, exist_ok=True)
 
-
 def save_tensor_to_csv(tensor, filename, append=False):
     with open(filename, 'a' if append else 'w') as f:
-        f.write(f"{tensor.shape[0]} {tensor.shape[1]}\n")
+        b = 1
+        if(len(tensor.shape) == 3):
+            b, h, w = tensor.shape
+            tensor = tensor.view(tensor.shape[0]*tensor.shape[1], -1)
+        else:
+            h, w = tensor.shape
+        f.write(f"#{b} {h} {w}\n")
         for i in range(tensor.shape[0]):
             f.write(' '.join([str(x) for x in tensor[i].tolist()]) + '\n')
     return filename
@@ -63,7 +68,7 @@ def write_sample_mult_data(height, width, height2=None):
 
     filenames = [
         save_tensor_to_csv(a, data_path/f'a_{a.shape[0]}x{a.shape[1]}.csv'),
-        save_tensor_to_csv(b, data_path/f'b_{a.shape[0]}x{a.shape[1]}.csv'),
+        save_tensor_to_csv(b, data_path/f'b_{b.shape[0]}x{b.shape[1]}.csv'),
         save_tensor_to_csv(c, data_path/f'c{c.shape[0]}x{c.shape[1]}.csv')]
 
     return [str(p) for p in filenames]

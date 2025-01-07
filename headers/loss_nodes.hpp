@@ -1,7 +1,9 @@
 #ifndef ERROR_NODES_HPP
 #define ERROR_NODES_HPP
 
+#include "matrix.cuh"
 #include "node_parameter.hpp"
+#include "nodes.hpp"
 
 ///////////////////////////// Error Nodes ////////////////////////////////
 
@@ -9,15 +11,14 @@ template <typename T = FloatT>
 struct Loss2Node : Node<T>  // 2 input loss node
 {
     Loss2Node(const NodePtrs<T>& prevs, const std::string& name = "Loss")
-        : Node<T>(1, 1, prevs, name, 2),
-          target(dynamic_cast<Input<FloatT>*>(prevs[1])),
-          predictions(prevs[0])
+        : Node<T>({1, 1, 1}, prevs, name, 2),
+          predictions(prevs[0]),
+          target(dynamic_cast<Input<FloatT>*>(prevs[1]))
     {
-        if (this->prev(0).height != this->prev(1).height ||
-            this->prev(0).width != this->prev(1).width)
+        if (this->prev(0).shape != this->prev(1).shape)
             throw_rte_with_backtrace(
-                "LossNode inputs must have the same shape input 1: " + this->prev(0).shape_str +
-                " and input 2: " + this->prev(1).shape_str);
+                "LossNode inputs must have the same shape input 1: " + this->prev(0).shape.str() +
+                " and input 2: " + this->prev(1).shape.str());
 
         if (target == nullptr)
         {
@@ -31,7 +32,6 @@ struct Loss2Node : Node<T>  // 2 input loss node
             throw_rte_with_backtrace(
                 "LossNode backward should not be called with a null argument or call the backward "
                 "with no arguments");
-        this->backward();
     }
 
     virtual void backward() = 0;
@@ -42,8 +42,8 @@ struct Loss2Node : Node<T>  // 2 input loss node
     }
 
     FloatT value() const { return (*this)(0, 0); }
-    const Input<FloatT>* target;
-    const Node<T>* predictions;
+    Node<T>* predictions;
+    Input<FloatT>* target;
 };
 /*
 L2 loss computes (Y - Yt)^2 , first input is value, second is target
@@ -53,16 +53,14 @@ struct L2Loss : Loss2Node<T>
 {
     Matrix<T> diff;         // storage for (Y - Yt)
     Matrix<T> nDiff;        // storage for (Y - Yt)^2
-    Matrix<T> temp1d;       // storage for output of reduction to 1d
     Matrix<T> gradientOut;  // storage for output  of reduction for backward
     MultiplyBy<T> times2ByNumels;
 
     L2Loss(const NodePtrs<T>& inputs, const std::string& name = "L2Loss")
         : Loss2Node<T>(inputs, name),
-          diff(inputs[0]->shape()),
-          nDiff(inputs[0]->shape()),
-          temp1d(inputs[0]->height, 1),
-          gradientOut(inputs[0]->shape(), name + "_gradientOut"),
+          diff(inputs[0]->shape),
+          nDiff(inputs[0]->shape),
+          gradientOut(inputs[0]->shape, name + "_gradientOut"),
           times2ByNumels(FloatT(2.) / (diff.numels()))
     {
     }
@@ -71,19 +69,14 @@ struct L2Loss : Loss2Node<T>
     {
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Square<T>());
-        if (nDiff.width > 1 && temp1d.numels() > 1)
-        {
-            reduce_mean(temp1d, nDiff);
-            reduce_mean(*this, temp1d);
-        }
-        else
-            reduce_mean(*this, nDiff);
+        reduce_to_scalar<T>(nDiff, Plus<T>(), T(0), DividedBy<T>(nDiff.numels()));
+        this->copy(nDiff.begin());
     }
 
     void backward() override
     {
         unary_apply(gradientOut, diff, times2ByNumels);
-        this->prev_nodes[0]->backward(&gradientOut);
+        this->predictions->backward(&gradientOut);
     }
 };
 
@@ -92,16 +85,14 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
 {
     Matrix<T> diff;         // storage for (y - y_tartget)
     Matrix<T> nDiff;        // storage for (y - y_tartget)^N
-    Matrix<T> temp1d;       // storage for output of reduction to 1d
     Matrix<T> gradientOut;  // storage for output  of reduction for backward
     MultiplyBy<T> timesNByNumels;
 
     L1Loss(const NodePtrs<T>& inputs, const std::string& name = "L2Loss")
         : Loss2Node<T>(inputs, name),
-          diff(this->shape()),
-          nDiff(this->shape()),
-          temp1d(this->height, 1),
-          gradientOut(this->shape(), name + "_gradientOut"),
+          diff(this->shape),
+          nDiff(this->shape),
+          gradientOut(this->shape, name + "_gradientOut"),
           timesNByNumels(FloatT(1.) / (diff.numels()))
     {
     }
@@ -110,59 +101,47 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
     {
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Abs<T>());
-        if (nDiff.width > 1 && temp1d.numels() > 1)
-        {
-            reduce_mean(temp1d, nDiff);
-            reduce_mean(*this, temp1d);
-        }
-        else
-            reduce_mean(*this, nDiff);
+        reduce_to_scalar(nDiff, Plus<T>(), T(0), DividedBy<T>(nDiff.numels()));
+        this->copy(nDiff.begin());
     }
 
     void backward() override
     {
         unary_apply(gradientOut, diff, Sign<T>{FloatT(1) / diff.numels()});
-        for (auto& p : this->prev_nodes) p->backward(&gradientOut);
+        this->predictions->backward(&gradientOut);
     }
 };
 
 template <typename T = FloatT>
 struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
 {
-    Matrix<T> tOverY;
-    Matrix<T> gradientOut;
-    Matrix<T> nll;  // per element -t*log(y)
-    Matrix<T> temp1d;
+    Matrix<T> tOverY = Matrix<T>(this->prev(0).shape);
+    Matrix<T> gradientOut = Matrix<T>(this->prev(0).shape, this->name + "_gradientOut");
 
-    NLLLoss(NodePtrs<T> prevs, const std::string& name = "NLLLoss")
-        : Loss2Node<T>(prevs, name),
-          tOverY(prevs[0]->shape()),
-          gradientOut(prevs[0]->shape(), name + "_gradientOut"),
-          nll(prevs[0]->shape()),
-          temp1d(prevs[0]->height, 1)
+    Matrix<T> nll = Matrix<T>(this->prev(0).shape);
+
+    NLLLoss(NodePtrs<T> prevs, const std::string& name = "NLLLoss") : Loss2Node<T>(prevs, name)
     {
-        if (dynamic_cast<SoftmaxDim1<T>*>(prevs[0]) == nullptr)
+        if (dynamic_cast<SoftmaxDim0<T>*>(prevs[0]) == nullptr and
+            dynamic_cast<SoftmaxDim1<T>*>(prevs[0]) == nullptr)
         {
-            throw_rte_with_backtrace("NLLLoss: first argument should be softmax");
+            throw_rte_with_backtrace("NLLLoss: first argument should be a Softmax Node");
         }
     }
 
     void forward() override
     {
         binary_apply(nll, this->prev(1), this->prev(0), NegLogLossFwd<T>());
-        if (nll.width > 1 && temp1d.numels() > 1)  // we need the reduction.
-        {
-            reduce_sum(temp1d, nll);
-            reduce_sum(*this, temp1d);
-        }
-        else
-            reduce_sum(*this, nll);
+        reduce_to_scalar(nll, Plus<T>(), T(0), DividedBy<T>(nll.numels()));
+        this->copy(nll.begin());
     }
 
     void backward() override
     {
-        binary_apply(gradientOut, this->prev(1), this->prev(0), NegLogLossBckwd<T>());
-        for (auto& p : this->prev_nodes) p->backward(&gradientOut);
+        NegLogLossBckwd<T> functor;
+        functor.normalizing_factor = nll.numels();
+        binary_apply(gradientOut, this->prev(1), this->prev(0), functor);
+        this->predictions->backward(&gradientOut);
     }
 };
 
@@ -172,25 +151,29 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
 template <typename T = FloatT>
 struct LogSoftmaxCELoss : Loss2Node<T>
 {
-    const std::pair<uint32, uint32> prevSize;
+    const Shape prevSize;
     Matrix<T> exps;             // e^xi
     Matrix<T> logSumExps;       // log(Sum(e^xj))
     Matrix<T> negLogSoftmax;    // [log(Sum(e^xj)) - xi]    (-ve log-softmax)
     Matrix<T> tgtNegLogSmProd;  //  [t * (xi - log(Sum(e^xj)))]   (multiply by t instead of -t,
                                 //  (because -ve value above))
-    Matrix<T> tgtLogSmProdSum;  // sum ( -t * (xi - log(Sum(e^xj))) ) in 1D
+    Matrix<T> tgtLogSmProdSum;  // sum ( -t * (xi - log(Sum(e^xj))) ) . summed along width
+    Matrix<T>
+        tgtLogSmProdSum1D;  // sum(sum ( -t * (xi - log(Sum(e^xj))) ) ), now summer along height
+    Matrix<T> gradient;
     Matrix<T> gradientOut;
     Matrix<T> softmax;
 
     LogSoftmaxCELoss(NodePtrs<T> prevs, const std::string& name = "CELoss")
         : Loss2Node<T>(prevs, name),
-          prevSize(prevs[0]->shape()),
+          prevSize(prevs[0]->shape),
           exps(prevSize, name + "_exps"),
-          logSumExps(prevSize.first, 1, name + "_logSumExps"),
+          logSumExps(prevSize.set(WIDTH_IDX, 1), name + "_logSumExps"),
           negLogSoftmax(prevSize, name + "_negLogSoftmax"),
           tgtNegLogSmProd(prevSize, name + "_tgtNegLogSmProd"),
-          tgtLogSmProdSum(prevSize.first, 1, name + "_tgtLogSmProd1d"),
-          gradientOut(prevSize, name + "_gradOut"),
+          tgtLogSmProdSum(prevSize.set(WIDTH_IDX, 1), name + "_tgtLogSmProd1d"),
+          tgtLogSmProdSum1D(tgtLogSmProdSum.shape.set(HEIGHT_IDX, 1), name + "_tgtLogSmProd1d"),
+          gradientOut(prevSize, name + "_gradientOut"),
           softmax(prevSize, name + "_softmax")
     {
     }
@@ -203,31 +186,32 @@ struct LogSoftmaxCELoss : Loss2Node<T>
         reduce(logSumExps, exps, Plus<T>(), T(0), Loge<T>());
         // neglogSoftmax = [log(Sum(e^xj)) - xi]
         binary_apply(negLogSoftmax, logSumExps, *this->predictions, Sub<T>());
-        // tgtLogSmProd =  [t * (xi - log(Sum(e^xj)))]
+        // tgtLogSmProd =  -[t * (log(Sum(e^xj)) - xi)]
         binary_apply(tgtNegLogSmProd, *this->target, negLogSoftmax, Mul<T>());
-        if (tgtLogSmProdSum.numels() > 1)
-        {
-            // tgtLogSmProd1d = sum ( -t * (xi - log(Sum(e^xj))) ), computed for each instance
-            reduce_sum(tgtLogSmProdSum, tgtNegLogSmProd);
-            // loss = mean ( -t * (xi - log(Sum(e^xj))) )
-            reduce_mean(*this, tgtLogSmProdSum);
-        }
-        else
-            reduce_sum(*this, tgtNegLogSmProd);
-        // TODO(remove) : for debug:
-        unary_apply(softmax, negLogSoftmax, NLSToSoftmax<T>());
+        // tgtLogSmProd1d = sum ( -t * (xi - log(Sum(e^xj))) ), computed for each instance
+        reduce(tgtLogSmProdSum, tgtNegLogSmProd, Plus<T>(), T(0),
+               DividedBy<T>(tgtNegLogSmProd.height()));
+
+        // loss = mean ( -t * (xi - log(Sum(e^xj))) )
+        reduce<T, HEIGHT_IDX>(tgtLogSmProdSum1D, tgtLogSmProdSum);
+        if (tgtLogSmProdSum1D.batch() > 1)
+            reduce<T, BATCH_IDX>(tgtLogSmProdSum1D, tgtLogSmProdSum1D, Plus<T>(), T(0),
+                                 DividedBy<T>(tgtLogSmProdSum1D.batch()));
+        this->copy(tgtLogSmProdSum1D.begin());
     }
 
     void backward() override
     {
-        binary_apply(gradientOut, *this->target, negLogSoftmax, LSMCEBkwd<T>());
-        this->prev_nodes[0]->backward(&gradientOut);
+        LSMCEBkwd<T> func;
+        func.factor = gradientOut.height() * gradientOut.batch();
+        binary_apply(gradientOut, *this->target, negLogSoftmax, func);
+        this->predictions->backward(&gradientOut);
     }
 
     void debug_print()
     {
         LOG("\nDescription of ", this->name, '\n', exps, '\n', logSumExps, '\n', negLogSoftmax,
-            '\n', tgtNegLogSmProd, '\n', tgtLogSmProdSum, '\n', gradientOut);
+            '\n', tgtNegLogSmProd, '\n', tgtLogSmProdSum, '\n', gradient);
     }
 };
 

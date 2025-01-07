@@ -3,7 +3,6 @@
 
 #include <cuda_device_runtime_api.h>
 #include <cuda_runtime_api.h>
-#include <driver_types.h>
 #include <cmath>
 #include <cstdlib>
 #include "functors.cuh"
@@ -20,6 +19,7 @@ struct LinearInputT  // a consolidated input arguments for Linear.
     bool useBias;
     std::string name;
 };
+
 /*
 Implements torch.Linear with Bias and activation, y = Act(X @ W^T + b)
 X: stack of row vectors, W: weight matrix, b: bias vector, Act: activation function
@@ -27,23 +27,31 @@ X: stack of row vectors, W: weight matrix, b: bias vector, Act: activation funct
 template <typename T = FloatT, typename Act = IActivation<T>>
 struct Linear : Node<T>
 {
+    Node<T>* input_node;
     Parameter<T, T> W;
     Parameter<T, T> b;
-    Matrix<T> WGradUpdate = Matrix<T>(W.shape(), this->name + "_WGradUpdate");
-    Matrix<T> bGradUpdate = Matrix<T>(b.shape(), this->name + "_bGradUpdate");
-    Matrix<T> gradInT = Matrix<T>(this->t_shape(), this->name + "_gradInT");
     Matrix<T> gradientOut;
+    Matrix<T> WGradUpdate;
+    Matrix<T> bGradUpdate;
+    Matrix<T> tempT, temp;
     bool useBias;
-    typename Act::forward ActForward;
-    typename Act::backward ActBackward;
 
     typedef LinearInputT<T> LinearInput;
 
+    typedef ActBackwardMul<T, Act> ActBackwardMulT;
+
+    ActBackwardMulT gradientFunctor;
+
     Linear(uint32 out_width, NodePtr<T> prev, bool useBias, const std::string& name)
-        : Node<T>(prev->height, out_width, {prev}, name, 1),
-          W(out_width, prev->width, name + "_W"),
-          b(1, out_width, name + "_b"),
-          gradientOut(prev->shape(), name + "_gradientOut"),
+        : Node<T>(prev->shape.set(WIDTH_IDX, out_width), {prev}, name, 1),
+          input_node(prev),
+          W({out_width, prev->width()}, name + "_W"),
+          b({1, out_width}, name + "_b"),
+          gradientOut(prev->shape, name + "_gradientOut"),
+          WGradUpdate(W.shape.set(BATCH_IDX, prev->batch()), name + "_WGradUpdate"),
+          bGradUpdate(b.shape.set(BATCH_IDX, prev->batch()), name + "_bGradUpdate"),
+          tempT(this->shape.t(), name + "_tempT2"),
+          temp(this->shape, name + "_temp"),
           useBias(useBias)
     {
         this->params.push_back(&W);
@@ -51,58 +59,65 @@ struct Linear : Node<T>
         if (useBias)
         {
             this->params.push_back(&b);
-            fill(b, (T*)nullptr);
-            bias_str = " + " + b.shape_str + "(" + std::to_string(b.numels()) + ")";
+            b.reset();
+            bias_str = " + B: (" + std::to_string(b.numels()) + ")";
         }
-        LOG(BLUE, this->name, "\t", prev->shape_str, "\t-> ", this->shape_str,
-            "\t|W: ", W.shape_str, "(", W.numels(), ")", bias_str);
+        LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape, " | W: ", W.shape, " (",
+            W.numels(), ")", bias_str, " | Activation: ", Act::name);
     }
 
     void init()
     {
-        auto act = Act();
+        Act act;
         if (dynamic_cast<Relu<T>*>(&act))  // else xavier is default
             kaiming_init(W);
     }
 
     Linear(const LinearInput& inp) : Linear(inp.out_size, inp.prev, inp.useBias, inp.name) {}
 
-    void forward() override { mmTadd(*this, this->prev(0), W, useBias ? &b : nullptr, ActForward); }
+    void forward() override
+    {
+        if (useBias)
+            mmTadd(*this, *input_node, W, {b}, typename Act::forward());
+        else
+            mmTadd(*this, *input_node, W, {}, typename Act::forward());
+    }
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        transpose(gradInT, *gradientIn, ActBackward);
-        mmadd<T>(WGradUpdate, gradInT, this->prev(0), nullptr);
+        auto const* gradIn = gradientIn;
+        if constexpr (not std::is_same<Act, IActivation<T>>::value)
+        {
+            binary_apply(temp, *this, *gradientIn, gradientFunctor);
+            gradIn = &temp;
+        }
 
-        W.accumulate_grad(WGradUpdate);
         if (useBias)
         {
-            if (gradInT.width > 1)
-            {
-                reduce_sum(bGradUpdate, gradInT);
-                b.accumulate_grad(bGradUpdate);
-            }
-            else
-            {
-                cudaMemcpy(bGradUpdate.data.get(), gradInT.data.get(), gradInT.numels() * sizeof(T),
-                           cudaMemcpyDefault);
-                b.accumulate_grad(bGradUpdate);
-            }
+            reduce<T, HEIGHT_IDX, Plus<T>>(bGradUpdate, *gradIn);
+            b.accumulate_grad(bGradUpdate);
         }
-        mmadd<T>(gradientOut, *gradientIn, W, nullptr);
-        this->prev_nodes[0]->backward(&gradientOut);
+
+        transpose(tempT, *gradIn);
+        mmadd(WGradUpdate, tempT, *input_node, {});
+        W.accumulate_grad(WGradUpdate);
+
+        if (dynamic_cast<Input<T>*>(input_node)) return;
+
+        multiply(gradientOut, *gradientIn, W);
+        input_node->backward(&gradientOut);
     }
 
     std::string dot_repr() override
     {
-        auto label = this->name + '\n' + W.shape_str + ':' + std::to_string(W.numels());
-        label += this->useBias ? ('\n' + b.shape_str + ':' + std::to_string(b.numels())) : "";
+        auto label = this->name + '\n' + W.shape.str() + ':' + std::to_string(W.numels());
+        label += this->useBias ? ('\n' + b.shape.str() + ':' + std::to_string(b.numels())) : "";
         return " [label=\"" + label + "\", shape=octagon, style=filled, fillcolor=lightblue]";
     }
 
     void debug_print()
     {
-        LOG("Debug print for ", this->name, "\n", *this, W, WGradUpdate, gradInT, gradientOut);
+        LOG("Debug print for ", this->name, "\n", *this, W, WGradUpdate, *this, gradientOut);
         if (useBias) LOG(b, bGradUpdate);
     }
 };
@@ -132,17 +147,18 @@ struct Attention : Node<T>
     using LinKi = typename LinK::LinearInput;
     using LinVi = typename LinV::LinearInput;
 
-    Linear<T, ActQ> Q;
-    Linear<T, ActK> K;
-    Linear<T, ActV> V;                  // The projection nodes.
-    DividebBy<T> denom;                 // The denominator for scaling, sqrt(emb_size)
-    ProductT<T, DividebBy<T>> qkT;      // The product of Q and K^T
-    SoftmaxDim1<T> attention_weights;   // The softmax of qkT (along the dim=-1)
+    LinQ Q;
+    LinK K;
+    LinV V;                             // The projection nodes.
+    DividedBy<T> denom;                 // The denominator for scaling, sqrt(emb_size)
+    ProductT<T, DividedBy<T>> qkT;      // The product of Q and K^T
+    SoftmaxDim0<T> attention_weights;   // The softmax of qkT (along the dim=-1)
     Product<T, Identity<T>> attention;  // Product of Attention Weights and V
 
     Attention(const LinQi& Qinp, const LinKi& Kinp, const LinVi& Vinp,
               std::string name = "Attention")
-        : Node<T>(Qinp.prev->height, Vinp.out_size, {Qinp.prev, Kinp.prev, Vinp.prev}, name, 3),
+        : Node<T>(Qinp.prev->shape.set(WIDTH_IDX, Vinp.out_size), {Qinp.prev, Kinp.prev, Vinp.prev},
+                  name, 3),
           Q(Qinp),
           K(Kinp),
           V(Vinp),
@@ -151,21 +167,21 @@ struct Attention : Node<T>
           attention_weights({&qkT}, name + "_Softmax"),
           attention({&attention_weights, &V}, Identity<T>(), name + "_Softmax*V")
     {
-        this->data = attention.data;
+        // this->data = attention.data;
         if (Qinp.out_size != Kinp.out_size)
             throw_rte_with_backtrace("Q and V output sizes do not match for Attention ",
                                      Qinp.out_size, " != ", Kinp.out_size);
         this->prev_nodes = {&attention};
     }
 
-    void forward() override {}
+    void forward() override { this->copy(attention.begin()); }
 
     void backward(const Matrix<T>* gradientIn) override { attention.backward(gradientIn); }
 
     void print_desc()
     {
-        LOG(BLUE, "Attention output size: ", this->shape_str, " for Q, K: ", Q.shape_str,
-            " V: ", V.shape_str, " Q.W and K.W: ", Q.W.shape_str, " V.W.shape: ", V.W.shape_str);
+        LOG(BLUE, "Attention output size: ", this->shape, " for Q, K: ", Q.shape, " V: ", V.shape,
+            " Q.W and K.W: ", Q.W.shape, " V.W.shape: ", V.W.shape);
     }
 
     virtual std::string dot_repr() override
@@ -217,7 +233,7 @@ struct MultiHeadAttention : Node<T>
     using LinVi = typename Att::LinVi;
 
     std::vector<std::unique_ptr<Att>> heads;
-    std::unique_ptr<Concat<T>> concat;
+    std::unique_ptr<Concat0<T>> concat;
     std::unique_ptr<LinO> linear;
 
     MultiHeadAttention(uint32 num_heads, LinQi Qinp, LinKi Kinp, LinVi Vinp, LinOi Oinp,
@@ -231,7 +247,7 @@ struct MultiHeadAttention : Node<T>
             heads.emplace_back(att);
             head_ptrs.push_back(att);
         }
-        concat = std::make_unique<Concat<T>>(head_ptrs, name + "_Concat");
+        concat = std::make_unique<Concat0<T>>(head_ptrs, name + "_Concat");
         Oinp.prev = concat.get();
         Oinp.name = name + "_Linear";
         linear = std::make_unique<LinO>(Oinp);
@@ -253,16 +269,17 @@ struct MultiHeadAttention : Node<T>
     void print_desc()
     {
         LOG(BLUE, "MultiHeadAttention with ", heads.size(),
-            " heads; Linear projection matrix shape: ", linear->W.shape_str,
-            " to output: ", this->shape_str, " each attention looks like: ");
+            " heads; Linear projection matrix shape: ", linear->W.shape,
+            " to output: ", this->shape, " each attention looks like: ");
         heads[0]->print_desc();
     }
 
     virtual std::string dot_repr() override
     {
         std::stringstream ss;
+
         ss << " [label=\"" << this->name << '\n'
-           << linear->W.shape_str << ':' << linear->W.numels()
+           << linear->W.shape << ':' << linear->W.numels()
            << " \", shape=box3d,  style=filled, fillcolor=azure ]\n";
         ss << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "\"\n";
         ss << '\t' << concat->id << '\n';

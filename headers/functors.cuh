@@ -13,12 +13,14 @@ template <typename T>
 struct Identity
 {
     inline __host__ __device__ T operator()(T a) const { return a; }
+    static constexpr char const* name = "Identity";
 };
 
 template <typename T>
 struct Neg
 {
     inline __host__ __device__ T operator()(const T a) const { return -a; }
+    static constexpr char const* name = "Unary Negation";
 };
 
 template <typename Ta>
@@ -33,6 +35,7 @@ struct Exp  // can apply shfted value
     Ta shift;
     Exp(Ta shift = 0) : shift(shift) {}
     __host__ __device__ inline Ta operator()(Ta a) const { return exp(a - shift); }
+    static constexpr char const* name = "Exp";
 };
 
 template <typename Ta>
@@ -65,11 +68,12 @@ struct Sqrt
 };
 
 template <typename T>
-struct DividebBy
+struct DividedBy
 {
     T divisor;
-    DividebBy(T divisor) : divisor(divisor) {}
+    DividedBy(T divisor) : divisor(divisor) {}
     __host__ __device__ inline T operator()(T a) const { return a / divisor; }
+    static constexpr char const* name = "DividedBy";
 };
 
 template <typename T>
@@ -101,12 +105,14 @@ struct Plus
 {
     static constexpr Ta Identity = 0;
     __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a + b; }
+    static constexpr char const* name = "Plus";
 };
 
 template <typename Ta, typename Tb = Ta>
 struct Sub
 {
     __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a - b; }
+    static constexpr char const* name = "Sub";
 };
 
 template <typename Ta, typename Tb = Ta>
@@ -114,6 +120,7 @@ struct Mul
 {
     static constexpr Ta Identity = 1;
     __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a * b; }
+    static constexpr char const* name = "Mul";
 };
 
 template <typename Ta, typename Tb = Ta>
@@ -127,22 +134,34 @@ struct Div
 template <typename Ta, typename Tb = Ta>
 struct NegLogLossBckwd
 {
-    const Tb epsilon = Tb(1e-6);
     Ta normalizing_factor = 1;
-    static constexpr Ta Identity = 1;
+    const Tb epsilon = Tb(1e-6);
+    static constexpr Ta Identity = Ta(0);
     __host__ __device__ inline Ta operator()(Ta a, Tb b) const
     {
         return (-a / (b + epsilon)) / normalizing_factor;
     }
 };
 
+template <typename T, typename Act>
+struct ActBackwardMul
+{
+    using actBackT = typename Act::backward;
+    const typename Act::backward actBack = {};
+    __host__ __device__ inline T operator()(T output, T inGrad) const
+    {
+        return actBack(output) * inGrad;
+    }
+};
+
 template <typename T>
 struct LSMCEBkwd
 {
-    // dL/dxi = exp(-nls) - t :  where, t is targeta and nls = negLogSoftmax
+    // dL/dxi = exp(-nls) - t :  where, t is target and nls = negLogSoftmax
     // and  -nls = [xi - log(Sum(e^xj))],
     // exp(-nls) =  e^xi/(Sum(e^xj))
-    __host__ __device__ inline T operator()(T t, T nls) const { return exp(-nls) - t; }
+    T factor = 1;
+    __host__ __device__ inline T operator()(T t, T nls) const { return (exp(-nls) - t) / factor; }
 };
 
 template <typename T>
@@ -237,17 +256,17 @@ struct AdamWeightUpdate
 template <typename T>
 struct Max
 {
-    static constexpr T Identity =
-        std::is_floating_point<T>::value ? -1e6 : std::numeric_limits<T>::lowest();
+    static constexpr T Identity = std::numeric_limits<T>::lowest();
     __host__ __device__ inline T operator()(T a, T b) const { return (a > b ? a : b); }
+    static constexpr char const* name = "Max";
 };
 
 template <typename T>
 struct Min
 {
-    static constexpr T Identity =
-        std::is_floating_point<T>::value ? 1e6 : std::numeric_limits<T>::max();
+    static constexpr T Identity = 1e9;
     __host__ __device__ inline T operator()(T a, T b) const { return (a <= b ? a : b); }
+    static constexpr char const* name = "Min";
 };
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -258,13 +277,16 @@ struct Sigmoid
 {
     typedef struct SigmoidF
     {
-        __host__ __device__ inline T operator()(T a) const { return 1 / (1 + exp(-a)); }
+        __host__ __device__ inline T operator()(T a) const { return 1 / (1 + T(exp(-a))); }
+        static constexpr char const* name = "SigmoidForward";
     } forward;
 
     typedef struct SigmoidB
     {
         __host__ __device__ inline T operator()(T a) const { return a * (1 - a); }
+        static constexpr char const* name = "SigmoidBackward";
     } backward;
+    static constexpr char const* name = "Sigmoid";
 };
 
 template <typename T>
@@ -273,11 +295,13 @@ struct Relu
     typedef struct ReluF
     {
         __host__ __device__ inline T operator()(T a) const { return a > 0 ? a : 0; }
+        static constexpr char const* name = "ReluForward";
     } forward;
 
     typedef struct ReluB
     {
         __host__ __device__ inline T operator()(T a) const { return a > 0 ? 1 : 0; }
+        static constexpr char const* name = "ReluBackward";
     } backward;
 };
 
@@ -290,6 +314,7 @@ struct LeakyRelu
         float32 slope;
         LeakyReluF(float32 negative_slope = 3e-3) : slope(negative_slope) {}
         __host__ __device__ inline T operator()(T a) const { return a > 0 ? a : a * slope; }
+        static constexpr char const* name = "LeakyReluForward";
     } forward;
 
     typedef struct LeakyReluB
@@ -297,6 +322,7 @@ struct LeakyRelu
         float32 slope;
         LeakyReluB(float32 negative_slope = 3e-3) : slope(negative_slope) {}
         __host__ __device__ inline T operator()(T a) const { return a > 0 ? 1 : slope; }
+        static constexpr char const* name = "LeakyReluBackward";
     } backward;
 
     LeakyRelu(float32 neg_slope = 3e-3) : forward(neg_slope), backward(slope) {}
@@ -308,38 +334,15 @@ struct TanH
     typedef struct TanhF
     {
         __host__ __device__ inline T operator()(T a) const { return tanh(a); }
+        static constexpr char const* name = "TanHForward";
     } forward;
 
     typedef struct TanhB
     {
         __host__ __device__ inline T operator()(T a) const { return 1 - a * a; }
+        static constexpr char const* name = "TanHBackward";
     } backward;
-};
-
-/*
-cdf = 0.5 * (1 + torch.erf(data/2.0**0.5))
-return data * cdf
-
-*/
-template <typename T>
-struct GELU
-{
-    typedef struct GELUF
-    {
-        __host__ __device__ inline T operator()(T a) const
-        {
-            return a * 0.5 * (1 + erff(a / sqrtf(2)));
-        }
-    } forward;
-
-    typedef struct GELUB
-    {
-        GELUB() = delete;  // broken
-        __host__ __device__ inline T operator()(T x) const
-        {
-            return 0.5 * (1 + erff(x / sqrtf(2))) + x * (1 / sqrtf(2 * M_PI)) * expf(-0.5 * x * x);
-        }
-    } backward;
+    static constexpr char const* name = "TanH";
 };
 
 template <typename T>
@@ -347,6 +350,7 @@ struct IActivation
 {
     typedef Identity<T> forward;
     typedef Identity<T> backward;
+    static constexpr char const* name = "IActivation";
 };
 //////////////////////////////////////////////////////////////////////////////////////
 // composition of unary operators
@@ -383,51 +387,6 @@ template <typename T>  // (a - b)
 struct MultNeg2
 {
     __host__ __device__ inline T operator()(T a, T b) const { return 2 * (a - b); }
-};
-
-template <typename T>
-struct FunctorName
-{
-    static const char *name() { return "Unknown"; }
-};
-
-template <typename T>
-struct FunctorName<Mul<T>>
-{
-    static const char *name() { return "Mul"; }
-};
-template <typename T>
-struct FunctorName<Plus<T>>
-{
-    static const char *name() { return "Plus"; }
-};
-template <typename T>
-struct FunctorName<DividebBy<T>>
-{
-    static const char *name() { return "DivBy"; }
-};
-template <typename T>
-struct FunctorName<WeightUpdate<T>>
-{
-    static const char *name() { return "WeightUpdate"; }
-};
-
-template <typename T>
-struct FunctorName<TanH<T>>
-{
-    static const char *name() { return "TanH"; }
-};
-
-template <typename T>
-struct FunctorName<Relu<T>>
-{
-    static const char *name() { return "Relu"; }
-};
-
-template <typename T>
-struct FunctorName<Sigmoid<T>>
-{
-    static const char *name() { return "Sigmoid"; }
 };
 
 #endif

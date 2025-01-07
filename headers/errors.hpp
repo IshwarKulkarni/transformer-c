@@ -30,7 +30,8 @@ inline std::pair<std::string, std::string> split(const std::string& str, const s
     {
         return {str, ""};
     }
-    return {str.substr(0, pos), str.substr(pos + delim.size())};
+    return std::make_pair<std::string, std::string>(str.substr(0, pos),
+                                                    str.substr(pos + delim.size()));
 }
 
 inline std::string get_substr(const std::string& str, const std::string& start,
@@ -48,7 +49,7 @@ inline std::string get_substr(const std::string& str, const std::string& start,
 inline void print_backtrace()
 {
     void* array[255];
-    long int size = backtrace(array, 255);
+    int size = backtrace(array, 255);
     char** strings = backtrace_symbols(array, size);
     if (size == 0)
     {
@@ -94,11 +95,50 @@ inline void print_backtrace()
     free(strings);
 }
 
+#ifdef __CUDA_ARCH__
+#define throw_rte_with_backtrace(...) \
+    {                                 \
+        assert(false);                \
+    }
+#else
 #define throw_rte_with_backtrace(...)      \
     {                                      \
         LOG(RED, __VA_ARGS__);             \
         print_backtrace();                 \
         throw std::runtime_error("Error"); \
     }
+#endif
+
+#ifdef __CUDA_ARCH__
+#define throw_oob3_with_backtrace(b, y, x, bs, ys, xs)                                            \
+    {                                                                                             \
+        printf("Out of bounds access of (%d, %d, %d), for shape [%d, %d, %d]\n", b, y, x, bs, ys, \
+               xs);                                                                               \
+        assert(false);                                                                            \
+    }
+#else
+#define throw_oob3_with_backtrace(b, y, x, bs, ys, xs)                                             \
+    {                                                                                              \
+        LOG(RED, "Out of bounds access of(", b, ',', y, ',', x, ") for shape [", bs, ',', ys, ',', \
+            xs, ']');                                                                              \
+        print_backtrace();                                                                         \
+        throw std::out_of_range("Error");                                                          \
+    }
+#endif
+
+#ifdef __CUDA_ARCH__
+#define throw_oob1_with_backtrace(idx, limit)                                      \
+    {                                                                              \
+        printf("Out of bounds access of 1d loc: %llu, limit: %llu\n", idx, limit); \
+        assert(false);                                                             \
+    }
+#else
+#define throw_oob1_with_backtrace(idx, limit)                                  \
+    {                                                                          \
+        LOG(RED, "Out of bounds access of 1d loc: ", idx, ", limit: ", limit); \
+        print_backtrace();                                                     \
+        throw std::out_of_range("Error");                                      \
+    }
+#endif
 
 #endif
