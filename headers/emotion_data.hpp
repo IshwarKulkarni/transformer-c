@@ -4,8 +4,8 @@
 #include <array>
 #include <string>
 #include <vector>
-#include "../headers/word2vec.hpp"
 #include "nodes.hpp"
+#include "word2vec.hpp"
 
 struct EmotionData
 {

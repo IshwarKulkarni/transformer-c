@@ -1,6 +1,7 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
+#include <cuda_runtime_api.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -19,6 +20,7 @@ namespace Log {
 #define WHITE "\033[1;37m"
 #define BLACK "\033[1;30m"
 #define ORANGE "\033[1;31m"
+#define GRAY "\033[1;30m"
 #define RESET "\033[0m"
 #define BOLD "\033[1m"
 
@@ -41,6 +43,7 @@ class Logger
 {
     // add mutex for threads here.
     std::mutex ostream_mtx;
+    char time_str[256];
 
  public:
     void inline tee(const std::string& filename)
@@ -78,6 +81,7 @@ class Logger
     template <typename... Args>
     inline void log(const Args&... args)
     {
+        std::cout << get_time_str() << RESET << " ";
         this->log_v(std::cout, args...) << RESET << std::endl;
     }
 
@@ -85,6 +89,16 @@ class Logger
     {
         static Logger instance;
         return instance;
+    }
+
+    const char* get_time_str()
+    {
+        time_t rawtime;
+        struct tm* timeinfo;
+        time(&rawtime);
+        timeinfo = localtime(&rawtime);
+        strftime(time_str, sizeof(time_str), GRAY "%Y-%m-%d %H:%M:%S", timeinfo);
+        return time_str;
     }
 
     void disable(const std::string& filename) { disabled_files.insert(filename); }
@@ -100,8 +114,15 @@ class Logger
 };
 
 }  // namespace Log
+
+inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
+{
+    return strm << "(" << dim.x << ", " << dim.y << ", " << dim.z << ")";
+}
+
 #define DISABLE_LOG_FOR_FILE Log::Logger::get().disable(__FILE__);
 #define ENABLE_LOG_FOR_FILE Log::Logger::get().enable(__FILE__);
+#define LOG_NOLOC(...) Log::Logger::get().log(__VA_ARGS__)
 #define LOG(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, __VA_ARGS__)
 #define LOG_SYNC(...)                                                           \
     do                                                                          \

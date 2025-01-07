@@ -1,9 +1,9 @@
-#include <cuda_runtime_api.h>
-#include <cmath>
-#include <fstream>
-#include "../headers/iris_data.hpp"
-#include "../headers/learning_nodes.hpp"
-#include "../headers/logger.hpp"
-#include "../headers/loss_nodes.hpp"
+#include <iostream>
+#include "matrix.cuh"
 
-int main() { return 0; }
+int main()
+{
+    Matrix<float> A({2, 2}, "A");
+    std::cout << A;
+    return 0;
+}

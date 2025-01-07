@@ -5,7 +5,7 @@
 #include "logger.hpp"
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
-#include "matrix_ops.hpp"
+#include "matrix_ops_cpu.hpp"
 #include "types"
 
 template <typename TW, typename TG = TW>  // weight and gradient
@@ -17,36 +17,36 @@ struct Parameter : Matrix<TW>
     float64 beta1Decayed = 1.;
     float64 beta2Decayed = 1.;
 
-    Matrix<float32> m = Matrix<float32>(this->height, this->width, "moment");
-    Matrix<float32> v = Matrix<float32>(this->height, this->width, "second_moment");
-    Matrix<float32> m_updated = Matrix<float32>(this->height, this->width, "moment_updated");
-    Matrix<float32> v_updated = Matrix<float32>(this->height, this->width, "second_moment_updated");
+    Matrix<TG> m = Matrix<TG>(this->shape, "moment");
+    Matrix<TG> v = Matrix<TG>(this->shape, "second_moment");
+    Matrix<TG> m_updated = Matrix<TG>(this->shape, "moment_updated");
+    Matrix<TG> v_updated = Matrix<TG>(this->shape, "second_moment_updated");
 
-    Parameter(uint32_t height, uint32_t width, std::string name = "Param")
-        : Matrix<TW>(xavier_uniform_init<TW>(height, width, name))
+    Parameter(Shape s, std::string name = "Param")
+        : Matrix<TW>(xavier_uniform_init<TW>(s.set(2, 1), name))
     {
-        fill(updatedWeights, (TW*)nullptr);
-        fill(gradients, (TW*)nullptr);
-        fill(m, (TW*)nullptr);
-        fill(v, (TW*)nullptr);
-    }
-
-    Parameter(std::pair<uint32_t, uint32_t> shape, std::string name = "Param")
-        : Parameter(shape.first, shape.second, name)
-    {
+        updatedWeights.reset();
+        gradients.reset();
+        m.reset();
+        v.reset();
     }
 
     void assign(Matrix<TW>& a, Matrix<TW>& b)
     {
-        cudaMemcpy(a.data.get(), b.data.get(), b.numels() * sizeof(TW), cudaMemcpyDefault);
-        fill(b, (TW*)nullptr);
+        cudaMemcpy(a.get().get(), b.get().get(), b.numels() * sizeof(TW), cudaMemcpyDefault);
+        b.reset();
     }
 
-    void accumulate_grad(const Matrix<TG>& gradDelta)  // expects `updatedGradients` to be usable
+    // accumulate the mean of the gradient
+    void accumulate_grad(const Matrix<TG>& gradDelta)
     {
-        // if (update_count == 0) print(MAGENTA "grad delta", gradDelta);
-        binary_apply(updatedGradients, gradients, gradDelta, Plus<TG>());
-        assign(gradients, updatedGradients);
+        if (gradDelta.batch() > 1)
+        {
+            reduce<TG, BATCH_IDX>(updatedGradients, gradDelta);
+            binary_apply(gradients, updatedGradients, Plus<TG>());
+        }
+        else
+            binary_apply(gradients, gradDelta, Plus<TG>());
         accum_count++;
     }
 
@@ -67,10 +67,11 @@ struct Parameter : Matrix<TW>
         return alpha * mhat / (std::sqrt(vhat) + epsilon);
         */
 
-        bool ct_between1 = (update_count >= 0 and update_count < 10);
-        bool ct_between2 = (update_count >= 0 and update_count < 10);
+        bool ct_between1 = (update_count < 10);
+        bool ct_between2 = (update_count < 10);
 
-        bool debug = ((this->height == 8 and ct_between1) or (this->height == 3 and ct_between2));
+        bool debug =
+            ((this->height() == 8 and ct_between1) or (this->height() == 3 and ct_between2));
         auto mag = [](const Matrix<TW>& x) {
             cudaErrCheck(cudaDeviceSynchronize());
             return sqrt(sum_squaredCPU(x) / x.numels());
@@ -82,7 +83,7 @@ struct Parameter : Matrix<TW>
             return;
         }
 
-        unary_apply(updatedGradients, gradients, DividebBy<TG>(accum_count));
+        unary_apply(updatedGradients, gradients, DividedBy<TG>(accum_count));
         assign(gradients, updatedGradients);
         accum_count = 0;
 
@@ -112,12 +113,12 @@ struct Parameter : Matrix<TW>
 
         assign(m, m_updated);
         assign(v, v_updated);
-        fill(gradients, (TG*)nullptr);
+        gradients.reset();
     }
 
     void udate_SGD(float32 lr)
     {
-        unary_apply(updatedGradients, gradients, DividebBy<FloatT>(accum_count));
+        unary_apply(updatedGradients, gradients, DividedBy<FloatT>(accum_count));
         binary_apply(updatedWeights, *this, updatedGradients, WeightUpdate<TW>(lr / accum_count));
         assign(*(Matrix<TW>*)(this), updatedWeights);
         fill(gradients, (TG*)nullptr);
@@ -137,13 +138,13 @@ struct Parameter : Matrix<TW>
     float64 param_magnitude() const
     {
         cudaErrCheck(cudaDeviceSynchronize());
-        return sqrt(sum_absCPU(*this) / (accum_count * this->numels()));
+        return sqrt(sum_absCPU(*this) / (accum_count * this->numels));
     }
 
     float64 grad_magnitude() const
     {
         cudaErrCheck(cudaDeviceSynchronize());
-        return sqrt(sum_absCPU(gradients) / (accum_count * gradients.numels()));
+        return sqrt(sum_absCPU(gradients) / (accum_count * gradients.numels));
     }
 
     const Matrix<TG>& grads() const { return gradients; }
@@ -154,10 +155,9 @@ struct Parameter : Matrix<TW>
     uint32 update_count = 0;
     uint32 accum_count = 0;
     bool is_training = true;
-    Matrix<TG> gradients = Matrix<TG>(this->height, this->width, this->name + "grads");
-    Matrix<TG> updatedGradients =
-        Matrix<TG>(this->height, this->width, this->name + "updated_grads");
-    Matrix<TW> updatedWeights = Matrix<TW>(this->height, this->width, this->name + "updated");
+    Matrix<TG> gradients = Matrix<TG>(this->shape, this->name + "grads");
+    Matrix<TG> updatedGradients = Matrix<TG>(this->shape, this->name + "updated_grads");
+    Matrix<TW> updatedWeights = Matrix<TW>(this->shape, this->name + "updated");
 };
 
 template <typename T>
@@ -171,24 +171,17 @@ using NodePtrs = std::vector<NodePtr<T>>;
 template <typename T = FloatT>
 struct Node : Matrix<T>
 {
-    Node(uint32_t height, uint32_t width, const NodePtrs<T>& prev, const std::string& name_,
-         uint32 prev_count)
-        : Matrix<T>(height, width, name_)
+    Node(Shape s, const NodePtrs<T>& prevs, const std::string& name_, uint32 prev_count)
+        : Matrix<T>(s, name_)
     {
-        if (prev.size() != prev_count)
+        if (prevs.size() != prev_count)
             throw_rte_with_backtrace("Expected ", prev_count, " input(s), for ", name_, " got ",
                                      prev_nodes.size());
-        for (auto& p : prev)
+        for (auto& p : prevs)
         {
             if (p == nullptr) throw_rte_with_backtrace("Input node is nullptr");
             prev_nodes.push_back(p);
         }
-    }
-
-    Node(std::pair<uint32_t, uint32_t> shape, const NodePtrs<T>& prev, const std::string& name_,
-         uint32 prev_count)
-        : Node(shape.first, shape.second, prev, name_, prev_count)
-    {
     }
 
     // call compute on all previous nodes to populate their outputs, then call forward
@@ -248,8 +241,9 @@ void graph_to_dot(NodePtr<T> node, std::ostream& os, std::string header = "digra
         nodes.pop_back();
         for (auto* p : n->prev_nodes)
         {
+            std::string shape = p->shape;
             snprintf(edge_buffer, 256, "%d -> %d [label=\"%s\" spline=ortho ]\n", p->id, n->id,
-                     p->shape_str.c_str());
+                     shape.c_str());
             edge_strs.insert(edge_buffer);
             nodes.push_back(p);
         }
