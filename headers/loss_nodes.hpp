@@ -41,6 +41,14 @@ struct Loss2Node : Node<T>  // 2 input loss node
         return " [label=\"" + this->name + "\", shape=diamond]";
     }
 
+    void reduce_and_copy(Matrix<T>& in)
+    {
+        if (in.batch() > 1) reduce<T, BATCH_IDX>(in, Plus<T>(), T(0), DividedBy<T>(in.batch()));
+        if (in.height() > 1) reduce<T, HEIGHT_IDX>(in, Plus<T>(), T(0), DividedBy<T>(in.height()));
+        if (in.width() > 1) reduce<T, WIDTH_IDX>(in, Plus<T>(), T(0), DividedBy<T>(in.width()));
+        this->copy(in.begin());
+    }
+
     FloatT value() const { return (*this)(0, 0); }
     Node<T>* predictions;
     Input<FloatT>* target;
@@ -69,8 +77,7 @@ struct L2Loss : Loss2Node<T>
     {
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Square<T>());
-        reduce_to_scalar<T>(nDiff, Plus<T>(), T(0), DividedBy<T>(nDiff.numels()));
-        this->copy(nDiff.begin());
+        this->reduce_and_copy(nDiff);
     }
 
     void backward() override
@@ -90,19 +97,19 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
 
     L1Loss(const NodePtrs<T>& inputs, const std::string& name = "L2Loss")
         : Loss2Node<T>(inputs, name),
-          diff(this->shape),
-          nDiff(this->shape),
-          gradientOut(this->shape, name + "_gradientOut"),
+          diff(inputs[0]->shape),
+          nDiff(inputs[0]->shape),
+          gradientOut(inputs[0]->shape, name + "_gradientOut"),
           timesNByNumels(FloatT(1.) / (diff.numels()))
     {
+        LOG(this->name, " diff.shape: ", diff.shape);
     }
 
     void forward() override
     {
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Abs<T>());
-        reduce_to_scalar(nDiff, Plus<T>(), T(0), DividedBy<T>(nDiff.numels()));
-        this->copy(nDiff.begin());
+        this->reduce_and_copy(nDiff);
     }
 
     void backward() override
@@ -132,8 +139,7 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
     void forward() override
     {
         binary_apply(nll, this->prev(1), this->prev(0), NegLogLossFwd<T>());
-        reduce_to_scalar(nll, Plus<T>(), T(0), DividedBy<T>(nll.numels()));
-        this->copy(nll.begin());
+        this->reduce_and_copy(nll);
     }
 
     void backward() override
@@ -146,20 +152,20 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
 };
 
 // Apply log-softmax to incoming row-vectors and then apply cross entropy loss against target
-// This is equivalent to torch.nn.CrossEntropy , but takes any probability distribution target
-// (doesn't check that target rows are normal, doesn't take class indices as inputs.)
+// This is equivalent to torch.nn.CrossEntropy (except this always applies the softmax in dim=-1,
+// ie. WIDTH_IDX) but takes any probability distribution target and doesn't check that target rows
+// are normal, doesn't take class indices as inputs either.
 template <typename T = FloatT>
 struct LogSoftmaxCELoss : Loss2Node<T>
 {
     const Shape prevSize;
-    Matrix<T> exps;             // e^xi
-    Matrix<T> logSumExps;       // log(Sum(e^xj))
-    Matrix<T> negLogSoftmax;    // [log(Sum(e^xj)) - xi]    (-ve log-softmax)
-    Matrix<T> tgtNegLogSmProd;  //  [t * (xi - log(Sum(e^xj)))]   (multiply by t instead of -t,
-                                //  (because -ve value above))
-    Matrix<T> tgtLogSmProdSum;  // sum ( -t * (xi - log(Sum(e^xj))) ) . summed along width
-    Matrix<T>
-        tgtLogSmProdSum1D;  // sum(sum ( -t * (xi - log(Sum(e^xj))) ) ), now summer along height
+    Matrix<T> exps;               // e^xi
+    Matrix<T> logSumExps;         // log(Sum(e^xj))
+    Matrix<T> negLogSoftmax;      // [log(Sum(e^xj)) - xi]    (-ve log-softmax)
+    Matrix<T> tgtNegLogSmProd;    //  [t * (xi - log(Sum(e^xj)))]  (multiply by t instead of -t,
+                                  //  (because -ve value above))
+    Matrix<T> tgtLogSmProdSum;    // sum (-t * (xi - log(Sum(e^xj)))) . summed along width
+    Matrix<T> tgtLogSmProdSum1D;  // sum(sum(-t * (xi - log(Sum(e^xj))))), now summer along height
     Matrix<T> gradient;
     Matrix<T> gradientOut;
     Matrix<T> softmax;

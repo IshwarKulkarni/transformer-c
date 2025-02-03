@@ -382,7 +382,7 @@ inline std::ostream& operator<<(std::ostream& os,
         os << "\n[";
         for (uint32 y = 0; y < m.height(); y++)
         {
-            os << "\n[";
+            os << (m.height() > 1 ? "\n[" : "[");
             for (uint32 x = 0; x < m.width(); x++)
             {
                 os << std::setw(precision + 5) << std::setfill(' ') << std::setprecision(precision)

@@ -77,7 +77,8 @@ struct SoftmaxDim0 : Node<T>
             throw_rte_with_backtrace("Dim[0] of previous node, ", prev->name, prev->shape,
                                      " is 1 softmaxDim0 is invalid");
         }
-        LOG(BLUE, this->name, "\t", prev->shape, " reduced along WIDTH [", prev->width(), "]");
+        LOG(BLUE, R_JUST(this->name, 18), prev->shape, " reduced along WIDTH [", prev->width(),
+            "]");
     }
 
     void forward() override
@@ -269,11 +270,13 @@ struct Dropout : Node<T>
     Matrix<float32> mask;
     Matrix<T> gradientOut;
     const FloatT drop_probability;
+    NodePtr<T> prev;
     Dropout(float32 p, NodePtr<T> prev, const std::string& name = "Dropout")
         : Node<T>(prev->shape, {prev}, name, 1),
           mask(prev->shape),
           gradientOut(this->shape),
-          drop_probability(p)
+          drop_probability(p),
+          prev(prev)
     {
         if (p < 0 or p >= 1)
             throw_rte_with_backtrace("Dropout probability should be in the range [0, 1): ", p);
@@ -282,9 +285,9 @@ struct Dropout : Node<T>
     void forward() override
     {
         if (drop_probability > 0 and this->is_training)
-            dropout(*this, *this->prev_nodes[0], mask, drop_probability);
+            dropout(*this, *prev, mask, drop_probability);
         else
-            fill(*this, *this->prev_nodes[0]);
+            this->copy(prev->begin());
     }
 
     void backward(const Matrix<T>* gradientIn) override
@@ -292,11 +295,11 @@ struct Dropout : Node<T>
         if (drop_probability > 0 and this->is_training)
         {
             dropout(gradientOut, *gradientIn, mask, -1);
-            this->prev_nodes[0]->backward(&gradientOut);
+            prev->backward(&gradientOut);
         }
         else
         {
-            this->prev_nodes[0]->backward(gradientIn);
+            prev->backward(gradientIn);
         }
     }
 

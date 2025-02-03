@@ -13,7 +13,7 @@ std::random_device rdm::rd;
 std::mt19937_64 rdm::det_gen(det_seed);
 std::seed_seq rdm::seed({rdm::rd()});
 std::mt19937_64 rdm::rdm_gen(seed);
-bool rdm::deterministic = true;
+bool rdm::deterministic = false;
 
 template <typename T>
 Matrix<T> init_argv(const char **argv, uint32 argc_offset)

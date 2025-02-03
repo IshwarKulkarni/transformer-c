@@ -10,8 +10,6 @@
 
 #define OLD_SOFTMAX_GRAD 1
 
-#if OLD_SOFTMAX_GRAD
-
 // number of elements to read and sum per thread in sm_grad_kernel:
 static constexpr uint32 SM_GRAD_READ_CT = 4;
 
@@ -221,77 +219,6 @@ void softmax_gradient(Matrix<T>& s_grad_out, const Matrix<T>& s_out, const Matri
     cudaErrCheck(cudaGetLastError());
 }
 
-#else
-
-template <typename T, uint32 TILE_SIZE_X = 16>
-__global__ void sm_grad_kernel(Matrix<T> gradient_out, const Matrix<T> sm_out,
-                               const Matrix<T> grd_in)
-{
-    T sum{0};
-
-    __shared__ T SO[TILE_SIZE_X][TILE_SIZE_X + 1];
-    __shared__ T GI[TILE_SIZE_X][TILE_SIZE_X + 1];
-
-    uint32 y = blockIdx.x * TILE_SIZE_X + threadIdx.x;
-    uint32 x = blockIdx.y * TILE_SIZE_X + threadIdx.y;
-    uint32 b = blockIdx.z;
-
-    uint32 tx = threadIdx.x;
-    uint32 ty = threadIdx.y;
-
-#pragma unroll
-    for (uint32 k = 0; k < iDivUp(sm_out.width(), TILE_SIZE_X) * TILE_SIZE_X; k += TILE_SIZE_X)
-    {
-        uint32 a_x = k + threadIdx.y;
-        uint32 b_x = k + threadIdx.x;
-
-        SO[tx][ty] = a_x < sm_out.width() && y < sm_out.height() ? sm_out(b, y, a_x) : T(0);
-        GI[tx][ty] = b_x < grd_in.width() && x < grd_in.height() ? grd_in(b, x, b_x) : T(0);
-
-        __syncthreads();
-
-        T Jsi = 0;
-        if (a_x == y)
-            Jsi = SO[tx][ty] * (T(1.0) - SO[tx][ty]);
-        else
-            Jsi = -SO[tx][ty] * SO[tx][ty];
-
-#pragma unroll
-        for (uint32 kk = 0; kk < TILE_SIZE_X; kk++)
-        {
-            sum += T(SO[threadIdx.x][kk] * GI[threadIdx.y][kk]);
-        }
-        __syncthreads();
-    }
-
-    gradient_out(b, y, x) = sum;
-}
-
-template <typename T>
-void softmax_gradient(Matrix<T>& s_grad_out, const Matrix<T>& s_out, const Matrix<T>& grad_in)
-{
-    if (s_grad_out.height() <= 1024 or true)
-    {
-        constexpr uint32 BLOCK_SIZE_MM = 8;
-        dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
-        dim3 gridDim = s_grad_out.grid(blockDim);
-        LOG("s_grad_out: ", s_grad_out.shape, ", s_out: ", s_out.shape,
-            ", grad_in: ", grad_in.shape, ", grid: ", gridDim, ", block: ", blockDim);
-        sm_grad_kernel<T, BLOCK_SIZE_MM><<<gridDim, blockDim>>>(s_grad_out, s_out, grad_in);
-    }
-    else
-    {
-        constexpr uint32 BLOCK_SIZE_MM = 24;
-        dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
-        dim3 gridDim = s_grad_out.grid(blockDim);
-        LOG("s_grad_out: ", s_grad_out.shape, ", s_out: ", s_out.shape,
-            ", grad_in: ", grad_in.shape, ", grid: ", gridDim, ", block: ", blockDim);
-        sm_grad_kernel<T, BLOCK_SIZE_MM><<<gridDim, blockDim>>>(s_grad_out, s_out, grad_in);
-    }
-    cudaErrCheck(cudaGetLastError());
-}
-#endif
-
 // Reduces a matrix along a dimension using a reduction operation,
 // and applies a post processing function to the result.
 // The span of reduction (i.e. the dimension being reduced) is blockDim.x
@@ -350,7 +277,8 @@ void reduce(Matrix<T>& result, const Matrix<T>& A, ReduceOp op, T identity, Post
     {
         if (std::is_same<PostProcess, Identity<T>>::value)
             throw_rte_with_backtrace("Invalid reduction operation: dim == 1 for shape: ", A.shape);
-        LOG(YELLOW, "Skipping reduction of dimension ", dim, " of size 1, use unary operation");
+        throw_rte_with_backtrace(YELLOW, "Skipping reduction of dimension ", dim,
+                                 " of size 1, use unary operation");
     }
     check_reduction_sizes<T, dim>(result, A);
 
@@ -503,6 +431,11 @@ template void reduce<FloatT, 2u, Min<FloatT>, Identity<FloatT>>(Matrix<FloatT>&,
                                                                 FloatT, Identity<FloatT>);
 
 template void reduce<FloatT, 0u, Plus<FloatT, FloatT>, Loge<FloatT>>(Matrix<FloatT>&,
+                                                                     Matrix<FloatT> const&,
+                                                                     Plus<FloatT, FloatT>, FloatT,
+                                                                     Loge<FloatT>);
+
+template void reduce<FloatT, 1u, Plus<FloatT, FloatT>, Loge<FloatT>>(Matrix<FloatT>&,
                                                                      Matrix<FloatT> const&,
                                                                      Plus<FloatT, FloatT>, FloatT,
                                                                      Loge<FloatT>);

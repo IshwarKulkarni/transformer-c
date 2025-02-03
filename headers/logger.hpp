@@ -67,9 +67,9 @@ class Logger
     inline std::ostream& log_v(std::ostream& strm, const Location& arg1, const Args&... args)
     {
         if (disabled_files.count(arg1.file)) return strm;
-        return this->log_v(
-            (strm << std::right << std::setw(13) << arg1.file << ":" << arg1.line << "\t"),
-            args...);
+        char file_loc[48];
+        snprintf(file_loc, sizeof(file_loc), " %28s:%d\t", arg1.file, arg1.line);
+        return this->log_v(strm << file_loc, args...);
     }
 
     template <typename First, typename... Args>
@@ -120,6 +120,8 @@ inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
     return strm << "(" << dim.x << ", " << dim.y << ", " << dim.z << ")";
 }
 
+// right justify fill with spaces:
+#define R_JUST(x, n) std::setw(n), std::setfill(' '), std::right, x, " "
 #define DISABLE_LOG_FOR_FILE Log::Logger::get().disable(__FILE__);
 #define ENABLE_LOG_FOR_FILE Log::Logger::get().enable(__FILE__);
 #define LOG_NOLOC(...) Log::Logger::get().log(__VA_ARGS__)

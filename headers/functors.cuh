@@ -303,6 +303,7 @@ struct Relu
         __host__ __device__ inline T operator()(T a) const { return a > 0 ? 1 : 0; }
         static constexpr char const* name = "ReluBackward";
     } backward;
+    static constexpr char const* name = "Relu";
 };
 
 template <typename T>

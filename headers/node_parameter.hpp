@@ -19,8 +19,6 @@ struct Parameter : Matrix<TW>
 
     Matrix<TG> m = Matrix<TG>(this->shape, "moment");
     Matrix<TG> v = Matrix<TG>(this->shape, "second_moment");
-    Matrix<TG> m_updated = Matrix<TG>(this->shape, "moment_updated");
-    Matrix<TG> v_updated = Matrix<TG>(this->shape, "second_moment_updated");
 
     Parameter(Shape s, std::string name = "Param")
         : Matrix<TW>(xavier_uniform_init<TW>(s.set(2, 1), name))
@@ -29,12 +27,6 @@ struct Parameter : Matrix<TW>
         gradients.reset();
         m.reset();
         v.reset();
-    }
-
-    void assign(Matrix<TW>& a, Matrix<TW>& b)
-    {
-        cudaMemcpy(a.get().get(), b.get().get(), b.numels() * sizeof(TW), cudaMemcpyDefault);
-        b.reset();
     }
 
     // accumulate the mean of the gradient
@@ -70,12 +62,9 @@ struct Parameter : Matrix<TW>
         bool ct_between1 = (update_count < 10);
         bool ct_between2 = (update_count < 10);
 
-        bool debug =
-            ((this->height() == 8 and ct_between1) or (this->height() == 3 and ct_between2));
-        auto mag = [](const Matrix<TW>& x) {
-            cudaErrCheck(cudaDeviceSynchronize());
-            return sqrt(sum_squaredCPU(x) / x.numels());
-        };
+        bool debug = false and ((this->height() == 8 and ct_between1) or
+                                (this->height() == 3 and ct_between2));
+        auto mag = [](const Matrix<TW>& x) { return sqrt(sum_squaredCPU(x) / x.numels()); };
 
         if (accum_count == 0)
         {
@@ -83,23 +72,25 @@ struct Parameter : Matrix<TW>
             return;
         }
 
-        unary_apply(updatedGradients, gradients, DividedBy<TG>(accum_count));
-        assign(gradients, updatedGradients);
-        accum_count = 0;
+        if (accum_count > 1)
+        {
+            unary_apply(gradients, DividedBy<TG>(accum_count));
+            accum_count = 0;
+        }
 
-        binary_apply(m_updated, m, gradients, MomentUpdate<TW>(beta1));
-        binary_apply(v_updated, v, gradients, SecondMomentUpdate<TW>(beta2));
+        binary_apply(m, gradients, MomentUpdate<TW>(beta1));
+        binary_apply(v, gradients, SecondMomentUpdate<TW>(beta2));
+
         if (debug)
         {
             LOG_SYNC(YELLOW, update_count, "> beta1Decayed: ", beta1Decayed, " beta2decayed ",
-                     beta2Decayed, " gradients mag: ", mag(gradients), RESET, " ", *this, m_updated,
-                     v_updated);
+                     beta2Decayed, " gradients mag: ", mag(gradients), RESET, " ", *this);
         }
 
         beta1Decayed *= beta1;
         beta2Decayed *= beta2;
         AdamWeightUpdate<TW> awu(beta1Decayed, beta2Decayed);
-        binary_apply(updatedGradients, m_updated, v_updated, awu);
+        binary_apply(updatedGradients, m, v, awu);
 
         if (debug)
         {
@@ -107,12 +98,9 @@ struct Parameter : Matrix<TW>
                      updatedGradients);
         }
 
-        binary_apply(updatedWeights, *this, updatedGradients, WeightUpdate<TW>(lr));
-        assign(*(Matrix<TW>*)(this), updatedWeights);
+        binary_apply(*this, updatedGradients, WeightUpdate<TW>(lr));
         if (debug) LOG_SYNC("This after update ", *this);
 
-        assign(m, m_updated);
-        assign(v, v_updated);
         gradients.reset();
     }
 

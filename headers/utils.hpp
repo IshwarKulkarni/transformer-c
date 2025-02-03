@@ -185,4 +185,25 @@ inline std::ostream& progress_bar(uint32 cur, uint32 limit)
     return cout;
 }
 
+inline std::string num_to_si(float64 num, bool use_pow2 = false)
+{
+    const char* suffixes_si[] = {"", "K", "M", "G", "T", "P", "E"};
+    const char* suffixes_p2[] = {"", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"};
+    const char** suffixes = use_pow2 ? suffixes_p2 : suffixes_si;
+    uint32 i = 0;
+    const float32 base = use_pow2 ? 1024 : 1000;
+    while (num >= base)
+    {
+        num /= base;
+        i++;
+    }
+    float64 frac = uint64(num) - num;
+    char out[32];
+    if (std::abs(frac) < 1e-5)
+        snprintf(out, sizeof(out), "%lld%s", uint64(num), suffixes[i]);
+    else
+        snprintf(out, sizeof(out), "%3.2f%s", num, suffixes[i]);
+    return out;
+}
+
 #endif

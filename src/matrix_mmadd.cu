@@ -99,45 +99,12 @@ __global__ void mat_vector_mul_kernel(Matrix<T> result, const Matrix<T> A, const
     }
 }
 
-template <typename T, typename PostProcess>
-__global__ void outer_product(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B,
-                              const Optional<Matrix<T>> C, bool addToresult = false,
-                              PostProcess pProcess = Identity<T>())
-{
-    uint32 x = threadIdx.x;
-    uint32 y = blockIdx.y;
-    uint32 b = blockIdx.x;
-    uint32 rwidth = B.width();
-    uint32 rheight = A.height();
-
-    T c(0);
-    if (C.is_valid())
-    {
-        auto x_ = C->width() == 1 ? 0 : x;
-        auto y_ = C->height() == 1 ? 0 : y;
-        c = (*C)(b, x_, y_);
-    }
-
-    if (x < rwidth and y < rheight)
-    {
-        T r = (addToresult ? result(b, y, x) : T(0));
-        if (C.is_valid()) r += (*C)(b, x, y);
-        result(b, y, x) = pProcess(T(A(b, y, 0) * B(b, 0, x)) + c + r);
-    }
-}
-
 template <typename T, typename PProcess>
 void mmadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Optional<Matrix<T>> C,
            PProcess pProcess)
 {
     check_mmadd_sizes(result, A, B, C);
-    if (A.width() == 1 and
-        B.width() <= 1024)  // outer product (small enough to fit in one thread block)
-    {
-        dim3 gridDim(result.batch(), A.height());
-        outer_product<<<gridDim, B.width()>>>(result, A, B, C, false, pProcess);
-    }
-    else if (A.height() <= 512)
+    if (A.height() <= 512)
     {
         constexpr uint32 TILE_SZ = 8;
         dim3 blockDim(TILE_SZ, TILE_SZ);

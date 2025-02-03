@@ -114,7 +114,7 @@ void concat(Matrix<T>& res, const std::vector<Matrix<T>*>& inputs, Op op)
             in_shape, " -> ", res.shape, " along dimension ", Dim, " expected: ", exp_res_shape);
     }
 
-    dim3 blockDim(32, 32, 1);
+    dim3 blockDim(24, 24, 1);
     dim3 gridDim = inputs[0]->grid(blockDim);
     concat_kernel<T, Dim, Op><<<gridDim, blockDim>>>(res, concat_ptrs, in_shape, inputs.size(), op);
     cudaErrCheck(cudaGetLastError());
@@ -171,7 +171,7 @@ void split(std::vector<Matrix<T>*>& outputs, const Matrix<T>& input, Op op)
         throw_rte_with_backtrace("Dimension incorrect for split");
     }
 
-    dim3 blockDim(32, 32, 1);
+    dim3 blockDim(24, 24, 1);
     dim3 gridDim = outputs[0]->grid(blockDim);
     split_kernel<T, Dim, Op>
         <<<gridDim, blockDim>>>(split_mat_ptrs, input, out_shape, outputs.size(), op);
@@ -247,7 +247,7 @@ void dropout(Matrix<T>& res, const Matrix<T>& in, Matrix<float32>& mask, float32
         throw_rte_with_backtrace("Dimension mismatch for dropout");
     }
 
-    dim3 block(32, 32);
+    dim3 block(24, 24);
     dropout_kernel<T><<<res.grid(block), block>>>(res, in, mask, drop_prob, dropout_states.get());
     cudaErrCheck(cudaGetLastError());
 }
@@ -438,3 +438,13 @@ template void binary_apply<FloatT, FloatT, FloatT, LSMCEBkwd<FloatT>>(Matrix<Flo
                                                                       Matrix<FloatT> const&,
                                                                       Matrix<FloatT> const&,
                                                                       LSMCEBkwd<FloatT>);
+
+template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, Relu<FloatT>>>(
+    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
+    ActBackwardMul<FloatT, Relu<FloatT>>);
+
+template void unary_apply<FloatT, FloatT, Abs<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                       Abs<FloatT>);
+
+template void unary_apply<FloatT, FloatT, Sign<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                        Sign<FloatT>);

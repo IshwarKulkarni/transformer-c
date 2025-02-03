@@ -5,21 +5,21 @@
 #include <vector>
 #include "nodes.hpp"
 
-struct IrisDataset
+struct CSVDataset
 {
     using Feature = std::array<float32, 4>;
     using Label = std::array<float32, 3>;
     std::vector<Feature> features;
     std::vector<Label> labels;
-    std::vector<uint32> indices;
-    uint32 loaded = 0;
+    std::vector<uint32> all_indices;
+    uint32 loaded_batches = 0;
 
     Input<> sample;
     Input<> target;
 
     const std::string label_names[3] = {"Setosa", "Versicolor", "Virginica"};
 
-    IrisDataset(std::string iris_csv, uint32 batch, uint32 max_samples = -1)
+    CSVDataset(std::string iris_csv, uint32 batch, uint32 max_samples = -1)
         : sample({batch, 1, 4, "sample"}), target({batch, 1, 3, "target"})
     {
         std::ifstream iris_file(iris_csv);
@@ -45,23 +45,23 @@ struct IrisDataset
                               float32(label == label_names[2])});
         }
         LOG(GREEN, "Read ", features.size(), " from ", iris_csv);
-        indices.resize(features.size());
-        std::iota(indices.begin(), indices.end(), 0);
+        all_indices.resize(features.size());
+        std::iota(all_indices.begin(), all_indices.end(), 0);
         swizzle();
     }
 
-    void swizzle() { std::shuffle(std::begin(indices), std::end(indices), rdm::gen()); }
+    void swizzle() { std::shuffle(std::begin(all_indices), std::end(all_indices), rdm::gen()); }
 
     uint32 size() { return features.size(); }
 
     void load(uint32 idx)
     {
-        loaded++;
-        if (loaded % size() == 0)
+        loaded_batches++;
+        if (loaded_batches % size() == 0)
         {
             swizzle();
         }
-        idx = indices[idx % indices.size()];
+        idx = all_indices[idx % all_indices.size()];
         std::copy(features[idx].begin(), features[idx].end(), sample.begin());
         std::copy(labels[idx].begin(), labels[idx].end(), target.begin());
     }

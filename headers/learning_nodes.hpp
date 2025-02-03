@@ -55,15 +55,16 @@ struct Linear : Node<T>
           useBias(useBias)
     {
         this->params.push_back(&W);
-        std::string bias_str = "";
+        std::string bias_str = "\t\t";
         if (useBias)
         {
             this->params.push_back(&b);
             b.reset();
-            bias_str = " + B: (" + std::to_string(b.numels()) + ")";
+            bias_str = " + B: (" + std::to_string(b.numels()) + ") ";
         }
-        LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape, " | W: ", W.shape, " (",
-            W.numels(), ")", bias_str, " | Activation: ", Act::name);
+        LOG(BLUE, R_JUST(this->name, 18), prev->shape, R_JUST("->", 6), this->shape,
+            "\t| W: ", W.shape, " (", num_to_si(W.numels(), true), ")", bias_str,
+            "| Activation: ", Act::name);
     }
 
     void init()
@@ -94,8 +95,13 @@ struct Linear : Node<T>
 
         if (useBias)
         {
-            reduce<T, HEIGHT_IDX, Plus<T>>(bGradUpdate, *gradIn);
-            b.accumulate_grad(bGradUpdate);
+            if (gradIn->height() > 1)
+            {
+                reduce<T, HEIGHT_IDX, Plus<T>>(bGradUpdate, *gradIn);
+                b.accumulate_grad(bGradUpdate);
+            }
+            else
+                b.accumulate_grad(*gradIn);
         }
 
         transpose(tempT, *gradIn);
@@ -301,7 +307,7 @@ struct FeedForward : Node<T>
     std::unique_ptr<LinearOut> l_out;
 
     FeedForward(LinIni l1i, LinOuti l2i, FloatT dropout_ratio, const std::string& name = "MLP")
-        : Node<T>(l1i.prev->height, l2i.out_size, {l1i.prev}, name, 1)
+        : Node<T>(l1i.prev->shape.set(WIDTH_IDX, l2i.out_size), {l1i.prev}, name, 1)
     {
         if (l2i.prev != nullptr)
         {
@@ -314,7 +320,6 @@ struct FeedForward : Node<T>
         l2i.prev = dropout.get();
         l_out = std::make_unique<LinearOut>(l2i);
 
-        this->data = l_out->data;
         this->prev_nodes = {l_out.get()};
     }
 
@@ -325,7 +330,7 @@ struct FeedForward : Node<T>
     {
     }
 
-    void forward() override {}
+    void forward() override { this->copy(l_out->begin()); }
 
     void backward(const Matrix<T>* gradientIn) override { l_out->backward(gradientIn); }
 
