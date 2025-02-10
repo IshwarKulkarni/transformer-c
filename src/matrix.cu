@@ -1,6 +1,7 @@
 #include <sys/types.h>
 #include "matrix.cuh"
 #include "matrix_ops.cuh"
+#include "nodes/node.hpp"
 
 static constexpr uint32 det_seed = 42;
 
@@ -13,7 +14,12 @@ std::random_device rdm::rd;
 std::mt19937_64 rdm::det_gen(det_seed);
 std::seed_seq rdm::seed({rdm::rd()});
 std::mt19937_64 rdm::rdm_gen(seed);
-bool rdm::deterministic = false;
+bool rdm::deterministic = true;
+
+uint64 ParameterBase::param_count = 0;
+
+std::vector<NodeBase *> NodeBase::all_nodes;
+std::vector<const MatrixBase *> MatrixBase::all_matrices;
 
 template <typename T>
 Matrix<T> init_argv(const char **argv, uint32 argc_offset)

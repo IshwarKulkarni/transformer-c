@@ -1,17 +1,11 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
-#include <numeric>
-#include "cuda_runtime_api.h"
 #include "datasets.hpp"
-#include "functors.cuh"
-#include "learning_nodes.hpp"
-#include "logger.hpp"
-#include "loss_nodes.hpp"
-#include "matrix.cuh"
-#include "matrix_ops.cuh"
 #include "matrix_ops_cpu.hpp"
-#include "nodes.hpp"
+#include "nodes/loss.hpp"
+#include "nodes/parameterized.hpp"
+#include "nodes/unparameterized.hpp"
 #include "types"
 #include "utils.hpp"
 
@@ -41,7 +35,8 @@ int32 test_match_implem(const MatrixT& C, const MatrixT& D, std::string msg, flo
     auto any_nan = std::any_of(D.begin(), D.end(), [](FloatT x) { return std::isnan(x); });
     if (any_nan)
     {
-        LOG_NOLOC(RED, msg, " -> D has NaNs");
+        LOG_NOLOC(RED, msg, " -> D has NaNs\n", D);
+
         return -1;
     }
 
@@ -66,7 +61,7 @@ int32 test_match_implem(const MatrixT& C, const MatrixT& D, std::string msg, flo
     diff_file << std::setprecision(8);
     if (C.shape[0] <= 10 and C.shape[1] <= 10 and C.shape[2] <= 5) LOG_NOLOC("C: ", C, "D: ", D);
 
-    diff_file << "b, y, x : \t\t\tC,  \t\t\tD,   \t\t\t|c/d-1|,\t\t c-d\n";
+    diff_file << "b, y, x : \t\t\tC,  \t\t\tD,   \t\t\t|c/d|,\t\t c-d\n";
     for (uint32 b = 0; b < D.batch(); b++)
         for (uint32 y = 0; y < D.height(); y++)
             for (uint32 x = 0; x < D.width(); x++)
@@ -79,7 +74,7 @@ int32 test_match_implem(const MatrixT& C, const MatrixT& D, std::string msg, flo
                               << std::setprecision(6) << std::setfill(' ') << std::setw(14) << c << ",\t"
                               << std::setprecision(6) << std::setfill(' ') << std::setw(14) << d << ",\t" 
                               << std::setprecision(6) << std::setfill(' ') << std::setw(14) 
-                              << std::abs(c / d - 1) << ",\t\t" << c - d << std::endl;
+                              << std::abs(c / d) << ",\t\t" << c - d << std::endl;
                 // clang-format off
             }
     diff_file << "\n\n";
@@ -954,30 +949,99 @@ int test_softmaxDim()
     return err;
 }
 
+int test_mean_node()
+{
+    uint32 bn, xw, Sl, I0;
+    FloatT expected_loss = 0.0;
+
+    std::ifstream in("static_data/average.txt");
+    in >> bn >> xw >> Sl >> I0 >> expected_loss;
+
+    LOG("Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl, " Lin Emb Size: ", I0);
+
+    Input<> x(bn, Sl, xw, "x");
+    Linear<FloatT, TanH<FloatT>> L(I0, &x, true, "L");
+    Mean<FloatT, HEIGHT_IDX> S(&L, "Average");
+    Input<> target(S.shape, "target");
+    L2Loss loss({&S, &target}, "Loss");
+
+    std::ofstream dot("mean_test.dot");
+    graph_to_dot(&loss, dot);
+
+    in >> x >> L.W >> L.b >> target;
+    loss.compute();
+
+    cudaErrCheck(cudaDeviceSynchronize());
+    if (std::abs(expected_loss - loss.value()) > 1e-3)
+        LOG(RED, "error value mismatch: ", loss.value(), " vs ", expected_loss);
+
+    uint32 err = test_match_eps(read_csv<FloatT>(in), L, S.name + "linear_output", 1e-4) +
+                 test_match_eps(read_csv<FloatT>(in), S, S.name + "output", 1e-4);
+
+    loss.backward();
+
+    err += test_match(read_csv<FloatT>(in), L.W.grads(), S.name + "-L.W.g") +
+           test_match(read_csv<FloatT>(in), L.b.grads(), S.name + "-L.b.g");
+
+    if (err == 0) LOG(GREEN, "Test Average passed");
+
+    return err;
+}
+
+int test_layer_norm()
+{
+    uint32 bn, xw, Sl, I0;
+    FloatT expected_loss = 0.0;
+    std::ifstream in("static_data/layer_norm.txt");
+    in >> bn >> xw >> Sl >> I0 >> expected_loss;
+
+    LOG("Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl, " Lin Emb Size: ", I0);
+    Input<> x(bn, Sl, xw, "x");
+    Linear<FloatT, Sigmoid<FloatT>> L(I0, &x, true, "L");
+    Normalize<FloatT> norm(&L, "LayerNorm");
+    Input<> target(norm.shape, "target");
+    L2Loss loss({&norm, &target}, "Loss");
+
+    std::ofstream dot("layer_norm.dot");
+    graph_to_dot(&loss, dot);
+
+    in >> x >> L.W >> L.b >> target;
+    loss.compute();
+
+    cudaErrCheck(cudaDeviceSynchronize());
+    if (std::abs(expected_loss - loss.value()) > 1e-3)
+        LOG(RED, "error value mismatch: ", loss.value(), " vs ", expected_loss);
+
+    uint32 err = test_match_eps(read_csv<FloatT>(in), L, norm.name + "linear_output", 1e-4) +
+                 test_match_eps(read_csv<FloatT>(in), norm, norm.name + "output", 1e-3);
+
+    loss.backward();
+
+    err += test_match(read_csv<FloatT>(in), L.W.grads(), norm.name + "-L.W.g") +
+           test_match(read_csv<FloatT>(in), L.b.grads(), norm.name + "-L.b.g");
+
+    if (err == 0) LOG(GREEN, "Test LayerNorm passed");
+    return err;
+}
+
 int run_unparameterized_tests()
 {
+    //  Test kernel calls, self consistency tests.
+    test_concat();
     test_dropout(0.35);
+
     //  test Node<> level stuff, uses data from compare.ipynb
     test_softmaxDim<SoftmaxDim0<FloatT>, 0>();
     test_softmaxDim<SoftmaxDim1<FloatT>, 1>();
-
-    //  Test kernel calls, self consistency tests.
-    test_concat();
+    test_mean_node();
     test_attention();
     test_productT();
     test_linearb();
     test_LSMCELoss();
+    test_layer_norm();
 
     // Test Adam optimizer against known values
     test_adam();
-
-    /*
-    // not really tests
-    run_multihead();
-
-    // Word2Vec test
-    // test_word2vec("static_data/word2vec.txt");
-    */
     return 0;
 }
 

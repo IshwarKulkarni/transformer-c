@@ -34,8 +34,8 @@ inline bool mmABRes(const Shape &A, const Shape &B, const Shape &Res)
 
 #ifndef DISABLE_SIZE_CHECK
 
-template <typename Tr, typename Ta, typename Tb, typename Tc>
-void check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B,
+template <typename Tr, typename T, typename Tb, typename Tc>
+void check_mmadd_sizes(Matrix<Tr> &result, const Matrix<T> &A, const Matrix<Tb> &B,
                        const Optional<Matrix<Tc>> C)
 {
     if (mmABRes(A.shape, B.shape, result.shape) and broadcastable<2>(C, result)) return;
@@ -52,8 +52,8 @@ void check_mmadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb>
 // check if A and B are compatible for mmTadd operation in height and width dimension,
 // and if C is valid, check if it is compatible with result,
 // and if batch dimensions match or are broadcastable
-template <typename Tr, typename Ta, typename Tb, typename Tc>
-void check_mmTadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb> &B,
+template <typename Tr, typename T, typename Tb, typename Tc>
+void check_mmTadd_sizes(Matrix<Tr> &result, const Matrix<T> &A, const Matrix<Tb> &B,
                         const Optional<Matrix<Tc>> C)
 {
     if (mmABRes(A.shape, B.shape.t(), result.shape) and broadcastable<2>(C, result) and
@@ -62,12 +62,26 @@ void check_mmTadd_sizes(Matrix<Tr> &result, const Matrix<Ta> &A, const Matrix<Tb
 
     if (C.is_valid() and C->shape != result.shape)
     {
-        throw_rte_with_backtrace(RED, "Dimension mismatch in mmadd: A: ", A.shape,
+        throw_rte_with_backtrace(RED, "Dimension mismatch in mmTadd: A: ", A.shape,
                                  " * B: ", B.shape, " -> ", result.shape, " & C: ", C->shape);
     }
-    throw_rte_with_backtrace(RED, "Dimension mismatch in mmadd: A: ", A.shape, " * B: ", B.shape,
+    throw_rte_with_backtrace(RED, "Dimension mismatch in mmTadd: A: ", A.shape, " * B: ", B.shape,
                              " -> ", result.shape);
 }
+
+template <typename T>  // used in ternary_apply
+void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B,
+                           const Matrix<T> &C)
+{
+    if (broadcastable<0>(A, res) and broadcastable<1>(B, res) and broadcastable<1>(A, res) and
+        broadcastable<0>(B, res) and broadcastable<2>(A, res) and broadcastable<2>(B, res) and
+        broadcastable<0>(C, res) and broadcastable<2>(C, res) and broadcastable<2>(C, res))
+        return;
+
+    throw_rte_with_backtrace(RED, "Dimension mismatch in binary_apply: A: ", A.shape,
+                             " & B: ", B.shape, " -> ", res.shape);
+}
+
 template <typename T>  // used in binary_apply
 void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B)
 {
@@ -84,7 +98,7 @@ void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A)
 {
     if (broadcastable<0>(A, res) and broadcastable<1>(A, res) and broadcastable<2>(A, res)) return;
 
-    throw_rte_with_backtrace(RED, "Dimension mismatch in binary_apply: A: ", A.shape, " -> ",
+    throw_rte_with_backtrace(RED, "Dimension mismatch in unary_apply: A: ", A.shape, " -> ",
                              res.shape);
 }
 
@@ -137,6 +151,11 @@ void check_mmadd_sizes(Matrix<Tr> &, const Matrix<Ta> &, const Matrix<Tb> &,
 template <typename Tr, typename Ta, typename Tb, typename Tc>
 void check_mmTadd_sizes(Matrix<Tr> &, const Matrix<Ta> &, const Matrix<Tb> &,
                         const Optional<Matrix<Tc>>)
+{
+}
+
+template <typename T>  // used in ternary_apply
+void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B)
 {
 }
 

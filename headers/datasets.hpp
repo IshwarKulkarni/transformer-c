@@ -3,7 +3,7 @@
 
 #include <set>
 #include <vector>
-#include "nodes.hpp"
+#include "nodes/unparameterized.hpp"
 
 // train or test data enum:
 enum class DataMode
@@ -38,7 +38,7 @@ struct CSVDataset
 
  public:
     CSVDataset(std::string csv_filename, uint32 batch, float32 validation_ratio = 0.1f,
-               uint32 max_samples = -1)
+               uint32 max_samples = UINT32_MAX)
         : batch(batch)
     {
         std::ifstream csv_file(csv_filename);
@@ -165,7 +165,7 @@ struct CategoricalDataset : public CSVDataset
 
  public:
     CategoricalDataset(std::string csv_filename, uint32 batch, float32 validation_ratio = 0.1f,
-                       uint32 max_samples = -1)
+                       uint32 max_samples = UINT32_MAX)
         : CSVDataset(csv_filename, batch, validation_ratio, max_samples)
     {
         uniq_labels.insert(label_strings.begin(), label_strings.end());
@@ -209,7 +209,7 @@ struct CategoricalDataset : public CSVDataset
 struct ContinuousDataset : public CSVDataset
 {
     ContinuousDataset(std::string csv_filename, uint32 batch, float32 validation_ratio = 0.1f,
-                      uint32 max_samples = -1)
+                      uint32 max_samples = UINT32_MAX)
         : CSVDataset(csv_filename, batch, validation_ratio, max_samples)
     {
         for (auto& label : label_strings)

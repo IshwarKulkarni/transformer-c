@@ -1,8 +1,5 @@
-#include "learning_nodes.hpp"
-#include "loss_nodes.hpp"
-#include "matrix.cuh"
-#include "matrix_ops.cuh"
-#include "types"
+#include "nodes/loss.hpp"
+#include "nodes/parameterized.hpp"
 
 using MatrixT = Matrix<FloatT>;
 
@@ -63,7 +60,7 @@ void time_linear_node()
 
     Linear<FloatT, Sigmoid<FloatT>> L0(LinearInputT<FloatT>{I1, &x, true, "Linear-L0"});
     Linear<FloatT, TanH<FloatT>> L1(LinearInputT<FloatT>{I2, &L0, true, "Linear-L1"});
-    SoftmaxDim0<FloatT> softmax(&L1, "Softmax");
+    SoftmaxDim0<FloatT> softmax(&L1, "S");
     Input<> t(L1.shape, "target");
     NLLLoss<> loss({&softmax, &t}, "L2Error");
 

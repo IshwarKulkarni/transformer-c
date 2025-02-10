@@ -1,10 +1,17 @@
-#ifndef NODES_HPP
-#define NODES_HPP
+#ifndef NODES_UNPARAMETERIZED_HPP
+#define NODES_UNPARAMETERIZED_HPP
+
+/*
+Various Nodes with no learnable parameters, these include softmaxes, matrix products, norms and
+means.
+*/
 
 #include <cmath>
 #include "matrix.cuh"
-#include "node_parameter.hpp"
+#include "node.hpp"
+#include "nodes/elemwise.hpp"
 #include "types"
+
 /*
 Implements softmax along width of x => each output column sum to 1 <br>
 ```
@@ -23,8 +30,8 @@ struct SoftmaxDim1 : Node<T>
     Matrix<T> gradientInT = Matrix<T>(this->shape.t(), this->name + "_gradientOutT");
     Exp<T> ExpOp = Exp<T>(std::sqrt(this->height()));
 
-    SoftmaxDim1(NodePtr<T> prev, const std::string& name = "SoftmaxDim1")
-        : Node<T>(prev->shape, {prev}, name, 1)
+    SoftmaxDim1(NodePtr<T> prev, const std::string& name = "")
+        : Node<T>(prev->shape, {prev}, "SoftmaxDim1_" + name, 1)
     {
         if (prev->height() == 1)
         {
@@ -45,6 +52,7 @@ struct SoftmaxDim1 : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         transpose(gradientInT, *gradientIn);
         softmax_gradient(gradientOut, softmax, gradientInT);
         this->prev_nodes[0]->backward(&gradientOut);
@@ -69,8 +77,8 @@ struct SoftmaxDim0 : Node<T>
     Matrix<T> outT = Matrix<T>(this->shape.t(), "outT");
     Exp<T> expOp = Exp<T>(std::sqrt(this->width()));
 
-    SoftmaxDim0(NodePtr<T> prev, const std::string& name = "SoftmaxDim0")
-        : Node<T>(prev->shape, {prev}, name, 1)
+    SoftmaxDim0(NodePtr<T> prev, const std::string& name = "")
+        : Node<T>(prev->shape, {prev}, "SoftmaxDim0_" + name, 1)
     {
         if (prev->width() == 1)
         {
@@ -90,6 +98,7 @@ struct SoftmaxDim0 : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         softmax_gradient(gradientOut, *this, *gradientIn);
         transpose(gradientOutT, gradientOut);
         this->prev_nodes[0]->backward(&gradientOutT);
@@ -125,6 +134,7 @@ struct Product : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         transpose(aT, this->prev(0), Neg<T>());  // disable this in inference only mode.
         mmTadd(a_grad_in, *gradientIn, this->prev(1), {}, pProcess);
         mmadd(b_grad_in, aT, *gradientIn, {}, pProcessN);
@@ -172,6 +182,7 @@ struct ProductT : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         mmadd(a_grad_inN, *gradientIn, this->prev(1), {}, pProcess);
         transpose(gradInT, *gradientIn, Neg<T>());
         mmadd(b_grad_in, gradInT, this->prev(0), {}, pProcessN);
@@ -193,18 +204,106 @@ struct Transpose : Node<T>
 
     Transpose(NodePtr<T> prev, const std::string& name) : Node<T>(prev->shape.t(), {prev}, name, 1)
     {
-        if (!(prev->height == this->width && prev->width == this->height))
+        if (this->prev(0).shape.t() != this->shape)
             throw_rte_with_backtrace("Matrix dimensions do not match for Transpose between ",
                                      prev->name, " and ", this->name);
+
+        LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape);
     }
 
     void forward() override { transpose(*this, this->prev(0)); }
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         transpose(gradientOut, *gradientIn);
         this->prev_nodes[0]->backward(&gradientOut);
     }
+};
+
+template <typename T = FloatT, uint32 Dim = 0>
+struct Mean : Node<T>
+{
+    Mean(NodePtr<T> prev, const std::string& name = "Average")
+        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1), divOp(DividedBy<T>(prev->shape[Dim]))
+    {
+        if (prev->shape[Dim] == 1)
+            throw_rte_with_backtrace("Cannot reduce along dimension ", Dim, " for ", prev->name,
+                                     prev->shape, " already 1");
+        LOG(BLUE, "Mean ", this->name, prev->shape, " -> ", this->shape);
+    }
+
+    void forward() override { reduce<T, Dim>(*this, this->prev(0), Plus<T>(), T(0), divOp); }
+
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape,
+                  " gradientOut shape: ", gradientOut.shape);
+        unary_apply(this->gradientOut, *gradientIn, divOp);
+        this->prev_nodes[0]->backward(&this->gradientOut);
+    }
+    Matrix<T> gradientOut = Matrix<T>(this->shape, this->name + "_gradientOut");
+    DividedBy<T> divOp;
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name +
+               "\" shape=rect  xlabel=<<font color=\"green\" POINT-SIZE=\"10.0\">" + "Mean" +
+               "</font>>]\n";
+    }
+};
+
+template <typename T>
+struct Copy : Node<T>
+{
+    NodePtr<T> in;
+    Matrix<T> gradientOut = Matrix<T>(this->shape, this->name + "_gradientOut");
+    Copy(NodePtr<T> prev, const std::string& name) : Node<T>(prev->shape, {}, name, 0), in(prev)
+    {
+        gradientOut.set_val(T(0));
+    }
+    void forward() override { this->copy(in->begin()); }
+    void backward(const Matrix<T>* gradIn) override
+    {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradIn->shape);
+        binary_apply(gradientOut, *gradIn, Plus<T>());
+    }
+};
+
+// Normalization, Dim=WIDTH_IDX woult be similar to layer norm,
+// Dim=BATCH_IDX would be similar to  Batchorm with no momentum and no affine transform.
+template <typename T = FloatT, uint32 Dim = WIDTH_IDX>
+struct Normalize : public Node<T>
+{
+    NodePtr<T> in;
+    Copy<T> x = Copy<T>(in, "Norm-Input");
+    Mean<T> mu = Mean<T>(&x, "mu");
+    Power<T> mu_sq = Power<T>(&mu, 2, "mu^2");
+
+    Power<T> sq = Power<T>(&x, 2, "x^2");
+    Mean<T> sq_mu = Mean<T>(&sq, "x^2_mu");
+
+    Subtract<T> var = Subtract<T>({&sq_mu, &mu_sq}, "var");
+    Power<T> std = Power<T>(&var, 0.5, "std");
+    Subtract<T> norm_num_sub = Subtract<T>(NodePtrs<T>{&x, &mu}, "x - mu");
+    Division<T> norm = Division<T>({&norm_num_sub, &std}, "Div");
+
+    Normalize(NodePtr<T> prev, const std::string& name = "LayerNormSplit")
+        : Node<T>(prev->shape, {prev}, name, 1), in(prev)
+    {
+        LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape);
+        this->set_data(norm.get_data());
+    }
+
+    void forward() override { norm.compute(); }
+
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        norm.backward(gradientIn);
+        this->prev_nodes[0]->backward(&x.gradientOut);
+        x.gradientOut.set_val(T(0));
+    }
+    virtual NodePtr<T> get_terminal_node() { return &norm; }
 };
 
 template <typename T = FloatT>
@@ -234,6 +333,7 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         split(grad_ptrs, *gradientIn);
         for (uint32 i = 0; i < this->prev_nodes.size(); ++i)
             this->prev_nodes[i]->backward(&grads[i]);
@@ -256,8 +356,9 @@ struct Input : Node<T>
     Input(Shape shape, const std::string& name) : Node<T>(shape, {}, name, 0) {}
     void forward() override {}
 
-    void backward(const Matrix<T>*) override {}
+    void backward(const Matrix<T>*) override { LOG_TRACE("Backward for ", this->name); }
 
+    // TODO this should move to NodeBase
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name + "\", shape=cylinder]";
@@ -292,6 +393,7 @@ struct Dropout : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         if (drop_probability > 0 and this->is_training)
         {
             dropout(gradientOut, *gradientIn, mask, -1);
@@ -318,4 +420,4 @@ struct Dropout : Node<T>
     }
 };
 
-#endif  // NODES_HPP
+#endif  // NODES_UNPARAMETERIZED_HPP

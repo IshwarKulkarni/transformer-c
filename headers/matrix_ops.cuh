@@ -69,11 +69,15 @@ inline void multiply(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B)
 template <typename T, typename Op = Identity<T>>
 void transpose(Matrix<T> &res, const Matrix<T> &A, Op op = Op());
 
-template <typename Tr, typename Ta, typename Tb, typename Op>
-void binary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, const Matrix<Tb> &B, Op op = Op());
+template <typename Tr, typename T, typename Tb, typename Op>
+void binary_apply(Matrix<Tr> &res, const Matrix<T> &A, const Matrix<Tb> &B, Op op = Op());
 
-template <typename Ta, typename Tr = Ta, typename Op>
-void unary_apply(Matrix<Tr> &res, const Matrix<Ta> &A, Op op = Op());
+template <typename T, typename Op>
+void ternary_apply(Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B, const Matrix<T> &C,
+                   Op op = Op());
+
+template <typename T, typename Tr = T, typename Op>
+void unary_apply(Matrix<Tr> &res, const Matrix<T> &A, Op op = Op());
 
 template <typename T, uint32 Dim = 0,
           typename Op = Identity<T>>  // Dim = 0: width, 1:height, 2:batch
@@ -106,17 +110,17 @@ void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
 //////////////////////////////////////////////////////////////////////////////////////
 
 // inplace binary apply A = A op B
-template <typename Ta, typename Tb, typename Op>
-void binary_apply(Matrix<Ta> &A, const Matrix<Tb> &B, Op op = Op())
+template <typename T, typename Tb, typename Op>
+void binary_apply(Matrix<T> &A, const Matrix<Tb> &B, Op op = Op())
 {
-    binary_apply<Ta, Ta, Tb, Op>(A, A, B, op);
+    binary_apply<T, T, Tb, Op>(A, A, B, op);
 }
 
 // inplace unary apply A = op(A)
-template <typename Ta, typename Op>
-void unary_apply(Matrix<Ta> &A, Op op = Op())
+template <typename T, typename Op>
+void unary_apply(Matrix<T> &A, Op op = Op())
 {
-    unary_apply<Ta, Ta, Op>(A, A, op);
+    unary_apply<T, T, Op>(A, A, op);
 }
 
 // inplace reduce, only elements where `index` == 0 are valid after this call,
@@ -277,8 +281,8 @@ Matrix<is_floating_point<T>> eye(uint32 n)
     return A;
 }
 
-template <typename Ta, typename Tb>
-inline Matrix<Ta> &operator<<=(Matrix<Ta> &mat, const std::initializer_list<Tb> &values)
+template <typename T, typename Tb>
+inline Matrix<T> &operator<<=(Matrix<T> &mat, const std::initializer_list<Tb> &values)
 {
     if (values.size() != mat.numels())
     {
@@ -307,7 +311,8 @@ std::ifstream &operator>>(std::ifstream &file, Matrix<T> &mat)
     Shape shape(b, h, w);
     if (mat.shape.shape2d() != shape.shape2d())
     {
-        throw_rte_with_backtrace("Shape mismatch in >> expected ", mat.shape, " got ", shape);
+        throw_rte_with_backtrace("Shape mismatch in >> expected ", mat.shape, " got ", shape,
+                                 " for ", mat.name);
     }
     using readT = typename AccumT<T>::type;
     std::vector<readT> vec;

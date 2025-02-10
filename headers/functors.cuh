@@ -71,7 +71,7 @@ template <typename T>
 struct DividedBy
 {
     T divisor;
-    DividedBy(T divisor) : divisor(divisor) {}
+    DividedBy(T divisor_) : divisor(divisor_) {}
     __host__ __device__ inline T operator()(T a) const { return a / divisor; }
     static constexpr char const* name = "DividedBy";
 };
@@ -94,6 +94,23 @@ template <typename T, int32 Multiplier>
 struct IntegerDivider
 {
     __host__ __device__ inline T operator()(T a) const { return a / Multiplier; }
+};
+
+template <typename T>
+struct Variance
+{
+    __host__ __device__ inline T operator()(T x, T x_mu) const { return x * x - x_mu; }
+};
+
+template <typename T>
+struct Norm  // computer (y - y_mu)/(sqrt(y_var) + eps)
+{
+    T epsilon = 1e-6;
+    __host__ __device__ inline T operator()(T y, T y_mu, T x_sq_mu) const
+    {
+        T var = x_sq_mu - y_mu * y_mu;
+        return (y - y_mu) / (sqrt(var) + epsilon);
+    }
 };
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -126,9 +143,43 @@ struct Mul
 template <typename Ta, typename Tb = Ta>
 struct Div
 {
-    const Tb epsilon = Tb(1e-6);
+    const Tb epsilon = Tb(1e-9);
     static constexpr Ta Identity = 1;
     __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a / (b + epsilon); }
+};
+
+// differentiation of division operator
+template <typename T>
+struct DivDiff
+{
+    const T epsilon = T(1e-6);
+    static constexpr T Identity = 1;
+    __host__ __device__ inline T operator()(T g, T y0, T y1) const { return -(g * y0) / (y1 * y1); }
+};
+
+template <typename T>
+struct Pow
+{
+    T exponent;
+    Pow(T exponent) : exponent(exponent) {}
+    __host__ __device__ inline T operator()(T a) const { return pow(a, exponent); }
+};
+
+template <typename T>
+struct PowDiff  // d/dx (x^n) = n*x^(n-1)
+{
+    T exponent;
+    PowDiff(T exponent) : exponent(exponent) {}
+    __host__ __device__ inline T operator()(T x, T g) const
+    {
+        return g * exponent * pow(x, exponent - 1);
+    }
+};
+
+template <typename T>
+struct SqrtDiff
+{
+    __host__ __device__ inline T operator()(T x, T g) const { return g / sqrt(x); }
 };
 
 template <typename Ta, typename Tb = Ta>

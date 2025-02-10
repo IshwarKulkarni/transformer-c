@@ -1,15 +1,14 @@
-#ifndef LEARNING_NODES_HPP
-#define LEARNING_NODES_HPP
+#ifndef NODES_PARAMETERIZED_HPP
+#define NODES_PARAMETERIZED_HPP
 
-#include <cuda_device_runtime_api.h>
-#include <cuda_runtime_api.h>
+/*
+Various nodes that have learnable parameters, currently they are either Linear<> or use Linear<>
+*/
+
 #include <cmath>
 #include <cstdlib>
-#include "functors.cuh"
-#include "matrix.cuh"
 #include "matrix_ops.cuh"
-#include "node_parameter.hpp"
-#include "nodes.hpp"
+#include "nodes/unparameterized.hpp"
 
 template <typename T = FloatT>
 struct LinearInputT  // a consolidated input arguments for Linear.
@@ -63,7 +62,7 @@ struct Linear : Node<T>
             bias_str = " + B: (" + std::to_string(b.numels()) + ") ";
         }
         LOG(BLUE, R_JUST(this->name, 18), prev->shape, R_JUST("->", 6), this->shape,
-            "\t| W: ", W.shape, " (", num_to_si(W.numels(), true), ")", bias_str,
+            "\t| W: ", W.shape, " (", num_to_si(W.numels(), false), ")", bias_str,
             "| Activation: ", Act::name);
     }
 
@@ -86,6 +85,7 @@ struct Linear : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         auto const* gradIn = gradientIn;
         if constexpr (not std::is_same<Act, IActivation<T>>::value)
         {
@@ -177,12 +177,16 @@ struct Attention : Node<T>
         if (Qinp.out_size != Kinp.out_size)
             throw_rte_with_backtrace("Q and V output sizes do not match for Attention ",
                                      Qinp.out_size, " != ", Kinp.out_size);
-        this->prev_nodes = {&attention};
+        this->set_data(attention.get_data());
     }
 
-    void forward() override { this->copy(attention.begin()); }
+    void forward() override { attention.compute(); }
 
-    void backward(const Matrix<T>* gradientIn) override { attention.backward(gradientIn); }
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        attention.backward(gradientIn);
+    }
 
     void print_desc()
     {
@@ -211,10 +215,13 @@ struct Attention : Node<T>
 template <typename T = FloatT>
 struct SelfAttention : Attention<T>
 {
+    NodePtr<T> in;
+    Copy<T> x = Copy<T>(in, "SA-Input");
     using LinQi = typename Attention<T>::LinQi;
     SelfAttention(uint32 out_size, const NodePtr<T> prev, std::string name = "SelfAttention")
         : Attention<T>({out_size, prev, false, name + "_Q"}, {out_size, prev, false, name + "_K"},
-                       {out_size, prev, false, name + "_V"}, name)
+                       {out_size, prev, false, name + "_V"}, name),
+        in(prev)
     {
     }
 };
@@ -270,7 +277,11 @@ struct MultiHeadAttention : Node<T>
 
     void forward() override {}
 
-    void backward(const Matrix<T>* gradientIn) override { linear->backward(gradientIn); }
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        linear->backward(gradientIn);
+    }
 
     void print_desc()
     {
@@ -332,7 +343,11 @@ struct FeedForward : Node<T>
 
     void forward() override { this->copy(l_out->begin()); }
 
-    void backward(const Matrix<T>* gradientIn) override { l_out->backward(gradientIn); }
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        l_out->backward(gradientIn);
+    }
 
     virtual std::string dot_repr() override
     {
@@ -358,4 +373,4 @@ struct FeedForward : Node<T>
     }
 };
 
-#endif  // LEARNING_NODES_HPP
+#endif  // NODES_PARAMETERIZED_HPP

@@ -121,6 +121,8 @@ inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
 }
 
 // right justify fill with spaces:
+//#define LOG_TRACE(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, __VA_ARGS__)
+#define LOG_TRACE(...)
 #define R_JUST(x, n) std::setw(n), std::setfill(' '), std::right, x, " "
 #define DISABLE_LOG_FOR_FILE Log::Logger::get().disable(__FILE__);
 #define ENABLE_LOG_FOR_FILE Log::Logger::get().enable(__FILE__);

@@ -1,11 +1,11 @@
-#ifndef ERROR_NODES_HPP
-#define ERROR_NODES_HPP
+#ifndef NODES_LOSS_HPP
+#define NODES_LOSS_HPP
 
-#include "matrix.cuh"
-#include "node_parameter.hpp"
-#include "nodes.hpp"
+/*
+Nodes that implement various loss functions.
+*/
 
-///////////////////////////// Error Nodes ////////////////////////////////
+#include "node.hpp"
 
 template <typename T = FloatT>
 struct Loss2Node : Node<T>  // 2 input loss node
@@ -76,12 +76,13 @@ struct L2Loss : Loss2Node<T>
     void forward() override
     {
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
-        unary_apply(nDiff, diff, Square<T>());
+        unary_apply(nDiff, diff, Pow<T>(2));
         this->reduce_and_copy(nDiff);
     }
 
     void backward() override
     {
+        LOG_TRACE("Backward for ", this->name);
         unary_apply(gradientOut, diff, times2ByNumels);
         this->predictions->backward(&gradientOut);
     }
@@ -102,7 +103,6 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
           gradientOut(inputs[0]->shape, name + "_gradientOut"),
           timesNByNumels(FloatT(1.) / (diff.numels()))
     {
-        LOG(this->name, " diff.shape: ", diff.shape);
     }
 
     void forward() override
@@ -114,6 +114,7 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
 
     void backward() override
     {
+        LOG_TRACE("Backward for ", this->name);
         unary_apply(gradientOut, diff, Sign<T>{FloatT(1) / diff.numels()});
         this->predictions->backward(&gradientOut);
     }
@@ -144,6 +145,7 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
 
     void backward() override
     {
+        LOG_TRACE("Backward for ", this->name);
         NegLogLossBckwd<T> functor;
         functor.normalizing_factor = nll.numels();
         binary_apply(gradientOut, this->prev(1), this->prev(0), functor);
@@ -182,6 +184,7 @@ struct LogSoftmaxCELoss : Loss2Node<T>
           gradientOut(prevSize, name + "_gradientOut"),
           softmax(prevSize, name + "_softmax")
     {
+        LOG(BLUE, this->name, " ", prevs[0]->shape);
     }
 
     void forward() override
@@ -199,15 +202,25 @@ struct LogSoftmaxCELoss : Loss2Node<T>
                DividedBy<T>(tgtNegLogSmProd.height()));
 
         // loss = mean ( -t * (xi - log(Sum(e^xj))) )
-        reduce<T, HEIGHT_IDX>(tgtLogSmProdSum1D, tgtLogSmProdSum);
-        if (tgtLogSmProdSum1D.batch() > 1)
-            reduce<T, BATCH_IDX>(tgtLogSmProdSum1D, tgtLogSmProdSum1D, Plus<T>(), T(0),
-                                 DividedBy<T>(tgtLogSmProdSum1D.batch()));
-        this->copy(tgtLogSmProdSum1D.begin());
+
+        auto* temp = &tgtLogSmProdSum;
+
+        if (tgtLogSmProdSum.height() > 1)
+        {
+            reduce<T, HEIGHT_IDX>(tgtLogSmProdSum1D, tgtLogSmProdSum);
+            temp = &tgtLogSmProdSum1D;
+        }
+
+        if (temp->batch() > 1)
+        {
+            reduce<T, BATCH_IDX>(*temp, *temp, Plus<T>(), T(0), DividedBy<T>(temp->batch()));
+        }
+        this->copy(temp->begin());
     }
 
     void backward() override
     {
+        LOG_TRACE("Backward for ", this->name);
         LSMCEBkwd<T> func;
         func.factor = gradientOut.height() * gradientOut.batch();
         binary_apply(gradientOut, *this->target, negLogSoftmax, func);
@@ -216,9 +229,10 @@ struct LogSoftmaxCELoss : Loss2Node<T>
 
     void debug_print()
     {
-        LOG("\nDescription of ", this->name, '\n', exps, '\n', logSumExps, '\n', negLogSoftmax,
-            '\n', tgtNegLogSmProd, '\n', tgtLogSmProdSum, '\n', gradient);
+        LOG("\nDescription of ", this->name, "input:\n", *this->predictions, '\n', exps, '\n',
+            logSumExps, '\n', negLogSoftmax, '\n', tgtNegLogSmProd, '\n', tgtLogSmProdSum, '\n',
+            gradient);
     }
 };
 
-#endif  // ERROR_NODES_HPP
+#endif  // NODES_LOSS_HPP

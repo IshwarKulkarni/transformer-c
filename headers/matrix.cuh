@@ -145,6 +145,13 @@ typedef struct MatrixInitUitls
     static std::map<uint32, uint64> id_to_alloced_bytes;
 } MatrixInitUitls;
 
+struct MatrixBase
+{
+    MatrixBase() { all_matrices.push_back(this); }
+    virtual ~MatrixBase() = default;
+    static std::vector<const MatrixBase*> all_matrices;
+};
+
 /*
 Matrix class for 3d tensors (batch, height, width) with managed memory allocation
 and automatic deallocation on destruction. The data is stored in a shared pointer
@@ -335,6 +342,17 @@ struct Matrix
     // T* __device__ get_raw_data() { return rawData; }
 
     // const T* __device__ get_raw_data() const { return rawData; }
+
+    virtual ~Matrix<T>() = default;
+
+    CudaPtr get_data() { return data; }
+
+ protected:
+    void set_data(CudaPtr in)
+    {
+        data = in;
+        rawData = data.get();
+    }
 
  private:
     CudaPtr data;

@@ -439,3 +439,18 @@ template void reduce<FloatT, 1u, Plus<FloatT, FloatT>, Loge<FloatT>>(Matrix<Floa
                                                                      Matrix<FloatT> const&,
                                                                      Plus<FloatT, FloatT>, FloatT,
                                                                      Loge<FloatT>);
+
+template void reduce<float, 0u, Plus<float, float>, Neg<float>>(Matrix<float>&,
+                                                                Matrix<float> const&,
+                                                                Plus<float, float>, float,
+                                                                Neg<float>);
+
+template void reduce<float, 1u, Plus<float, float>, Neg<float>>(Matrix<float>&,
+                                                                Matrix<float> const&,
+                                                                Plus<float, float>, float,
+                                                                Neg<float>);
+
+template void reduce<float, 2u, Plus<float, float>, Neg<float>>(Matrix<float>&,
+                                                                Matrix<float> const&,
+                                                                Plus<float, float>, float,
+                                                                Neg<float>);

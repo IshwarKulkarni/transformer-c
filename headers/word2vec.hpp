@@ -9,13 +9,13 @@
 #include <vector>
 #include "types"
 
-static constexpr uint32 N = 300;
+static constexpr uint32 WORD2VEC_DIM = 300;
 
 static constexpr FloatT L2D_DIST_THRESHOLD = FloatT(1e-2);
 // This is not right:
 static constexpr FloatT COSINE_SIM_THRESHOLD = FloatT(1) - 1e-4;
 
-typedef std::array<float32, N> Vec300;
+typedef std::array<float32, WORD2VEC_DIM> Vec300;
 typedef std::pair<std::string, Vec300> WordVecPair;
 typedef std::vector<WordVecPair>::iterator WordVecPairIter;
 
@@ -50,7 +50,7 @@ inline FloatT l2_dist2_pca(const Vec300& a, const Vec300& b, uint32 L = N_PCA)
 inline FloatT l2_dist2(const Vec300& a, const Vec300& b)
 {
     FloatT dist = 0;
-    for (uint32 i = 0; i < N; i++)
+    for (uint32 i = 0; i < WORD2VEC_DIM; i++)
     {
         dist += (a[i] - b[i]) * (a[i] - b[i]);
     }
@@ -61,7 +61,7 @@ template <uint32 LD>
 inline std::array<float32, LD> vec300ToVecLD(const Vec300& vec)
 {
     std::array<float32, LD> vecLD;
-    static constexpr uint32 chunk_size = N / LD;
+    static constexpr uint32 chunk_size = WORD2VEC_DIM / LD;
     for (uint32 i = 0; i < LD; i++)
     {
         vecLD[i] =
@@ -70,8 +70,9 @@ inline std::array<float32, LD> vec300ToVecLD(const Vec300& vec)
     return vecLD;
 }
 
-std::array<std::pair<float32, bool>, N> diff(const Vec300& a, const Vec300& b, float32 eps = 1e-6,
-                                             uint32* count = nullptr);
+std::array<std::pair<float32, bool>, WORD2VEC_DIM> diff(const Vec300& a, const Vec300& b,
+                                                        float32 eps = 1e-6,
+                                                        uint32* count = nullptr);
 
 inline FloatT cos_sim(const Vec300& a, const Vec300& b)
 {
@@ -81,7 +82,7 @@ inline FloatT cos_sim(const Vec300& a, const Vec300& b)
 inline Vec300 make_vec300(const FloatT* arr)
 {
     Vec300 vec;
-    std::copy(arr, arr + N, vec.begin());
+    std::copy(arr, arr + WORD2VEC_DIM, vec.begin());
     return vec;
 }
 
@@ -138,7 +139,7 @@ enum SearchOption  // for Word2Vec::nearest, tested by adding sigma=0.01 noise t
 };
 struct Word2Vec
 {
-    Word2Vec(const std::string& filename);
+    Word2Vec(const std::string& filename, uint32 max_dic_size = UINT32_MAX);
 
     size_t size() const { return word2Node.size(); }
 

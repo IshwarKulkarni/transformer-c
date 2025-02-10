@@ -117,8 +117,8 @@ void reduce_meanCPU(Matrix<T>& result, const Matrix<T>& A)
     reduceCPU<T, dim>(result, A, Plus<T>(), T(0), DividedBy<T>(A.shape[dim]));
 }
 
-template <typename Ta, typename Tb = Ta, typename Tr = Ta, typename Reduction>
-inline void binary_applyCPU(Matrix<Tr>& res, const Matrix<Ta>& A, const Matrix<Tb>& B,
+template <typename T, typename Tb = T, typename Tr = T, typename Reduction>
+inline void binary_applyCPU(Matrix<Tr>& res, const Matrix<T>& A, const Matrix<Tb>& B,
                             const Reduction& op)
 {
     // a and b's dimensions should match result dimensions either on height or
@@ -142,8 +142,8 @@ inline void binary_applyCPU(Matrix<Tr>& res, const Matrix<Ta>& A, const Matrix<T
             }
 }
 
-template <typename Ta, typename Tr, typename Reduction>
-void unary_applyCPU(Matrix<Tr>& res, const Matrix<Ta>& A, Reduction op)
+template <typename T, typename Tr, typename Reduction>
+void unary_applyCPU(Matrix<Tr>& res, const Matrix<T>& A, Reduction op)
 {
     for (uint32 b = 0; b < res.batch(); b++)
         for (uint32 y = 0; y < res.height(); y++)

@@ -199,13 +199,13 @@ __global__ void dropout_kernel(Matrix<T> res, const Matrix<T> in, Matrix<float32
     {
         bool keep = (curand_uniform(&states[offset % DROPOUT_MAX_SIZE]) > drop_prob);
         mask_val = keep ? 1.f / (1 - drop_prob) : 0.f;
-        mask(b, y, x) = mask_val;
+        mask.template broadcasting_fetch<0b111>(b, y, x) = mask_val;
     }
     else  // use existing mask value at offset
     {
-        mask_val = mask(b, y, x);
+        mask_val = mask.template broadcasting_fetch<0b111>(b, y, x);
     }
-    res(b, y, x) = in(b, y, x) * mask_val;
+    res(b, y, x) = in.template broadcasting_fetch<0b111>(b, y, x) * mask_val;
 }
 
 __global__ void init_curand_states(curandState* states, uint32 size, uint32 seed)
@@ -239,12 +239,15 @@ void dropout(Matrix<T>& res, const Matrix<T>& in, Matrix<float32>& mask, float32
                                          static_cast<uint32>(time(NULL)));
         cudaErrCheck(cudaDeviceSynchronize());
     }
-    auto shape = res.shape;
-    if (shape != mask.shape)
+    if (broadcastable<0>(in, res) and broadcastable<1>(in, res) and broadcastable<1>(in, res) and
+        broadcastable<0>(mask, res) and broadcastable<2>(mask, res) and broadcastable<2>(mask, res))
+    // all good
     {
-        LOG(BOLD, RED, "Matrix shapes do not match for dropout operation: ", res.shape, " -> ",
-            mask.shape);
-        throw_rte_with_backtrace("Dimension mismatch for dropout");
+    }
+    else
+    {
+        throw_rte_with_backtrace("Dimension mismatch for dropout: ", in.shape, " -> ", res.shape,
+                                 " with mask: ", mask.shape);
     }
 
     dim3 block(24, 24);
@@ -252,8 +255,8 @@ void dropout(Matrix<T>& res, const Matrix<T>& in, Matrix<float32>& mask, float32
     cudaErrCheck(cudaGetLastError());
 }
 
-template <typename Ta, typename Tb, typename Tr, typename Op>
-__global__ void binary_apply_kernel(Matrix<Tr> res, const Matrix<Ta> A, const Matrix<Tb> B, Op op)
+template <typename T, typename Tb, typename Tr, typename Op>
+__global__ void binary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, const Matrix<Tb> B, Op op)
 {
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -262,24 +265,24 @@ __global__ void binary_apply_kernel(Matrix<Tr> res, const Matrix<Ta> A, const Ma
     if (res.is_oob(b, y, x)) return;
 
     static constexpr uint32 ALL = BATCH_BIT | HEIGHT_BIT | WIDTH_BIT;
-    auto a_val = A.broadcasting_fetch<ALL>(b, y, x);
-    auto b_val = B.broadcasting_fetch<ALL>(b, y, x);
+    auto a_val = A.template broadcasting_fetch<ALL>(b, y, x);
+    auto b_val = B.template broadcasting_fetch<ALL>(b, y, x);
 
     res(b, y, x) = op(a_val, b_val);
 }
 
-template <typename Tr, typename Ta, typename Tb, typename Op>
-void binary_apply(Matrix<Tr>& res, const Matrix<Ta>& A, const Matrix<Tb>& B, Op op)
+template <typename Tr, typename T, typename Tb, typename Op>
+void binary_apply(Matrix<Tr>& res, const Matrix<T>& A, const Matrix<Tb>& B, Op op)
 {
-    check_broadcast_sizes<Ta>(res, A, B);
+    check_broadcast_sizes<T>(res, A, B);
     dim3 block(std::min(24u, res.width()), std::min(24u, res.height()));  // slightly inefficient
     auto grid = res.grid(block);
-    binary_apply_kernel<Tr, Ta, Tb, Op><<<grid, block>>>(res, A, B, op);
+    binary_apply_kernel<Tr, T, Tb, Op><<<grid, block>>>(res, A, B, op);
     cudaErrCheck(cudaGetLastError());
 }
 
-template <typename Tr, typename Ta, typename Op>
-__global__ void unary_apply_kernel(Matrix<Tr> res, const Matrix<Ta> A, Op op)
+template <typename Tr, typename T, typename Op>
+__global__ void unary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, Op op)
 {
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -297,8 +300,8 @@ __global__ void unary_apply_kernel(Matrix<Tr> res, const Matrix<Ta> A, Op op)
     res(b, y, x) = op(a_val);
 }
 
-template <typename Ta, typename Tr, typename Op>
-void unary_apply(Matrix<Tr>& res, const Matrix<Ta>& A, Op op)
+template <typename T, typename Tr, typename Op>
+void unary_apply(Matrix<Tr>& res, const Matrix<T>& A, Op op)
 {
     check_broadcast_sizes(res, A);
     dim3 block(32, 32, 1);
@@ -306,6 +309,36 @@ void unary_apply(Matrix<Tr>& res, const Matrix<Ta>& A, Op op)
     cudaErrCheck(cudaGetLastError());
 }
 
+template <typename Tr, typename T, typename Op>
+__global__ void ternary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, const Matrix<T> B,
+                                     const Matrix<T> C, Op op)
+{
+    uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
+    uint32 b = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (res.is_oob(b, y, x)) return;
+    static constexpr uint32 ALL = BATCH_BIT | HEIGHT_BIT | WIDTH_BIT;
+
+    auto a_val = A.template broadcasting_fetch<ALL>(b, y, x);
+    auto b_val = B.template broadcasting_fetch<ALL>(b, y, x);
+    auto c_val = C.template broadcasting_fetch<ALL>(b, y, x);
+
+    res(b, y, x) = op(a_val, b_val, c_val);
+}
+
+template <typename T, typename Op>
+void ternary_apply(Matrix<T>& res, const Matrix<T>& A, const Matrix<T>& B, const Matrix<T>& C,
+                   Op op)
+{
+    check_broadcast_sizes<T>(res, A, B, C);
+    dim3 block(16, 16, 1);
+    ternary_apply_kernel<T, T, Op><<<res.grid(block), block>>>(res, A, B, C, op);
+    cudaErrCheck(cudaGetLastError());
+}
+
+// TODO: This is getting out of hand, need to passin Op as pointer-to-base-class for unary, binary
+// and ternary ops
 template void transpose(Matrix<FloatT>& res, const Matrix<FloatT>& A, Identity<FloatT>);
 
 template void transpose<FloatT, Exp<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&, Exp<FloatT>);
@@ -448,3 +481,28 @@ template void unary_apply<FloatT, FloatT, Abs<FloatT>>(Matrix<FloatT>&, Matrix<F
 
 template void unary_apply<FloatT, FloatT, Sign<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
                                                         Sign<FloatT>);
+
+template void ternary_apply<FloatT, Norm<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                  Matrix<FloatT> const&, Matrix<FloatT> const&,
+                                                  Norm<FloatT>);
+
+template void unary_apply<FloatT, FloatT, Pow<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                       Pow<FloatT>);
+
+template void ternary_apply<FloatT, DivDiff<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
+                                                     Matrix<FloatT> const&, Matrix<FloatT> const&,
+                                                     DivDiff<FloatT>);
+
+template void binary_apply<FloatT, FloatT, FloatT, PowDiff<FloatT>>(Matrix<FloatT>&,
+                                                                    Matrix<FloatT> const&,
+                                                                    Matrix<FloatT> const&,
+                                                                    PowDiff<FloatT>);
+
+// template void unary_apply<FloatT, FloatT, Sqrt<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&,
+// Sqrt<FloatT>);
+
+// template void binary_apply<FloatT, FloatT, FloatT, SqrtDiff<FloatT> >(Matrix<FloatT>&,
+// Matrix<FloatT> const&, Matrix<FloatT> const&, SqrtDiff<FloatT>);
+
+// template void unary_apply<FloatT, FloatT, PowDiff<FloatT> >(Matrix<FloatT>&, Matrix<FloatT>
+// const&, PowDiff<FloatT>);

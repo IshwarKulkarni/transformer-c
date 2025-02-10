@@ -38,6 +38,19 @@ class Optional
         return value;
         throw_rte_with_backtrace("Accessing unavaible Optional");
     }
+
+    inline __host__ __device__ T get_or(T val)
+    {
+        if (valid) return value;
+        return val;
+    }
+
+    inline __host__ __device__ const T& get_or(T val) const
+    {
+        if (valid) return value;
+        return val;
+    }
+
     inline __host__ __device__ operator bool() const { return valid; }
     inline __host__ __device__ T& operator*() { return value; }
     inline __host__ __device__ const T& operator*() const { return value; }
