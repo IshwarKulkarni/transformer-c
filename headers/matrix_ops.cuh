@@ -185,6 +185,18 @@ struct rdm
         if (deterministic) return det_gen;
         return rdm_gen;
     }
+
+    template <typename T>
+    static inline T next_urand(T min = 0, T max = 1)
+    {
+        return static_cast<T>(std::uniform_real_distribution<FloatT>(min, max)(gen()));
+    }
+
+    template <typename T>
+    static inline T next_nrand(T mean = 0, T std = 1)
+    {
+        return std::normal_distribution<T>(mean, std)(gen());
+    }
 };
 
 template <typename T, typename DistType>

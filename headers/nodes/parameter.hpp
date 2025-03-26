@@ -8,15 +8,27 @@ struct ParameterBase
 {
     virtual ~ParameterBase() = default;
 
-    ParameterBase(Shape s) { ParameterBase::param_count += s.numels; }
+    ParameterBase(Shape s)
+    {
+        ParameterBase::param_count += s.numels;
+        all_params.push_back(this);
+    }
     static uint64 get_param_count() { return param_count; }
+    static const std::vector<ParameterBase*>& get_all_params() { return all_params; }
+    uint32 get_update_count() const { return update_count; }
+    uint32 get_accum_count() const { return accum_count; }
+
+ protected:
+    uint64 accum_count = 0;
+    uint64 update_count = 0;
 
  private:
     static uint64 param_count;
+    static std::vector<ParameterBase*> all_params;
 };
 
 template <typename TW, typename TG = TW>  // weight and gradient
-struct Parameter : Matrix<TW>             // , ParameterBase
+struct Parameter : Matrix<TW>, public ParameterBase
 {
     const float64 beta1 = 0.9;
     const float64 beta2 = 0.999;
@@ -28,8 +40,7 @@ struct Parameter : Matrix<TW>             // , ParameterBase
     Matrix<TG> v = Matrix<TG>(this->shape, "second_moment");
 
     Parameter(Shape s, std::string name = "Param")
-        : Matrix<TW>(xavier_uniform_init<TW>(s.set(2, 1), name))
-    //, ParameterBase(s)
+        : Matrix<TW>(xavier_uniform_init<TW>(s.set(2, 1), name)), ParameterBase(s)
     {
         updatedWeights.reset();
         gradients.reset();
@@ -42,7 +53,7 @@ struct Parameter : Matrix<TW>             // , ParameterBase
     // accumulate the mean of the gradient
     void accumulate_grad(const Matrix<TG>& gradDelta)
     {
-        LOG_TRACE("Accumulating gradients for ", this->name,
+        LOG_TRACE("Accumulating gradients for ", BLUE, this->name, RESET,
                   " with grad delta shape: ", gradDelta.shape);
         if (gradDelta.batch() > 1)
         {
@@ -76,7 +87,7 @@ struct Parameter : Matrix<TW>             // , ParameterBase
             return;
         }
 
-        LOG_TRACE("Updating weights for ", this->name, " with ", accum_count,
+        LOG_TRACE("Updating weights for ", YELLOW, this->name, RESET, " with ", accum_count,
                   " accum'd grads for update# ", update_count);
         if (accum_count > 1)
         {
@@ -119,13 +130,13 @@ struct Parameter : Matrix<TW>             // , ParameterBase
     float64 param_magnitude() const
     {
         cudaErrCheck(cudaDeviceSynchronize());
-        return sqrt(sum_absCPU(*this) / (accum_count * this->numels));
+        return sqrt(sum_squaredCPU(*this) / this->numels());
     }
 
     float64 grad_magnitude() const
     {
         cudaErrCheck(cudaDeviceSynchronize());
-        return sqrt(sum_absCPU(gradients) / (accum_count * gradients.numels));
+        return sqrt(sum_squaredCPU(gradients) / gradients.numels());
     }
 
     const Matrix<TG>& grads() const { return gradients; }
@@ -133,8 +144,6 @@ struct Parameter : Matrix<TW>             // , ParameterBase
     void set_is_training(bool is_training) { this->is_training = is_training; }
 
  private:
-    uint32 update_count = 0;
-    uint32 accum_count = 0;
     bool is_training = true;
     Matrix<TG> gradients = Matrix<TG>(this->shape, this->name + "grads");
     Matrix<TG> updatedGradients = Matrix<TG>(this->shape, this->name + "updated_grads");

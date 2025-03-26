@@ -611,21 +611,19 @@ int test_attention()
     Input<> target(A.shape, "target");
     L2Loss<> loss({&A, &target}, "L2Error");
 
+    graph_to_dot(&loss, "attention.dot");
+
     // clang-format on
     golden >> A.Q.W >> A.K.W >> A.V.W >> q >> k >> v >> target;
 
     loss.compute();
     cudaErrCheck(cudaDeviceSynchronize());
 
-    // if (std::abs(expected_loss - loss.value()) > 1e-5)
-    //     throw_rte_with_backtrace("Expected loss values mismatch, expected: ", expected_loss, " vs
-    //     ",
-    //                              loss.value());
+    if (std::abs(expected_loss - loss.value()) > 1e-3)
+        throw_rte_with_backtrace("Expected loss values mismatch, expected: ", expected_loss, " vs ",
+                                 loss.value());
 
     loss.backward();
-
-    // std::ofstream dot("attention.dot");
-    // graph_to_dot(&loss, dot);
 
     uint32 err = test_match(read_csv<FloatT>(golden), A.qkT, "Attn. qkt") +
                  test_match(read_csv<FloatT>(golden), A.attention_weights, "Attn. smx") +
@@ -720,8 +718,7 @@ int run_multihead()
 
     M.print_desc();
 
-    std::ofstream dot("multihead.dot");
-    graph_to_dot(&loss, dot);
+    graph_to_dot(&loss, "multihead.dot");
 
     return 0;
 }
@@ -921,7 +918,7 @@ int test_softmaxDim()
 
     Input<> x(bn, Sl, Ei, "x");
     Linear<FloatT, TanH<FloatT>> L(I0, &x, true, "L");
-    SoftMaxNode S(&L);
+    SoftMaxNode S(&L, "SMax" + std::to_string(SoftmaxDim));
     Input<FloatT> t(S.shape, "target");
     NLLLoss<FloatT> loss({&S, &t}, "L2Error");  // this is just to test the NLLLoss
 
@@ -965,9 +962,6 @@ int test_mean_node()
     Input<> target(S.shape, "target");
     L2Loss loss({&S, &target}, "Loss");
 
-    std::ofstream dot("mean_test.dot");
-    graph_to_dot(&loss, dot);
-
     in >> x >> L.W >> L.b >> target;
     loss.compute();
 
@@ -1002,8 +996,7 @@ int test_layer_norm()
     Input<> target(norm.shape, "target");
     L2Loss loss({&norm, &target}, "Loss");
 
-    std::ofstream dot("layer_norm.dot");
-    graph_to_dot(&loss, dot);
+    graph_to_dot(&loss, "layer_norm.dot");
 
     in >> x >> L.W >> L.b >> target;
     loss.compute();

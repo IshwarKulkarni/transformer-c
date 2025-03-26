@@ -1,9 +1,9 @@
+#include "word2vec.hpp"
 #include <fstream>
 #include <iostream>
 #include "logger.hpp"
 #include "matrix_ops_cpu.hpp"
 #include "utils.hpp"
-#include "word2vec.hpp"
 
 using Node = WordVecNode;
 
@@ -145,7 +145,8 @@ static bool read_text(const std::string& filename, std::vector<WordVecPair>& wor
     }
     if (read_binary(filename + ".bin", wordVecPairs))
     {
-        LOG(YELLOW, "Loaded from binary, check number of words read");
+        LOG(YELLOW, "Loaded ", wordVecPairs.size(),
+            " words from binary, check number of words read");
         return true;
     }
     Timer timer("Reading Text");

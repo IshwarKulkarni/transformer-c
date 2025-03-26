@@ -498,6 +498,10 @@ template void binary_apply<FloatT, FloatT, FloatT, PowDiff<FloatT>>(Matrix<Float
                                                                     Matrix<FloatT> const&,
                                                                     PowDiff<FloatT>);
 
+template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, LeakyRelu<FloatT>>>(
+    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
+    ActBackwardMul<FloatT, LeakyRelu<FloatT>>);
+
 // template void unary_apply<FloatT, FloatT, Sqrt<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&,
 // Sqrt<FloatT>);
 
