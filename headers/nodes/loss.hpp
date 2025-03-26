@@ -6,6 +6,7 @@ Nodes that implement various loss functions.
 */
 
 #include "node.hpp"
+#include "unparameterized.hpp"
 
 template <typename T = FloatT>
 struct Loss2Node : Node<T>  // 2 input loss node

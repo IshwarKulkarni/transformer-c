@@ -8,6 +8,7 @@
 #include <mutex>
 #include <ostream>
 #include <set>
+#include <cstring>
 
 namespace Log {
 
@@ -68,7 +69,17 @@ class Logger
     {
         if (disabled_files.count(arg1.file)) return strm;
         char file_loc[48];
-        snprintf(file_loc, sizeof(file_loc), " %28s:%d\t", arg1.file, arg1.line);
+        std::string file;
+        static constexpr int max_len = sizeof(file_loc) - 12;
+        unsigned int len = strlen(arg1.file);
+        const char* prev_slash = arg1.file;
+        const char* end = arg1.file + len - 1;
+        if (len > max_len)  //  clip from slash that keeps the length below max_len;
+            for (int i = 0; i < max_len and end != arg1.file; i++, end--)
+                if (*end == '/') prev_slash = end + 1;
+        if (file[0] == '/') file = file.substr(1);
+        snprintf(file_loc, sizeof(file_loc), " %*.*s:%-4d ", max_len, max_len, prev_slash,
+                 arg1.line);
         return this->log_v(strm << file_loc, args...);
     }
 
@@ -120,7 +131,6 @@ inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
     return strm << "(" << dim.x << ", " << dim.y << ", " << dim.z << ")";
 }
 
-// right justify fill with spaces:
 //#define LOG_TRACE(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, __VA_ARGS__)
 #define LOG_TRACE(...)
 #define R_JUST(x, n) std::setw(n), std::setfill(' '), std::right, x, " "

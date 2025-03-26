@@ -3,6 +3,8 @@ CompileFlags:
     - -std=c++17
     - --cuda-path=/usr/local/cuda-12.5/bin
     - --cuda-gpu-arch=sm_86
+    - -I/usr/local/cuda-12.5/include/
+    - -I./headers/
+    - -I./headers/nodes/
     - -L/usr/local/cuda-12.5/include/lib64
-    -I/usr/local/cuda-12.5/include/
-    -I./headers/
+

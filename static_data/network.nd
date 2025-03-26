@@ -1,0 +1,50 @@
+$batch_size: 10
+
+Input: input1
+    batch: $batch_size
+    height: 25
+    width: 64
+
+Linear: linear1
+    out_dim: 160
+    prev: input1
+    use_bias: true 
+    activation: relu
+
+$rate: 0.2
+
+Dropout: dropout1
+    prev: linear1
+    rate: $rate
+
+Attention: att
+    #Q:
+    q_size: 100
+    q_prev: dropout1
+    #K:
+    k_size: 100
+    k_prev: linear1
+    #V:
+    v_size: 100
+    v_prev: linear1
+    v_bias: true
+    common_act: sigmoid
+
+
+SelfAttention: sa1
+    out_dim: 160
+    prev: att
+    bias: true
+
+Dropout: dropout2
+    prev: sa1
+    rate: $rate
+
+Input: target
+    batch: $batch_size
+    height: input1->height
+    width: sa1->out_dim
+
+L2Loss: l2loss
+    target: target
+    predictions: dropout2

@@ -67,6 +67,7 @@ struct Node : public Matrix<T>, NodeBase
     {
         for (auto& n : prev_nodes) n->update_weights(lr);
         for (auto& p : params) p->update(lr);
+        if (this->get_terminal_node()) this->get_terminal_node()->update_weights(lr);
     }
 
     std::vector<Parameter<T, T>*> params;
@@ -92,37 +93,50 @@ struct Node : public Matrix<T>, NodeBase
 
     virtual NodePtr<T> get_terminal_node() { return nullptr; }
     virtual std::string dot_repr() { return " [label=\"" + this->name + "\" shape=rect]\n"; }
+
+    virtual void save_weights(std::ostream&) const {}
+    virtual void load_weights(std::istream&) {}
 };
 
 template <typename T = FloatT>
-void graph_to_dot(NodePtr<T> node, std::ostream& os, std::string header = "digraph G")
+void graph_to_dot(NodePtr<T> node, std::string filename)
 {
     NodePtrs<T> nodes;
     nodes.push_back(node);
-    std::set<std::string> edge_strs;
-    std::set<std::string> node_strs;
-    char edge_buffer[256];
+    std::vector<std::string> edge_node_strs;
+
+    auto make_edge = [](NodePtr<T> a, NodePtr<T> b, float32 weight = 3.f) {
+        char edge_buffer[256];
+        snprintf(edge_buffer, 256, "%d -> %d [label=\"%dx%dx%d\" weight=%2.1f]", a->id, b->id,
+                 a->shape[2], a->shape[1], a->shape[0], weight);
+        return std::string(edge_buffer);
+    };
+
     while (!nodes.empty())
     {
         auto* n = nodes.back();
         nodes.pop_back();
         for (auto* p : n->prev_nodes)
         {
-            std::string shape = p->shape;
-            snprintf(edge_buffer, 256, "%d -> %d [label=\"%s\" spline=ortho ]\n", p->id, n->id,
-                     shape.c_str());
-            edge_strs.insert(edge_buffer);
+            edge_node_strs.push_back(make_edge(p, n));
             nodes.push_back(p);
         }
-        node_strs.insert(std::to_string(n->id) + n->dot_repr());
+        edge_node_strs.push_back(std::to_string(n->id) + n->dot_repr());
         auto* terminal = n->get_terminal_node();
-        if (terminal) nodes.push_back(terminal);
+        if (terminal)
+        {
+            nodes.push_back(terminal);
+            auto term_edge = make_edge(n, terminal, 1.f);
+            term_edge = "\nedge [style=dotted arrowhead=none]\n" + term_edge +
+                        "\nedge [style=normal arrowhead=normal];\n";
+            edge_node_strs.push_back(term_edge);
+        }
     }
-    os << header << "{\n"
-       << "compound=true;\n";
-    for (const auto& edge : edge_strs) os << edge << "\n";
-    for (const auto& node_str : node_strs) os << node_str << "\n";
-    os << "}\n" << std::endl;
+    std::ofstream os(filename);
+    os << "digraph G {\n compound=true;\n";
+    std::copy(edge_node_strs.begin(), edge_node_strs.end(),
+              std::ostream_iterator<std::string>(os, "\n"));
+    os << '}' << std::endl;
 }
 
 template <typename Ta, typename Tb = Ta>

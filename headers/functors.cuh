@@ -33,8 +33,15 @@ template <typename Ta>
 struct Exp  // can apply shfted value
 {
     Ta shift;
+    static constexpr Ta max_exp = std::is_same<Ta, float16>::value ? 9 : 30;
     Exp(Ta shift = 0) : shift(shift) {}
-    __host__ __device__ inline Ta operator()(Ta a) const { return exp(a - shift); }
+    __host__ __device__ inline Ta operator()(Ta a) const
+    {
+        a -= shift;
+        if (a > max_exp) return exp(max_exp);
+        if (a < -max_exp) return exp(-max_exp);
+        return exp(a);
+    }
     static constexpr char const* name = "Exp";
 };
 
@@ -376,6 +383,8 @@ struct LeakyRelu
         __host__ __device__ inline T operator()(T a) const { return a > 0 ? 1 : slope; }
         static constexpr char const* name = "LeakyReluBackward";
     } backward;
+
+    static constexpr char const* name = "LeakyRelu";
 
     LeakyRelu(float32 neg_slope = 3e-3) : forward(neg_slope), backward(slope) {}
 };

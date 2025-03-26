@@ -3,19 +3,18 @@ SRCDIR := src
 INCDIR := headers
 BUILDDIR := bin
 OBJDIR := $(BUILDDIR)/obj
-TARGET_MAIN := $(BUILDDIR)/main
-TARGET_TEST := $(BUILDDIR)/test
-TARGET_TIMING := $(BUILDDIR)/timing
+OBJDIR_EXE := $(BUILDDIR)/obj_exe
 
 # Debug location
 ifeq ($(dbg),1)
 	OBJDIR = $(BUILDDIR)/dbg/obj
-	TARGET_MAIN = bin/dbg/main
-	TARGET_TEST = bin/dbg/test
-	TARGET_TIMING = bin/dbg/timing
+	OBJDIR_EXE = $(BUILDDIR)/dbg/obj_exe
 endif
 
-ALL_TARGETS := $(TARGET_MAIN) $(TARGET_TEST) $(TARGET_TIMING)
+# Find all .cpp files in root directory
+ROOT_CPP_FILES := $(wildcard *.cpp)
+ROOT_TARGETS := $(patsubst %.cpp,$(BUILDDIR)/%,$(ROOT_CPP_FILES))
+ROOT_OBJECTS := $(patsubst %.cpp,$(OBJDIR_EXE)/%.o,$(ROOT_CPP_FILES))
 
 # Other variables
 SOURCES := $(shell find $(SRCDIR) -type f -name "*.cpp")
@@ -31,7 +30,7 @@ NVCC          := /usr/local/cuda-12.5/bin/nvcc -ccbin $(HOST_COMPILER)
 
 # Flags
 NVCCFLAGS     := -m64 
-CCFLAGS       := --std=c++17 -fPIC -rdynamic -Wall -Wextra -Wsign-compare
+CCFLAGS       := --std=c++17 -fPIC -rdynamic -Wall -Wextra -Wsign-compare -I/usr/include/c++/11 -I/usr/include/x86_64-linux-gnu/c++/11
 LDFLAGS       :=
 
 # Debug build flags
@@ -80,7 +79,11 @@ endif
 ################################################################################
 
 # Target rules
-build: $(ALL_TARGETS)
+.PHONY: build clean run_% valgrind
+
+.PRECIOUS: $(OBJDIR)/%.out $(OBJDIR_EXE)/%.o $(OBJDIR)/%.cu.o $(OBJDIR)/%.o
+
+build: $(ROOT_TARGETS)
 
 clean:
 	rm -fr bin/* temp/* *.csv test.info
@@ -93,37 +96,22 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.cpp
 	@mkdir -p $(OBJDIR);
 	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -shared -c  -dc $< -o $@
 
-$(TARGET_MAIN): $(OBJECTSCU) $(OBJDIR)/main.o
-	@mkdir -p $(TARGETDIR);
-	@touch src/main.cpp
-	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@ 
-	@echo "\033[1;32mBuild complete for $(TARGET_MAIN) \033[0m "
+$(OBJDIR_EXE)/%.o: %.cpp
+	@mkdir -p $(OBJDIR_EXE);
+	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -c $< -o $@
 
-$(TARGET_TEST): $(OBJECTSCU) $(OBJDIR)/test.o
+$(BUILDDIR)/%: $(OBJDIR_EXE)/%.o $(OBJECTSCU) $(OBJECTS)
 	@mkdir -p $(TARGETDIR);
-	@touch src/test.cpp
 	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@
-	@echo "\033[1;32mBuild complete for $(TARGET_TEST) \033[0m "
+	@echo "\033[1;32mBuild complete for $@ \033[0m"
 
-$(TARGET_TIMING): $(OBJECTSCU) $(OBJDIR)/timing.o
-	@mkdir -p $(TARGETDIR);
-	@touch src/timing.cpp
-	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@
-	@echo "\033[1;32mBuild complete for $(TARGET_TIMING) \033[0m"
-
-# alias main, timing and test
-run_main: $(TARGET_MAIN)
-	./$(TARGET_MAIN) $(var)
-
-run_test: $(TARGET_TEST)
-	./$(TARGET_TEST) $(var)
-
-run_timing: $(TARGET_TIMING)
-	./$(TARGET_TIMING) $(var)
+# Run targets for each executable
+run_%: $(BUILDDIR)/%
+	./$< $(var)
 
 valgrind: build
 	valgrind --leak-check=full \
          --show-leak-kinds=all \
          --track-origins=yes \
          --gen-suppressions=all \
-         --suppressions=cuda_supp.sup ./$(TARGET_MAIN)
+         --suppressions=cuda_supp.sup ./$(BUILDDIR)/main

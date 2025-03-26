@@ -4,3 +4,6 @@ temp/*
 .vscode/*
 **__pycache__**
 *.csv
+.cache/*
+static_data/*.bin
+datasets/*

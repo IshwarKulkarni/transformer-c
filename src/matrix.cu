@@ -20,6 +20,7 @@ uint64 ParameterBase::param_count = 0;
 
 std::vector<NodeBase *> NodeBase::all_nodes;
 std::vector<const MatrixBase *> MatrixBase::all_matrices;
+std::vector<ParameterBase *> ParameterBase::all_params;
 
 template <typename T>
 Matrix<T> init_argv(const char **argv, uint32 argc_offset)
@@ -149,7 +150,7 @@ T bilinear_sample(const Matrix<T> &m, uint32 b, float64 y, float64 x)
 template <typename T>
 T sample(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 eps)
 {
-    auto cubicInterpolate = [](const std::array<double, 4> &p, float64 x) {
+    auto cubicInterpolate = [](const std::array<float64, 4> &p, float64 x) {
         return p[1] + 0.5 * x *
                           (p[2] - p[0] +
                            x * (2.0 * p[0] - 5.0 * p[1] + 4.0 * p[2] - p[3] +
@@ -167,7 +168,7 @@ T sample(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 eps)
         return m(b, y1, x1);
     }
 
-    std::array<std::array<double, 4>, 4> p;
+    std::array<std::array<float64, 4>, 4> p;
 
     for (int32 j = -1; j <= 2; ++j)
     {
@@ -179,7 +180,7 @@ T sample(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 eps)
         }
     }
 
-    std::array<double, 4> arr;
+    std::array<float64, 4> arr;
     for (int32 i = 0; i < 4; ++i)
     {
         arr[i] = cubicInterpolate(p[i], y - y1);
@@ -188,9 +189,9 @@ T sample(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 eps)
     return cubicInterpolate(arr, x - x1);
 }
 
-template Matrix<FloatT> init_argv<FloatT>(char const **, unsigned int);
+template Matrix<FloatT> init_argv<FloatT>(char const **, uint32);
 
 template Matrix<FloatT> read_csv(std::ifstream &file);
 template Matrix<FloatT> read_csv(const std::string &filename);
 
-template FloatT sample<FloatT>(Matrix<FloatT> const &, unsigned int, double, double, double);
+template FloatT sample<FloatT>(Matrix<FloatT> const &, uint32, float64, float64, float64);

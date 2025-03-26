@@ -61,6 +61,8 @@ struct Linear : Node<T>
             b.reset();
             bias_str = " + B: (" + std::to_string(b.numels()) + ") ";
         }
+        else
+            b.set_val(0.f);
         LOG(BLUE, R_JUST(this->name, 18), prev->shape, R_JUST("->", 6), this->shape,
             "\t| W: ", W.shape, " (", num_to_si(W.numels(), false), ")", bias_str,
             "| Activation: ", Act::name);
@@ -85,7 +87,8 @@ struct Linear : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        LOG_TRACE(GRAY, "Backward", RESET, " for ", this->name,
+                  " with gradientIn: ", gradientIn->name, gradientIn->shape);
         auto const* gradIn = gradientIn;
         if constexpr (not std::is_same<Act, IActivation<T>>::value)
         {
@@ -116,9 +119,15 @@ struct Linear : Node<T>
 
     std::string dot_repr() override
     {
-        auto label = this->name + '\n' + W.shape.str() + ':' + std::to_string(W.numels());
-        label += this->useBias ? ('\n' + b.shape.str() + ':' + std::to_string(b.numels())) : "";
-        return " [label=\"" + label + "\", shape=octagon, style=filled, fillcolor=lightblue]";
+        char label_sz[256];
+        int32 n = snprintf(label_sz, sizeof(label_sz), "%s\n[%dx%dx%d]:%s", this->name.c_str(),
+                           W.batch(), W.height(), W.width(), num_to_si(W.numels()).c_str());
+        if (useBias)
+            snprintf(label_sz + n, sizeof(label_sz) - n, "\n[%dx%dx%d]:%s", b.batch(), b.height(),
+                     b.width(), num_to_si(b.numels()).c_str());
+
+        std::string label = label_sz;
+        return " [label=\"" + label + "\", shape=rect, style=filled, fillcolor=lightblue]";
     }
 
     void debug_print()
@@ -163,8 +172,7 @@ struct Attention : Node<T>
 
     Attention(const LinQi& Qinp, const LinKi& Kinp, const LinVi& Vinp,
               std::string name = "Attention")
-        : Node<T>(Qinp.prev->shape.set(WIDTH_IDX, Vinp.out_size), {Qinp.prev, Kinp.prev, Vinp.prev},
-                  name, 3),
+        : Node<T>(Qinp.prev->shape.set(WIDTH_IDX, Vinp.out_size), {}, name, 0),
           Q(Qinp),
           K(Kinp),
           V(Vinp),
@@ -184,7 +192,8 @@ struct Attention : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                  gradientIn->shape);
         attention.backward(gradientIn);
     }
 
@@ -198,31 +207,61 @@ struct Attention : Node<T>
     {
         uint32 learnable_count = Q.param_count() + K.param_count() + V.param_count();
         std::stringstream ss;
-        ss << " [label=\"" << this->name << "\", shape=box3d]\n";
+        ss << " [label=\"" << this->name << "\", shape=box3d style=filled fillcolor=\"#4eb0f1\"]\n";
 
-        ss << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "\n["
-           << learnable_count << "]\"\n"
-           << '\t' << Q.id << ' ' << K.id << ' ' << V.id << ' ' << qkT.id << '\n'
-           << '\t' << attention_weights.id << '\n'
-           << '\t' << attention.id << '\n'
-           << '\t' << this->id << "\n"
-           << "{rank=same; " << Q.id << ' ' << K.id << ' ' << V.id << " }"
-           << "}\n";  // is attention.
+        std::set<uint32> input_ids{Q.prev(0).id, V.prev(0).id, K.prev(0).id};
+        NodePtrList<T> nodes = {&Q, &K, &V, &qkT, &attention_weights, &attention};
+
+        ss << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "["
+           << num_to_si(learnable_count, true) << "]\"\n";
+        for (auto& n : nodes) ss << n->id << ' ';
+
+        if (input_ids.size() == 1) ss << Q.prev(0).id << '\n';
+        ss << "\n{rank=same; " << Q.id << ' ' << K.id << ' ' << V.id << " }\n"
+           << "\n{rank=same; " << attention_weights.id << ' ' << attention.id << " }\n"
+           << this->id << "}\n";  // is attention
+
         return ss.str();
     }
+
+    NodePtr<T> get_terminal_node() override { return &attention; }
 };
 
-template <typename T = FloatT>
-struct SelfAttention : Attention<T>
+template <typename T = FloatT, typename Act = IActivation<T>>
+struct SelfAttention : Node<T>
 {
-    NodePtr<T> in;
-    Copy<T> x = Copy<T>(in, "SA-Input");
-    using LinQi = typename Attention<T>::LinQi;
-    SelfAttention(uint32 out_size, const NodePtr<T> prev, std::string name = "SelfAttention")
-        : Attention<T>({out_size, prev, false, name + "_Q"}, {out_size, prev, false, name + "_K"},
-                       {out_size, prev, false, name + "_V"}, name),
-        in(prev)
+    NodePtr<T> prev;
+    Copy<T> x = Copy<T>(prev, "SA-Input");
+    Attention<T, Act> attn;
+
+    SelfAttention(uint32 out_size, const NodePtr<T> prev_, bool bias = false,
+                  std::string name = "SelfAttention")
+        : Node<T>(prev_->shape.set(WIDTH_IDX, out_size), {prev_}, name, 1),
+          prev(prev_),
+          attn({out_size, &x, bias, name + "_Q"}, {out_size, &x, bias, name + "_K"},
+               {out_size, &x, bias, name + "_V"}, name)
     {
+        LOG(BLUE, "SAttn: ", this->name, this->shape, " for input: ", prev->name, prev->shape,
+            " attention node: ", attn.name, attn.shape);
+        this->set_data(attn.get_data());
+    }
+
+    void forward() override { attn.compute(); }
+
+    void backward(const Matrix<T>* gradientIn) override
+    {
+        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                  gradientIn->shape);
+        attn.backward(gradientIn);
+        prev->backward(&x.gradientOut);
+        x.gradientOut.set_val(0.f);
+    }
+
+    NodePtr<T> get_terminal_node() override { return &attn; }
+
+    virtual std::string dot_repr() override
+    {
+        return "[label=\"" + this->name + "\", shape=box3d style=filled fillcolor=\"#4eb0f1\"]\n";
     }
 };
 
@@ -238,7 +277,7 @@ template <typename T = FloatT, typename OutAct = Sigmoid<T>, typename ActQ = IAc
           typename ActK = ActQ, typename ActV = ActQ>
 struct MultiHeadAttention : Node<T>
 {
-    using Att = Attention<T, ActQ, ActK, ActV>;
+    using Att = Attention<T, ActQ, ActK, ActV>; 
     using LinO = Linear<T, OutAct>;
     using LinOi = typename LinO::LinearInput;
     using LinQi = typename Att::LinQi;
@@ -279,7 +318,8 @@ struct MultiHeadAttention : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                  gradientIn->shape);
         linear->backward(gradientIn);
     }
 
@@ -345,7 +385,8 @@ struct FeedForward : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                  gradientIn->shape);
         l_out->backward(gradientIn);
     }
 
