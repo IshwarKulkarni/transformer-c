@@ -33,8 +33,8 @@ struct Parameter : Matrix<TW>, public ParameterBase
     const float64 beta1 = 0.9;
     const float64 beta2 = 0.999;
 
-    float64 beta1Decayed = 1.;
-    float64 beta2Decayed = 1.;
+    float64 beta1Decayed = 1.0;
+    float64 beta2Decayed = 1.0;
 
     Matrix<TG> m = Matrix<TG>(this->shape, "moment");
     Matrix<TG> v = Matrix<TG>(this->shape, "second_moment");
@@ -142,6 +142,49 @@ struct Parameter : Matrix<TW>, public ParameterBase
     const Matrix<TG>& grads() const { return gradients; }
 
     void set_is_training(bool is_training) { this->is_training = is_training; }
+
+    void save_weights(std::ostream& os) const
+    {
+        uint32 id = get_type_identifier<TW>();
+        uint32 size_type[4] = {this->shape.batch, this->shape.height, this->shape.width, id};
+        uint64 counts[2] = {update_count, accum_count};
+        float64 decay[2] = {beta1Decayed, beta2Decayed};
+
+        os.write(reinterpret_cast<const char*>(size_type), sizeof(size_type));
+        os.write(reinterpret_cast<const char*>(counts), sizeof(counts));
+        os.write(reinterpret_cast<const char*>(decay), sizeof(decay));
+
+        const auto data = this->get_data().get();
+        os.write(reinterpret_cast<const char*>(data), this->numels() * sizeof(TW));
+    }
+
+    void load_weights(std::istream& is)
+    {
+        uint32 size_type[4] = {0, 0, 0, 0};
+        uint64 counts[2] = {0, 0};
+        float64 decay[2] = {0.0, 0.0};
+
+        is.read(reinterpret_cast<char*>(size_type), sizeof(size_type));
+        Shape s(size_type[0], size_type[1], size_type[2]);
+        if (size_type[3] != get_type_identifier<TW>())
+            throw_rte_with_backtrace("Type mismatch for ", this->name, " expected ",
+                                     get_type_identifier<TW>(), " but got ", size_type[3]);
+        if (s != this->shape)
+            throw_rte_with_backtrace("Shape mismatch for ", this->name, " expected ", this->shape,
+                                     " but got ", s);
+
+        is.read(reinterpret_cast<char*>(counts), sizeof(counts));
+        is.read(reinterpret_cast<char*>(decay), sizeof(decay));
+
+        update_count = counts[0];
+        accum_count = counts[1];
+        beta1Decayed = decay[0];
+        beta2Decayed = decay[1];
+
+        std::vector<TW> data(this->numels());
+        is.read(reinterpret_cast<char*>(data.data()), this->numels() * sizeof(TW));
+        this->copy(data.data());
+    }
 
  private:
     bool is_training = true;

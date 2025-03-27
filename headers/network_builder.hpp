@@ -1,6 +1,8 @@
 #ifndef NETWORK_BUILDER_HPP
 #define NETWORK_BUILDER_HPP
 
+#include <pthread.h>
+#include "errors.hpp"
 #include "nodes/node.hpp"
 
 struct NetworkBuilder;
@@ -64,11 +66,19 @@ struct NetworkBuilder
     std::string m_network_desc_string;
     string_string_map m_indirect_literals;
 
+    static constexpr uint32 MAGIC_NUMBER = 0xBA560055;
+    static constexpr uint32 VERSION_MAJOR = 0;
+    static constexpr uint32 VERSION_MINOR = 1;
+    static constexpr uint32 HEADER[4] = {MAGIC_NUMBER, VERSION_MAJOR, VERSION_MINOR, 0};
+    static constexpr char TEXT_DELIM[] = "###########";
+
     public:
 
     NetworkBuilder(std::string network_desc_filename);
 
-    void parse_network_desc(std::istream& is);
+    bool attempt_load_weight_file(std::string filename);
+
+    void parse_network_desc(); // load network description from m_network_desc_string
 
     void read_params(std::istream& is, const std::string& node_name, string_pair_vec& key_vals);
 
@@ -91,7 +101,6 @@ struct NetworkBuilder
         throw_rte_with_backtrace("Node with name `", name, "` is not defined");
         return nullptr;
     }
-
 
     template <typename T>
     T parse_value(const std::string& str)
@@ -162,14 +171,44 @@ struct NetworkBuilder
         return parse_value<T>(param_value);
     }
 
-    const NodePtrMap& get_nodes() const
+    NodePtr<FloatT> get_root_node() const
     {
-        return m_nodes;
+        std::set<NodePtr<FloatT>> all_nodes;
+        for (const auto& [name, node] : m_nodes)
+        {
+            all_nodes.insert(node);
+        }
+        for (const auto& [name, node] : m_nodes)
+        {
+            for (const auto& prev_node : node->prev_nodes)
+            {
+                all_nodes.erase(prev_node);
+            }
+        }
+        if(all_nodes.empty())
+            throw_rte_with_backtrace("There's Loop in the network");
+        if(all_nodes.size() > 1)
+            throw_rte_with_backtrace("There's more than one root node in the network");
+        return *all_nodes.begin();
     }
 
     const std::string& get_network_desc_string() const
     {
         return m_network_desc_string;
+    }
+
+    // save the network description to a file, followed by nodes and their weights
+    // the format is:
+    // network_desc 
+    // ###########
+    // node_name: node weights
+    // node_name: node weights
+    // Nodes appear in sorted order of their names
+    void save_network(const std::string& filename) const;
+
+    const NodePtrMap& get_nodes() const
+    {
+        return m_nodes;
     }
 };
 

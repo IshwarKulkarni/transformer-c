@@ -345,6 +345,8 @@ struct Matrix
 
     virtual ~Matrix<T>() = default;
 
+    CudaPtr get_data() const { return data; }
+
     CudaPtr get_data() { return data; }
 
  protected:

@@ -135,6 +135,36 @@ struct Linear : Node<T>
         LOG("Debug print for ", this->name, "\n", *this, W, WGradUpdate, *this, gradientOut);
         if (useBias) LOG(b, bGradUpdate);
     }
+
+    void save_weights(std::ostream& os) const override
+    {
+        char activation[16] = {0};
+        snprintf(activation, sizeof(activation), "%s", Act::name);
+        os.write(activation, sizeof(activation));
+
+        int8 bias[1] = {useBias ? int8(1) : int8(0)};
+        os.write(bias, sizeof(bias));
+
+        W.save_weights(os);
+        b.save_weights(os);
+    }
+
+    void load_weights(std::istream& is) override
+    {
+        char activation[16] = {0};
+        is.read(activation, sizeof(activation));
+        if (strcmp(activation, Act::name) != 0)
+            LOG(RED, "Activation mismatch for ", this->name, " expected ", Act::name, " but got ",
+                activation);
+
+        char bias[1] = {0};
+        is.read(bias, sizeof(bias));
+        if (bias[0] != useBias)
+            LOG(RED, "Bias mismatch for ", this->name, " expected ", useBias, " but got ", bias[0]);
+
+        W.load_weights(is);
+        b.load_weights(is);
+    }
 };
 
 /* Implementes the scaled dot product attention mechanism
@@ -225,6 +255,20 @@ struct Attention : Node<T>
     }
 
     NodePtr<T> get_terminal_node() override { return &attention; }
+
+    void save_weights(std::ostream& os) const override
+    {
+        Q.save_weights(os);
+        K.save_weights(os);
+        V.save_weights(os);
+    }
+
+    void load_weights(std::istream& is) override
+    {
+        Q.load_weights(is);
+        K.load_weights(is);
+        V.load_weights(is);
+    }
 };
 
 template <typename T = FloatT, typename Act = IActivation<T>>
@@ -263,6 +307,10 @@ struct SelfAttention : Node<T>
     {
         return "[label=\"" + this->name + "\", shape=box3d style=filled fillcolor=\"#4eb0f1\"]\n";
     }
+
+    void save_weights(std::ostream& os) const override { attn.save_weights(os); }
+
+    void load_weights(std::istream& is) override { attn.load_weights(is); }
 };
 
 /*
@@ -277,7 +325,7 @@ template <typename T = FloatT, typename OutAct = Sigmoid<T>, typename ActQ = IAc
           typename ActK = ActQ, typename ActV = ActQ>
 struct MultiHeadAttention : Node<T>
 {
-    using Att = Attention<T, ActQ, ActK, ActV>; 
+    using Att = Attention<T, ActQ, ActK, ActV>;
     using LinO = Linear<T, OutAct>;
     using LinOi = typename LinO::LinearInput;
     using LinQi = typename Att::LinQi;
@@ -342,6 +390,37 @@ struct MultiHeadAttention : Node<T>
         ss << '\t' << concat->id << '\n';
         ss << '\t' << this->id << "\n}\n";
         return ss.str();
+    }
+
+    void save_weights(std::ostream& os) const override
+    {
+        uint32 num_heads = heads.size();
+        os.write(reinterpret_cast<const char*>(&num_heads), sizeof(num_heads));
+        for (auto& head : heads) head->save_weights(os);
+        linear->save_weights(os);
+    }
+
+    void load_weights(std::istream& is) override
+    {
+        uint32 num_heads = 0;
+        is.read(reinterpret_cast<char*>(&num_heads), sizeof(num_heads));
+        if (num_heads != heads.size())
+        {
+            if (num_heads != 1)
+                throw_rte_with_backtrace("Number of heads mismatch for MultiHeadAttention ",
+                                         num_heads, " != ", heads.size());
+            auto pos = is.tellg();
+            for (uint32 i = 0; i < num_heads; ++i)  // replicate the head
+            {
+                is.seekg(pos);
+                heads[i]->load_weights(is);
+            }
+        }
+        else
+        {
+            for (auto& head : heads) head->load_weights(is);
+        }
+        linear->load_weights(is);
     }
 };
 
@@ -411,6 +490,18 @@ struct FeedForward : Node<T>
         l_in->debug_print();
         dropout->debug_print();
         l_out->debug_print();
+    }
+
+    void save_weights(std::ostream& os) const override
+    {
+        l_in->save_weights(os);
+        l_out->save_weights(os);
+    }
+
+    void load_weights(std::istream& is) override
+    {
+        l_in->load_weights(is);
+        l_out->load_weights(is);
     }
 };
 

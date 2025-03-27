@@ -24,5 +24,7 @@ int main()
     {
         LOG(YELLOW, name, " - ", node->shape);
     }
+    builder.save_network("static_data/network.ndw");
+    NetworkBuilder builder2("static_data/network.ndw");
     return 0;
 }

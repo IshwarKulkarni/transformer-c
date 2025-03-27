@@ -19,7 +19,7 @@ Dropout: dropout1
 
 Attention: att
     #Q:
-    q_size: 100
+    q_size: 100  # hundred
     q_prev: dropout1
     #K:
     k_size: 100
