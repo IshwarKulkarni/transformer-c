@@ -58,8 +58,8 @@ void time_linear_node()
     uint32 I2 = 4 * 128;
     Input<> x(batch, Sl, Ei, "x");
 
-    Linear<FloatT, Sigmoid<FloatT>> L0(LinearInputT<FloatT>{I1, &x, true, "Linear-L0"});
-    Linear<FloatT, TanH<FloatT>> L1(LinearInputT<FloatT>{I2, &L0, true, "Linear-L1"});
+    Linear<FloatT> L0(LinearInput<FloatT>{I1, &x, true, "Sigmoid", "Linear-L0"});
+    Linear<FloatT> L1(LinearInput<FloatT>{I2, &L0, true, "TanH", "Linear-L1"});
     SoftmaxDim0<FloatT> softmax(&L1, "S");
     Input<> t(L1.shape, "target");
     NLLLoss<> loss({&softmax, &t}, "L2Error");
@@ -152,9 +152,9 @@ int time_attention()
              k(bn, Sl, Ei, "Ki"),
              v(bn, Sl, Ei, "Vi");
 
-    Attention<> A({Eq, &q, false, "Attention_Q"}, 
-                  {Eq, &k, false, "Attention_K"},
-                  {Ev, &v, false, "Attention_V"}, "Attention");
+    Attention<> A({Eq, &q, false, "identity", "Attention_Q"}, 
+                  {Eq, &k, false, "identity", "Attention_K"},
+                  {Ev, &v, false, "identity", "Attention_V"}, "Attention");
     // clang-format on
 
     Input<> target(A.shape, "target");

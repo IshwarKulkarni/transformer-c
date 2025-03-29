@@ -7,3 +7,4 @@ temp/*
 .cache/*
 static_data/*.bin
 datasets/*
+*.dot

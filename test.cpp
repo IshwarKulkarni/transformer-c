@@ -3,6 +3,7 @@
 #include <fstream>
 #include "datasets.hpp"
 #include "matrix_ops_cpu.hpp"
+#include "network_graph.hpp"
 #include "nodes/loss.hpp"
 #include "nodes/parameterized.hpp"
 #include "nodes/unparameterized.hpp"
@@ -86,7 +87,7 @@ int32 test_match_implem(const MatrixT& C, const MatrixT& D, std::string msg, flo
     return diffs;
 }
 
-int test_mmTadd_torch()
+int32 test_mmTadd_torch()
 {
     Matrix<FloatT> A = normal_init<FloatT>({3, 4});
     Matrix<FloatT> B = normal_init<FloatT>({5, 4});
@@ -167,13 +168,12 @@ int32 test_reduce_implem(const char** argv, bool write_to_files = false)
     return failed;
 }
 
-int test_reduce_multiple(const char** argv)
+int32 test_reduce_multiple(const char** argv)
 {
     auto A = init_argv(argv);
     MatrixT C = shaped_like(A, "C");
 
     auto init = [&A, &C]() {
-        clear_l2_cache();
         normal_init(A, 0, 1);
         C.copy(A.begin());
     };
@@ -259,7 +259,7 @@ int test_reduce_multiple(const char** argv)
     return err;
 }
 
-int run_parameterized_tests(int argc, char const* argv[])
+int32 run_parameterized_tests(int32 argc, char const* argv[])
 {
     std::string name = (argc > 1) ? argv[0] : "main";
     // clang-format off
@@ -271,7 +271,8 @@ int run_parameterized_tests(int argc, char const* argv[])
         << name + " test_reduce    b h w               for testing reduce sum/min/max \n\t"
         << name + " test_bin_ops   b h w               for testing binary ops        \n\t"
         << name + " test_un_ops    b h w               for testing unary ops         \n\t"
-        << name + " test_mult_csv  a.csv b.csv c.csv for testing with golden files   \n\t";
+        << name + " test_mult_csv  a.csv b.csv c.csv for testing with golden files   \n\t"
+        << name + " test_softmax_grads b h w for testing softmax gradients \n\t";
 
     std::map<std::string, int32> commands = {
         {"test_transpose", 5},
@@ -281,6 +282,7 @@ int run_parameterized_tests(int argc, char const* argv[])
         {"test_bin_ops", 5},
         {"test_un_ops", 5},
         {"test_mult_csv", 5},
+        {"test_softmax_grads", 5},
     };
 
     // clang-format on
@@ -439,17 +441,17 @@ int run_parameterized_tests(int argc, char const* argv[])
 
         unary_apply(D, A, Neg<FloatT>());
         unary_applyCPU(C, A, Neg<FloatT>());
-        int un_neg_match = test_match(C, D, "Unary negate");
+        int32 un_neg_match = test_match(C, D, "Unary negate");
 
         auto A1 = normal_init<FloatT>({A.batch(), 1, A.width()});
         unary_apply(D, A1, Neg<FloatT>());
         unary_applyCPU(C, A1, Neg<FloatT>());
-        int un_neg_br = test_match(C, D, "Unary square broadcast row");
+        int32 un_neg_br = test_match(C, D, "Unary square broadcast row");
 
         auto A2 = normal_init<FloatT>({A.batch(), A.height(), 1});
         unary_apply(D, A2, Neg<FloatT>());
         unary_applyCPU(C, A2, Neg<FloatT>());
-        int un_neg_bc = test_match(C, D, "Unary square broadcast col");
+        int32 un_neg_bc = test_match(C, D, "Unary square broadcast col");
         if (un_neg_bc == 0) LOG(GREEN, "Passed all unary tests");
         return un_neg_match + un_neg_br + un_neg_bc;
     }
@@ -472,14 +474,16 @@ int run_parameterized_tests(int argc, char const* argv[])
         transpose(s_grad_inT, s_grad_in);
 
         softmax_gradient(D, s_outT, s_grad_inT);
-        return test_match(s_grad_out, D, "Softmax gradient transposed both");
+        auto err = test_match(s_grad_out, D, "Softmax gradient transposed both");
+        if (err) throw_rte_with_backtrace("Softmax gradient mismatch");
+        return err;
     }
 
     return 0;
 }
 
 /*
-int test_word2vec(const char* filename)
+int32 test_word2vec(const char* filename)
 {
     Word2Vec word2vec(filename);
 
@@ -550,7 +554,7 @@ std::setw(6), std::setprecision(4), meanSim / total, RESET);
 }
 */
 
-int test_linearb()
+int32 test_linearb()
 {
     uint32 bn, Ei, Sl, I0, I1;
     FloatT expected_loss = 0.0;
@@ -561,10 +565,9 @@ int test_linearb()
     LOG("TEST LINEARB Batch: ", bn, ", Embedding Size: ", Ei, ", Seq Len: ", Sl,
         ", Lin0 Emb Size: ", I0, ", Lin1 Emb Size: ", I1);
 
-    using act = Sigmoid<FloatT>;
     Input<> x(bn, Sl, Ei, "x");
-    Linear<FloatT, act> y1(LinearInputT<FloatT>{I0, &x, false, "y1"});  // yes act, no bias
-    Linear<FloatT> y2(LinearInputT<FloatT>{I1, &y1, true, "y2"});       // no act, yes bias
+    Linear<FloatT> y1(LinearInput<FloatT>{I0, &x, false, "sigmoid", "y1"});   // yes act, no bias
+    Linear<FloatT> y2(LinearInput<FloatT>{I1, &y1, true, "identity", "y2"});  // no act, yes bias
 
     Input<> t(y2.shape, "target");
     L2Loss<> loss({&y2, &t}, "L2-Error");
@@ -593,28 +596,28 @@ int test_linearb()
     return err;
 }
 
-int test_attention()
+int32 test_attention()
 {
     std::ifstream golden("static_data/attention.txt");
     uint32 bn, Ei, Eq, Ek, Ev, S;
     float32 expected_loss;
     golden >> bn >> Ei >> Eq >> Ek >> Ev >> S >> expected_loss;
     // clang-format off
-    Input<> q(bn, S, Ei, "Qi"), 
+    Input<> q(bn, S, Ei, "Qi"),
             k(bn, S, Ei, "Ki"),
             v(bn, S, Ei, "Vi");
 
-    Attention<> A({Eq, &q, false, "Attention_Q"}, 
-                  {Ek, &k, false, "Attention_K"},
-                  {Ev, &v, false, "Attention_V"}, "Attention");
+    Attention<> A({Eq, &q, false, "identity", "Attention_Q"},
+                  {Ek, &k, false, "identity", "Attention_K"},
+                  {Ev, &v, false, "identity", "Attention_V"}, "Attention");
     
     Input<> target(A.shape, "target");
     L2Loss<> loss({&A, &target}, "L2Error");
 
-    graph_to_dot(&loss, "attention.dot");
+    NetworkGraph::to_dotviz_file("attention.dot", &loss);
 
     // clang-format on
-    golden >> A.Q.W >> A.K.W >> A.V.W >> q >> k >> v >> target;
+    golden >> A.Ql->W >> A.Kl->W >> A.Vl->W >> q >> k >> v >> target;
 
     loss.compute();
     cudaErrCheck(cudaDeviceSynchronize());
@@ -623,23 +626,130 @@ int test_attention()
         throw_rte_with_backtrace("Expected loss values mismatch, expected: ", expected_loss, " vs ",
                                  loss.value());
 
+    uint32 err = test_match(read_csv<FloatT>(golden), *A.qkT.get(), "Attn. qkt") +
+                 test_match(read_csv<FloatT>(golden), *A.attention_weights.get(), "Attn. smx") +
+                 test_match(read_csv<FloatT>(golden), *A.attention.get(), "Attn. out") +
+                 test_match(read_csv<FloatT>(golden), *A.Ql.get(), "Query out") +
+                 test_match(read_csv<FloatT>(golden), *A.Kl.get(), "Key out") +
+                 test_match(read_csv<FloatT>(golden), *A.Vl.get(), "Value out");
+    if (err) throw_rte_with_backtrace("Test Attention results mismatch");
+    LOG(GREEN, "Test Attention results match");
     loss.backward();
 
-    uint32 err = test_match(read_csv<FloatT>(golden), A.qkT, "Attn. qkt") +
-                 test_match(read_csv<FloatT>(golden), A.attention_weights, "Attn. smx") +
-                 test_match(read_csv<FloatT>(golden), A.attention, "Attn. out") +
-                 test_match(read_csv<FloatT>(golden), A.Q, "Query out") +
-                 test_match(read_csv<FloatT>(golden), A.K, "Key out") +
-                 test_match(read_csv<FloatT>(golden), A.V, "Value out") +
-                 test_match(read_csv<FloatT>(golden), A.Q.W.grads(), "Q.W.grads") +
-                 test_match(read_csv<FloatT>(golden), A.K.W.grads(), "K.W.grads") +
-                 test_match(read_csv<FloatT>(golden), A.V.W.grads(), "V.W.grads");
+    err += test_match(read_csv<FloatT>(golden), A.Ql->W.grads(), "Q.W.grads") +
+           test_match(read_csv<FloatT>(golden), A.Kl->W.grads(), "K.W.grads") +
+           test_match(read_csv<FloatT>(golden), A.Vl->W.grads(), "V.W.grads");
 
     if (err == 0) LOG(GREEN, "Test Attention passed");
     return err;
 }
 
-int test_productT()
+int32 test_network_graph()
+{
+    std::stringstream graph_str;
+    uint32 bn = 10, Ei = 14, Eq = 13, Sl = 11;
+    graph_str << "\n"
+                 "$bn: "
+              << bn << "\n"
+              << "$Ei: " << Ei << "\n"
+              << "$Eq: " << Eq << "\n"
+              << "$Sl: " << Sl << "\n"
+              <<
+        R"(
+         Input: x
+            batch_size: $bn
+            height: $Sl
+            width: $Ei
+
+         Linear: In
+            out_dim: $Ei
+            prev: x
+            bias: false
+            act: identity
+
+         SelfAttention: attn
+            out_dim: $Eq
+            prev: In
+            bias: false
+            act: identity
+        
+        Input: target
+            batch_size: x->batch_size
+            height: x->height
+            width: attn->out_dim
+
+         L2Loss: loss
+            predictions: attn
+            target: target
+    )";
+
+    LOG(YELLOW, graph_str.str());
+
+    NetworkGraph graph;
+    graph.load_from_desc_stream(graph_str);
+    NetworkGraph::to_dotviz_file("self_attention.dot", graph.get_root_node());
+
+    auto* x = graph.get_typed_node<Input<FloatT>>("x");
+    auto* target = graph.get_typed_node<Input<FloatT>>("target");
+    auto* loss = graph.get_typed_node<L2Loss<FloatT>>("loss");
+    auto* A = graph.get_typed_node<SelfAttention<FloatT>>("attn");
+    auto* In = graph.get_typed_node<Linear<FloatT>>("In");
+    if (!A || !In || !x || !target || !loss) throw_rte_with_backtrace("Failed to get all nodes");
+
+    return 0;
+}
+
+// test composed with network graph.
+int32 test_self_attention()
+{
+    std::ifstream golden("static_data/self_attention.txt");
+    uint32 bn, x0w, Eq, Sl;
+    float32 expected_loss;
+    golden >> bn >> x0w >> Eq >> Sl >> expected_loss;
+
+    LOG("TEST SELF ATTENTION Batch: ", bn, ", Emb In: ", x0w, ", Emb Q: ", Eq, ", Seq Len: ", Sl);
+
+    Input<> x(bn, Sl, x0w, "x");
+    Linear<FloatT> In(LinearInput<FloatT>{x0w, &x, false, "identity", "In"});
+    Attention<FloatT> A(LinearInput<FloatT>{Eq, &In, false, "identity", "SelfAttention_Q"},
+                        LinearInput<FloatT>{Eq, &In, false, "identity", "SelfAttention_K"},
+                        LinearInput<FloatT>{Eq, &In, false, "identity", "SelfAttention_V"});
+    Input<> target(A.shape, "target");
+    L2Loss<> loss({&A, &target}, "L2-Error");
+
+    golden >> x >> In.W >> A.Q().W >> A.K().W >> A.V().W >> target;
+
+    loss.compute();
+    cudaErrCheck(cudaDeviceSynchronize());
+
+    uint32 err = (std::abs(expected_loss - loss.value()) > 1e-5);
+    if (err) LOG(RED, "error value mismatch: ", loss.value(), " vs ", expected_loss);
+
+    err += test_match(read_csv<FloatT>(golden), In, "In Projection Out") +
+           test_match(read_csv<FloatT>(golden), A.Q(), "Query Out") +
+           test_match(read_csv<FloatT>(golden), A.K(), "Key Out") +
+           test_match(read_csv<FloatT>(golden), A.V(), "Value Out") +
+           test_match(read_csv<FloatT>(golden), *A.qkT, "QKT") +
+           test_match(read_csv<FloatT>(golden), *A.attention_weights, "Attention Weights") +
+           test_match(read_csv<FloatT>(golden), A, "Attention Out");
+
+    if (err) throw_rte_with_backtrace("Test Self Attention results mismatch");
+
+    loss.backward();
+
+    err += test_match(read_csv<FloatT>(golden), A.Q().W.grads(), "Q.W.grads") +
+           test_match(read_csv<FloatT>(golden), A.K().W.grads(), "K.W.grads") +
+           test_match(read_csv<FloatT>(golden), A.V().W.grads(), "V.W.grads");
+    test_match(read_csv<FloatT>(golden), In.W.grads(), "In.W.grads");
+
+    if (err == 0)
+        LOG(GREEN, "Test Self Attention results match");
+    else
+        LOG(RED, "Test Self Attention results mismatch");
+    return err;
+}
+
+int32 test_productT()
 {
     uint32 bn, x0w, Sl, I0, I2, I3;
     FloatT expected_loss = 0.0;
@@ -650,12 +760,11 @@ int test_productT()
     LOG("TEST PRODUCTT Batch: ", bn, ", x0w: ", x0w, ", Seq Len: ", Sl, ", Lin0 Emb Size: ", I0,
         ", Lin2 Emb Size: ", I2, ", Lin3 Emb Size: ", I3);
 
-    using act = Sigmoid<FloatT>;
     Input<> x0(bn, Sl, x0w, "x0");
-    Linear<FloatT, act> y0(LinearInputT<FloatT>{I0, &x0, true, "y1"});
+    Linear<FloatT> y0(LinearInput<FloatT>{I0, &x0, true, "sigmoid", "y1"});
 
     Input<> x1(bn, I3, I2, "x1");
-    Linear<FloatT> y1(LinearInputT<FloatT>{I0, &x1, false, "y2"});
+    Linear<FloatT> y1(LinearInput<FloatT>{I0, &x1, false, "identity", "y2"});
 
     ProductT<FloatT, DividedBy<FloatT>> A({&y0, &y1}, DividedBy<FloatT>(2.222), "ProductT");
     Input<> t(A.shape, "target");
@@ -684,50 +793,10 @@ int test_productT()
     return err;
 }
 
-/*
-int run_multihead()
-{
-    uint32 Ei = 6;   //  input embedding size
-    uint32 Eq = 4;   //  query embedding size
-    uint32 Ev = 7;   //  value, i.e. output embedding size for each head
-    uint32 Sl = 5;   //  sequence length
-    uint32 Eo = Ei;  //  output embedding size, same as input
-
-    Input<> q(Sl, Ei, "Query"), k(Sl, Ei, "Key"), v(Sl, Ei, "Value");
-    using Sig = Sigmoid<FloatT>;
-    using Tan = TanH<FloatT>;
-    using MHA = MultiHeadAttention<FloatT, Sig, Sig, Sig, Tan>;
-    xavier_uniform_init<FloatT>(q);
-    xavier_uniform_init<FloatT>(k);
-    xavier_uniform_init<FloatT>(v);
-
-    // clang-format off
-    MHA M(3, {Eq, &q, true, "MHA_Q"},
-             {Eq, &k, true, "MHA_K"},
-             {Ev, &v, true, "MHA_V"},
-             {Eo, nullptr, true, "O"},
-             "MultiHeadAttention");
-    // clang-format on
-
-    Input<> target(M.shape(), "target");
-    fillCPU(target, 1);
-    L2Loss<FloatT> loss({&M, &target}, "L2Error");
-
-    loss.compute();
-    loss.backward();
-
-    M.print_desc();
-
-    graph_to_dot(&loss, "multihead.dot");
-
-    return 0;
-}
-*/
-
-int test_LSMCELoss()
+int32 test_LSMCELoss()
 {
     Input<> x(3, 5, 3, "x");
-    Linear<> L(5, &x, true, "Linear");
+    Linear<FloatT> L(5, &x, true, "identity", "Linear");
     Input<> t(L.shape, "target");
     LogSoftmaxCELoss<> loss({&L, &t}, "LogSoftmaxCELoss");
 
@@ -755,7 +824,7 @@ int test_LSMCELoss()
     return err;
 }
 
-int test_adam()
+int32 test_adam()
 {
     Matrix<FloatT> mat_v = read_csv<FloatT>("static_data/adam_v.csv");
 
@@ -833,7 +902,7 @@ int test_adam()
     return 0;
 }
 
-int test_dropout(FloatT p)
+int32 test_dropout(FloatT p)
 {
     uint32 b = 1, h = 50, w = 50;
     Matrix<FloatT> A({b, h, w}, "A");
@@ -869,7 +938,7 @@ int test_dropout(FloatT p)
 }
 
 template <uint32 Dim>
-int test_concat_implem()
+int32 test_concat_implem()
 {
     Shape bhw(20, 40, 300);
     Matrix<FloatT> A(bhw, "A");
@@ -897,7 +966,7 @@ int test_concat_implem()
            test_match(G, C, "Dim" + std::to_string(Dim) + "_Concat C");
 }
 
-int test_concat()
+int32 test_concat()
 {
     uint32 err = test_concat_implem<0>() + test_concat_implem<1>() + test_concat_implem<2>();
     if (err == 0) LOG(GREEN, "Concat passed");
@@ -905,7 +974,7 @@ int test_concat()
 }
 
 template <typename SoftMaxNode, uint32 SoftmaxDim>
-int test_softmaxDim()
+int32 test_softmaxDim()
 {
     static_assert(SoftmaxDim < 2, "Invalid SoftmaxDim");
     uint32 bn, Ei, Sl, I0;
@@ -914,10 +983,11 @@ int test_softmaxDim()
     std::ifstream in("static_data/sm_dim" + std::to_string(SoftmaxDim) + ".txt");
     in >> bn >> Ei >> Sl >> I0 >> expected_loss;
 
-    LOG("Batch: ", bn, " Embedding Size: ", Ei, " Seq Len: ", Sl, " Lin Emb Size: ", I0);
+    LOG("TEST SOFTMAX Batch: ", bn, " Embedding Size: ", Ei, " Seq Len: ", Sl,
+        " Lin Emb Size: ", I0);
 
     Input<> x(bn, Sl, Ei, "x");
-    Linear<FloatT, TanH<FloatT>> L(I0, &x, true, "L");
+    Linear<FloatT> L(I0, &x, true, "tanh", "L");
     SoftMaxNode S(&L, "SMax" + std::to_string(SoftmaxDim));
     Input<FloatT> t(S.shape, "target");
     NLLLoss<FloatT> loss({&S, &t}, "L2Error");  // this is just to test the NLLLoss
@@ -946,7 +1016,7 @@ int test_softmaxDim()
     return err;
 }
 
-int test_mean_node()
+int32 test_mean_node()
 {
     uint32 bn, xw, Sl, I0;
     FloatT expected_loss = 0.0;
@@ -954,10 +1024,10 @@ int test_mean_node()
     std::ifstream in("static_data/average.txt");
     in >> bn >> xw >> Sl >> I0 >> expected_loss;
 
-    LOG("Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl, " Lin Emb Size: ", I0);
+    LOG("TEST MEAN Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl, " Lin Emb Size: ", I0);
 
     Input<> x(bn, Sl, xw, "x");
-    Linear<FloatT, TanH<FloatT>> L(I0, &x, true, "L");
+    Linear<FloatT> L(I0, &x, true, "tanh", "L");
     Mean<FloatT, HEIGHT_IDX> S(&L, "Average");
     Input<> target(S.shape, "target");
     L2Loss loss({&S, &target}, "Loss");
@@ -982,21 +1052,22 @@ int test_mean_node()
     return err;
 }
 
-int test_layer_norm()
+int32 test_layer_norm()
 {
     uint32 bn, xw, Sl, I0;
     FloatT expected_loss = 0.0;
     std::ifstream in("static_data/layer_norm.txt");
     in >> bn >> xw >> Sl >> I0 >> expected_loss;
 
-    LOG("Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl, " Lin Emb Size: ", I0);
+    LOG("TEST LAYER NORM Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl,
+        " Lin Emb Size: ", I0);
     Input<> x(bn, Sl, xw, "x");
-    Linear<FloatT, Sigmoid<FloatT>> L(I0, &x, true, "L");
+    Linear<FloatT> L(I0, &x, true, "sigmoid", "L");
     Normalize<FloatT> norm(&L, "LayerNorm");
     Input<> target(norm.shape, "target");
     L2Loss loss({&norm, &target}, "Loss");
 
-    graph_to_dot(&loss, "layer_norm.dot");
+    NetworkGraph::to_dotviz_file("layer_norm.dot", &loss);
 
     in >> x >> L.W >> L.b >> target;
     loss.compute();
@@ -1017,28 +1088,32 @@ int test_layer_norm()
     return err;
 }
 
-int run_unparameterized_tests()
+// Test for Node<> level stuff except for concat and dropout
+//, uses data from compare.ipynb
+int32 run_unparameterized_tests()
 {
+    int32 err = 0;
     //  Test kernel calls, self consistency tests.
-    test_concat();
-    test_dropout(0.35);
+    err += test_concat();
+    err += test_dropout(0.35);
 
     //  test Node<> level stuff, uses data from compare.ipynb
-    test_softmaxDim<SoftmaxDim0<FloatT>, 0>();
-    test_softmaxDim<SoftmaxDim1<FloatT>, 1>();
-    test_mean_node();
-    test_attention();
-    test_productT();
-    test_linearb();
-    test_LSMCELoss();
-    test_layer_norm();
+    err += test_softmaxDim<SoftmaxDim0<FloatT>, 0>();
+    err += test_softmaxDim<SoftmaxDim1<FloatT>, 1>();
+    err += test_mean_node();
+    err += test_attention();
+    err += test_self_attention();
+    err += test_productT();
+    err += test_linearb();
+    err += test_LSMCELoss();
+    err += test_layer_norm();
 
     // Test Adam optimizer against known values
-    test_adam();
-    return 0;
+    err += test_adam();
+    return err;
 }
 
-int main(int argc, char const* argv[])
+int32 main(int32 argc, char const* argv[])
 {
     if (argc > 1) return run_parameterized_tests(argc, argv);
     return run_unparameterized_tests();

@@ -1,8 +1,4 @@
-// network_builder.cpp, 2025-03-24, 10:00
-// uses a simple network description language to build networks, with nodes of types of child
-// classes of Node
-
-#include "network_builder.hpp"
+#include "network_graph.hpp"
 #include <fstream>
 #include <istream>
 #include <regex>
@@ -25,16 +21,15 @@ std::string strip_comments(const std::string& str)
 
 // get a line from the stream, return the original line, the stripped line, the line number, and
 // whether it is a comment stripped line is the line with whitespace removed and comments removed
-std::tuple<std::string, std::string, uint32, bool> get_line_(std::istream& is)
+std::tuple<std::string, std::string, uint32> get_line_(std::istream& is)
 {
     static uint32 line_number = 0;
     std::string orig;
     std::getline(is, orig);
     line_number++;
     auto line = strip_whitespace(orig);
-    bool is_comment = line[0] == '#';
-    line = strip_comments(orig);
-    return std::make_tuple(orig, line, line_number, is_comment);
+    line = strip_comments(line);
+    return std::make_tuple(orig, line, line_number);
 }
 
 // parse a line of the form "key: value", expect no starting or trailing whitespace, and no comments
@@ -86,7 +81,7 @@ inline uint32 get_line_number(std::istream& is)
 
 // given a string, return the iterator to the first key in key_vals that is a super-string(??) of
 // the given string
-string_pair_vec::iterator match_key_substr(const std::string& key, string_pair_vec& key_vals)
+StringPairVec::iterator match_key_substr(const std::string& key, StringPairVec& key_vals)
 {
     for (auto it = key_vals.begin(); it != key_vals.end(); ++it)
     {
@@ -100,16 +95,16 @@ string_pair_vec::iterator match_key_substr(const std::string& key, string_pair_v
 // key_vals[i].first for some i, if so, set key_vals[i].second to the value, if no such key_vals[i]
 // is found, throw an error if an empty line is encountered before all key values are set, throw an
 // error end of block is an empty line.
-void NetworkBuilder::read_params(std::istream& is, const std::string& node_name,
-                                 string_pair_vec& key_vals)
+void NetworkGraph::read_params(std::istream& is, const std::string& node_name,
+                               StringPairVec& key_vals)
 {
-    string_pair_vec key_value_pairs;  // all key value pairs in block
+    StringPairVec key_value_pairs;  // all key value pairs in block
 
     while (is)
     {
-        auto [orig, line, line_number, is_comment] = get_line_(is);
-        if (is_comment) continue;
+        auto [orig, line, line_number] = get_line_(is);
         if (line.empty()) break;
+        if (line[0] == '#') continue;
         auto key_value_pair = parse_key_value_pair(line);
         if (!key_value_pair)
             throw_rte_with_backtrace("Invalid line:\n----\n", orig, "\n----\n for node`", node_name,
@@ -137,20 +132,23 @@ void NetworkBuilder::read_params(std::istream& is, const std::string& node_name,
     }
 }
 
-NetworkBuilder::NetworkBuilder(std::string network_desc_filename)
+NetworkGraph::NetworkGraph(std::string filename)
 {
-    initialize_node_creators();  // Initialize all node creator functions
-    if (!attempt_load_weight_file(network_desc_filename))
+    if (!attempt_load_weight_file(filename))
     {
-        std::ifstream network_desc_file(network_desc_filename);
-        m_network_desc_string = std::string(std::istreambuf_iterator<char>(network_desc_file),
-                                            std::istreambuf_iterator<char>());
-        network_desc_file.close();
-        parse_network_desc();
+        std::ifstream network_desc_file(filename);
+        load_from_desc_stream(network_desc_file);
     }
 }
 
-bool NetworkBuilder::attempt_load_weight_file(std::string filename)
+void NetworkGraph::load_from_desc_stream(std::istream& in_stream)
+{
+    m_network_desc_string =
+        std::string(std::istreambuf_iterator<char>(in_stream), std::istreambuf_iterator<char>());
+    parse_network_desc();
+}
+
+bool NetworkGraph::attempt_load_weight_file(std::string filename)
 {
     std::ifstream file_in(filename, std::ios::in | std::ios::binary);
     if (!file_in) throw_rte_with_backtrace("File `", filename, "` cannot be opened");
@@ -197,13 +195,15 @@ bool NetworkBuilder::attempt_load_weight_file(std::string filename)
     return true;
 }
 
-void NetworkBuilder::parse_network_desc()
+void NetworkGraph::parse_network_desc()
 {
+    initialize_node_creators();
     std::stringstream is(m_network_desc_string);
     while (is)
     {
-        auto [orig, line, line_number, is_comment] = get_line_(is);
-        if (is_comment) continue;
+        auto [orig, line, line_number] = get_line_(is);
+        if (line.empty() or line[0] == '#') continue;
+        if (line == TEXT_DELIM) break;
 
         // check if the line is a key_value_pair
         if (auto key_value_pair = parse_key_value_pair(line))
@@ -214,7 +214,16 @@ void NetworkBuilder::parse_network_desc()
                 if (m_nodes.count(value))
                     throw_rte_with_backtrace("Node with name `", value,
                                              "` is being redefined on line ", line_number);
-                m_nodes[value] = NodeCreatorMap::get(key)(is, value, *this);
+
+                try
+                {
+                    m_nodes[value] = NodeCreatorMap::get(key)(is, value, *this);
+                }
+                catch (const std::exception& e)
+                {
+                    LOG(RED, "\nParsing error on line ", line_number, ":\n", orig);
+                    throw_rte_with_backtrace("Error creating node ", value, "  ", e.what());
+                }
 
                 LOG(GREEN, "Created node ", value, " with type ", key);
             }
@@ -225,7 +234,7 @@ void NetworkBuilder::parse_network_desc()
                 m_literals[key] = value;
             }
             else
-                throw_rte_with_backtrace("Unknown key: ", key);
+                throw_rte_with_backtrace("Unknown key: `", key, "`");
         }
     }
 
@@ -242,7 +251,7 @@ void NetworkBuilder::parse_network_desc()
     }
 }
 
-void NetworkBuilder::save_network(const std::string& filename) const
+void NetworkGraph::save_network(const std::string& filename) const
 {
     std::stringstream text;
     text << m_network_desc_string << "\n";
@@ -271,3 +280,46 @@ void NetworkBuilder::save_network(const std::string& filename) const
 
     file_out.close();
 }
+
+void NetworkGraph::to_dotviz_file(std::string filename, const NodePtr<FloatT> node)
+{
+    NodePtrVec<FloatT> nodes;
+
+    nodes.push_back(node);
+    std::set<std::string> edge_node_strs;
+
+    auto make_edge = [](NodePtr<FloatT> a, NodePtr<FloatT> b, float32 weight = 3.f) {
+        char edge_buffer[256];
+        snprintf(edge_buffer, 256, "%d -> %d [label=\"%dx%dx%d\" weight=%2.1f]", a->id, b->id,
+                 a->shape[2], a->shape[1], a->shape[0], weight);
+        return std::string(edge_buffer);
+    };
+
+    while (!nodes.empty())
+    {
+        auto* n = nodes.back();
+        nodes.pop_back();
+        for (auto* p : n->prev_nodes)
+        {
+            edge_node_strs.insert(make_edge(p, n));
+            nodes.push_back(p);
+        }
+        edge_node_strs.insert(std::to_string(n->id) + n->dot_repr());
+        auto* terminal = n->get_terminal_node();
+        if (terminal)
+        {
+            nodes.push_back(terminal);
+            auto term_edge = make_edge(n, terminal, 1.f);
+            term_edge = "\nedge [style=dotted arrowhead=none]\n" + term_edge +
+                        "\nedge [style=normal arrowhead=normal];\n";
+            edge_node_strs.insert(term_edge);
+        }
+    }
+    std::ofstream os(filename);
+    os << "digraph G {\n compound=true;\n";
+    std::copy(edge_node_strs.begin(), edge_node_strs.end(),
+              std::ostream_iterator<std::string>(os, "\n"));
+    os << '}' << std::endl;
+}
+
+void NetworkGraph::train() {}

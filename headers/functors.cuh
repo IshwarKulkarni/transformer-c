@@ -5,6 +5,9 @@
 #include <cmath>
 #include <limits>
 #include "types"
+#include <string>
+#include "logger.hpp"
+#include "errors.hpp"
 
 //////////////////////////////////////////////////////////////////////////////////////
 // Unary functors
@@ -378,15 +381,11 @@ struct LeakyRelu
 
     typedef struct LeakyReluB
     {
-        float32 slope;
-        LeakyReluB(float32 negative_slope = 3e-3) : slope(negative_slope) {}
-        __host__ __device__ inline T operator()(T a) const { return a > 0 ? 1 : slope; }
+        __host__ __device__ inline T operator()(T a) const { return a > 0 ? 1 : 3e-3; }
         static constexpr char const* name = "LeakyReluBackward";
     } backward;
 
     static constexpr char const* name = "LeakyRelu";
-
-    LeakyRelu(float32 neg_slope = 3e-3) : forward(neg_slope), backward(slope) {}
 };
 
 template <typename T>
@@ -413,6 +412,51 @@ struct IActivation
     typedef Identity<T> backward;
     static constexpr char const* name = "IActivation";
 };
+
+enum class ActivationEnum
+{
+    Sigmoid,
+    Relu,
+    LeakyRelu,
+    TanH,
+    IActivation
+};
+
+inline ActivationEnum get_activation_enum(const std::string& act)
+{
+    if (act == "sigmoid" or act == "Sigmoid")
+        return ActivationEnum::Sigmoid;
+    else if (act == "relu" or act == "ReLU")
+        return ActivationEnum::Relu;
+    else if (act == "leakyrelu" or act == "LeakyReLU")
+        return ActivationEnum::LeakyRelu;
+    else if (act == "tanh" or act == "TanH")
+        return ActivationEnum::TanH;
+    else if (act == "identity" or act == "Identity" or act == "IActivation")
+        return ActivationEnum::IActivation;
+
+    throw_rte_with_backtrace("Unknown activation function: " + act);
+    return ActivationEnum::IActivation; // Default case after throw
+}
+
+inline const char* get_act_name(const ActivationEnum& act)
+{
+    switch (act)
+    {
+        case ActivationEnum::Sigmoid:
+            return "Sigmoid";
+        case ActivationEnum::Relu:
+            return "ReLU";
+        case ActivationEnum::LeakyRelu:
+            return "LeakyReLU";
+        case ActivationEnum::TanH:
+            return "TanH";
+        case ActivationEnum::IActivation:
+            return "Identity";
+        default:
+            return "Unknown";
+    }
+}
 //////////////////////////////////////////////////////////////////////////////////////
 // composition of unary operators
 //////////////////////////////////////////////////////////////////////////////////////

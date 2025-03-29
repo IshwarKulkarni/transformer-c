@@ -8,12 +8,13 @@ Nodes that perform per element operations like arithmetic operations
 #include "matrix.cuh"
 #include "node.hpp"
 #include "types"
+#include "matrix_size_checks.hpp"
 
 // Element wise sum
 template <typename T = FloatT>
 struct Sum : Node<T>
 {
-    Sum(NodePtrs<T> prevs, const std::string& name = "Sum")
+    Sum(NodePtrVec<T> prevs, const std::string& name = "Sum")
         : Node<T>(prevs[0]->shape, prevs, name, 2)
     {
         if (prevs[0]->shape != prevs[1]->shape)
@@ -27,7 +28,7 @@ struct Sum : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         this->prev_nodes[0]->backward(gradientIn);
         this->prev_nodes[1]->backward(gradientIn);
     }
@@ -47,7 +48,7 @@ struct Subtract : Node<T>
 {
     NodePtr<T> A, B;
     Matrix<T> gradientB = Matrix<T>(B->shape, this->name + "_gradientOutB");
-    Subtract(NodePtrs<T> prevs, const std::string& name = "Subtract")
+    Subtract(NodePtrVec<T> prevs, const std::string& name = "Subtract")
         : Node<T>(prevs[0]->shape, prevs, name, 2), A(prevs[0]), B(prevs[1])
 
     {
@@ -67,7 +68,7 @@ struct Subtract : Node<T>
 
     void backward(const Matrix<T>* gradIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradIn->shape);
         A->backward(gradIn);
 
         // We could have broadcasted B to A, so we need to sum the gradient in broadcasted
@@ -99,7 +100,7 @@ struct Division : Node<T>
     Matrix<T> gradientOut = Matrix<T>(this->shape, this->name + "_gradientOut");  //
     Matrix<T> gradientOutDenom = Matrix<T>(denom->shape, this->name + "_gradientOutDenom");
 
-    Division(NodePtrs<T> prevs, const std::string& name = "Division")
+    Division(NodePtrVec<T> prevs, const std::string& name = "Division")
         : Node<T>(prevs[0]->shape, prevs, name, 2), num(prevs[0]), denom(prevs[1])
     {
         if (!broadcastable<0>(denom->shape, num->shape) or
@@ -120,7 +121,7 @@ struct Division : Node<T>
 
     void backward(const Matrix<T>* gradIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradIn->shape);
         binary_apply(gradientOut, *gradIn, this->prev(1), Div<T>());
         num->backward(&gradientOut);
 
@@ -159,7 +160,7 @@ struct Power : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         binary_apply(gradientOut, this->prev(0), *gradientIn, PowDiff<T>(power));
         this->prev_nodes[0]->backward(&gradientOut);
     }

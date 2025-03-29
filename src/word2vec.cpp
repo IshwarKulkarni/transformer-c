@@ -2,7 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include "logger.hpp"
-#include "matrix_ops_cpu.hpp"
+#include "matrix_ops.hpp"
 #include "utils.hpp"
 
 using Node = WordVecNode;
