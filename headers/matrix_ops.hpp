@@ -1,5 +1,5 @@
-#ifndef MATRIX_OPS_CUH
-#define MATRIX_OPS_CUH
+#ifndef MATRIX_OPS_HPP
+#define MATRIX_OPS_HPP
 
 #include <cuda_runtime.h>
 #include <sys/types.h>
@@ -517,4 +517,4 @@ inline Matrix<T> resample(const Matrix<T> &mat_in, uint32 height, uint32 width)
     return mat_out;
 }
 
-#endif  // MATRIX_OPS_CUH
+#endif  // MATRIX_OPS_HPP

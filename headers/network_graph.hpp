@@ -5,18 +5,46 @@
 #include "errors.hpp"
 #include "nodes/node.hpp"
 
-struct NetworkBuilder;
+/*
+    NetworkGraph is a class that represents a directed, acyclic graph of nodes; A tree;
+    It is used to create a network of nodes from a description of the network.
+    It also provides logic for saving and loading the network to and from a file
+    (saves it with description and weights)
 
-using string_string_map = std::map<std::string, std::string>;
-using string_vector = std::vector<std::string>;
-using string_pair_vec = std::vector<std::pair<std::string, std::string>>;
+    Incomplete Grammar for network description language: 
+    // incomplete because it's not context free (need to parse nested structures/nodes to define other nodes)
+
+    NetworkGraph := node* | literal_def* | node* | comment* 
+
+    node := name_value_pair | newline | definition_lines | newline
+    definition_lines := definition_line+
+    definition_line := key_value_pair | newline
+    name_value_pair := name | ws | colon | ws | value | comment
+    name := <identifier>
+    value := <literal>
+    identifier := <alphanumeric>+
+    literal := name | number | boolean | string
+    number := numeral | numeral "." numeral
+    boolean := "true" | "false" | "1" | "0" | "yes" | "no"
+    string := <string_literal>
+    string_literal := <string_literal_char>+ | "_" | <alphanumeric>+
+    key_value_pair := ws* | key | ws | colon | ws | value | comment
+    literal_def := literal_key ":" literal_key
+    comment := "#" ws* | * | newline
+*/
+
+struct NetworkGraph;
+
+using StringStringMap = std::map<std::string, std::string>;
+using StringVector = std::vector<std::string>;
+using StringPairVec = std::vector<std::pair<std::string, std::string>>;
 
 using NodePtrMap = std::map<std::string, NodePtr<FloatT>>;
 using LiteralMap = std::map<std::string, std::string>;
-using NodeCreatorFunc = NodePtr<FloatT> (*)(std::istream& is, const std::string& name, NetworkBuilder& builder);
+using NodeCreatorFunc = NodePtr<FloatT> (*)(std::istream& is, const std::string& name, NetworkGraph& builder);
 
 void initialize_node_creators();
-string_pair_vec::iterator match_key_substr(const std::string& key, string_pair_vec& opt_params);
+StringPairVec::iterator match_key_substr(const std::string& key, StringPairVec& opt_params);
 struct NodeCreatorMap
 {
     static std::map<std::string, NodeCreatorFunc> m_node_creators;
@@ -40,55 +68,42 @@ struct NodeCreatorMap
     }
 };
 
-struct NetworkBuilder
+struct NetworkGraph
 {
-    /* grammar for network description language:
-
-        network_desc = node* | key_value_pair | node*
-
-        Node :=  key_value_pair | newline | definition_lines | newline
-        definition_lines := definition_line+
-        definition_line := "\t" | key_value_pair | newline
-        key_value_pair := key | ws | colon | ws | value
-        key := <identifier>
-        value := <literal>
-        identifier := <alphanumeric>+
-        literal := <alphanumeric>+
-        ws := [" " | "\t"]+
-        colon := ":"
-    */
-
     private:
     LiteralMap m_literals;
     NodePtrMap m_nodes;
     std::set<std::string> m_used_literals;
     std::set<NodePtr<FloatT>> m_used_nodes;
     std::string m_network_desc_string;
-    string_string_map m_indirect_literals;
+    StringStringMap m_indirect_literals;
 
     static constexpr uint32 MAGIC_NUMBER = 0xBA560055;
     static constexpr uint32 VERSION_MAJOR = 0;
     static constexpr uint32 VERSION_MINOR = 1;
     static constexpr uint32 HEADER[4] = {MAGIC_NUMBER, VERSION_MAJOR, VERSION_MINOR, 0};
-    static constexpr char TEXT_DELIM[] = "###########";
+    static constexpr char TEXT_DELIM[] = "--------------------------------";
 
     public:
 
-    NetworkBuilder(std::string network_desc_filename);
+    NetworkGraph() {};
+    explicit NetworkGraph(std::string network_desc_filename);
+
+    void load_from_desc_stream(std::istream& is);
+
+    ~NetworkGraph()
+    {
+        for (const auto& [name, node] : m_nodes)
+        {
+            delete node;
+        }
+    }
 
     bool attempt_load_weight_file(std::string filename);
 
     void parse_network_desc(); // load network description from m_network_desc_string
 
-    void read_params(std::istream& is, const std::string& node_name, string_pair_vec& key_vals);
-
-    ~NetworkBuilder()
-    {
-        for (auto& [name, node] : m_nodes)
-        {
-            delete node;
-        }
-    }
+    void read_params(std::istream& is, const std::string& node_name, StringPairVec& key_vals);
 
     NodePtr<FloatT> get_node(const std::string& name)
     {
@@ -102,8 +117,23 @@ struct NetworkBuilder
         return nullptr;
     }
 
+    template<typename NodeType>
+    NodeType* get_typed_node(const std::string& name)
+    {
+       auto it = m_nodes.find(name);
+        if (it != m_nodes.end())
+        {
+            auto node = dynamic_cast<NodeType*>(it->second);
+            if(!node)
+                throw_rte_with_backtrace("Node with name `", name, "` is not of type ", typeid(NodeType).name());
+            return node;
+        }
+        throw_rte_with_backtrace("Node with name `", name, "` is not defined");
+        return nullptr;
+    }   
+
     template <typename T>
-    T parse_value(const std::string& str)
+    inline T parse_value(const std::string& str)
     {
         try {
         if constexpr (std::is_same<T, float>::value)
@@ -126,8 +156,10 @@ struct NetworkBuilder
         }
     }
 
+    void train();
+
     template <typename T> // if name is in m_literals, return the literal as T, else parse param_value as T and return the parsed value    
-    T get_value(const std::string& param_value)
+    inline T get_value(const std::string& param_value)
     {
         if(param_value[0] == '$')
         {
@@ -205,6 +237,13 @@ struct NetworkBuilder
     // node_name: node weights
     // Nodes appear in sorted order of their names
     void save_network(const std::string& filename) const;
+
+    inline void to_dotviz_file(std::string filename)
+    {
+        to_dotviz_file(filename, get_root_node());
+    }
+
+    static void to_dotviz_file(std::string filename, const NodePtr<FloatT> node);
 
     const NodePtrMap& get_nodes() const
     {

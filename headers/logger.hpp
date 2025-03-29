@@ -131,8 +131,31 @@ inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
     return strm << "(" << dim.x << ", " << dim.y << ", " << dim.z << ")";
 }
 
-//#define LOG_TRACE(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, __VA_ARGS__)
-#define LOG_TRACE(...)
+
+#ifdef LOG_NODE_TRACE_ON
+#define LOG_NODE_TRACE(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " NODE TRACE #, " __VA_ARGS__)
+#else
+#define LOG_NODE_TRACE(...)
+#endif
+
+#ifdef LOG_MATRIX_OPS_ON
+#define LOG_MATRIX_OPS(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " OP: " , __VA_ARGS__)
+#else
+#define LOG_MATRIX_OPS(...) 
+#endif
+
+#ifdef LOG_MATRIX_CREATE_ON
+#define LOG_MATRIX_CREATE(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, "Created: ", __VA_ARGS__)
+#else
+#define LOG_MATRIX_CREATE(...)
+#endif
+
+#ifdef LOG_KERNEL_SIZE_ON
+#define LOG_KERNEL_SIZE(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " Kernel Size: " , __VA_ARGS__)
+#else
+#define LOG_KERNEL_SIZE(...)
+#endif
+
 #define R_JUST(x, n) std::setw(n), std::setfill(' '), std::right, x, " "
 #define DISABLE_LOG_FOR_FILE Log::Logger::get().disable(__FILE__);
 #define ENABLE_LOG_FOR_FILE Log::Logger::get().enable(__FILE__);

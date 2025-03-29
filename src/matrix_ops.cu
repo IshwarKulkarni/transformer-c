@@ -1,5 +1,5 @@
 #include "curand_kernel.h"
-#include "matrix_ops.cuh"
+#include "matrix_ops.hpp"
 #include "matrix_size_checks.hpp"
 
 template <typename T, uint32 BLOCK_SIZE, typename Op>
@@ -26,6 +26,7 @@ __global__ void transpose_kernel(Matrix<T> res, const Matrix<T> A, Op op)
 template <typename T, typename Op>
 void transpose(Matrix<T>& res, const Matrix<T>& A, Op op)
 {
+    LOG_MATRIX_OPS("transpose: ", A.shape, " -> ", res.shape);
     if (A.shape != res.shape.t())
         throw_rte_with_backtrace(
             BOLD, RED, "Matrix dimensions do not match for transpose operation: ", A.shape, " -> ",
@@ -88,6 +89,7 @@ static Matrix<const FloatT*> concat_ptrs({128, 1}, "FloatTPtrsForConcat");
 template <typename T, uint32 Dim, typename Op>
 void concat(Matrix<T>& res, const std::vector<Matrix<T>*>& inputs, Op op)
 {
+    LOG_MATRIX_OPS("concat: ", inputs[0]->shape, " x", inputs.size(), " -> ", res.shape);
     static_assert(Dim < 3, "Invalid dimension for concatenation, 0: width, 1: height, 2: batch");
 
     uint32 n = inputs.size();
@@ -147,6 +149,7 @@ __global__ void split_kernel(Matrix<T*> splits, const Matrix<T> merged, Shape sp
 template <typename T, uint32 Dim, typename Op>
 void split(std::vector<Matrix<T>*>& outputs, const Matrix<T>& input, Op op)
 {
+    LOG_MATRIX_OPS("split: ", input.shape, " -> ", outputs.size(), " x ", outputs[0]->shape);
     uint32 n = outputs.size();
     if (n == 0) throw_rte_with_backtrace("Zero output matrices for split");
     if (n > split_mat_ptrs.height()) throw_rte_with_backtrace("Too many matrices to split");
@@ -228,6 +231,7 @@ __global__ void init_curand_states(curandState* states, uint32 size, uint32 seed
 template <typename T>
 void dropout(Matrix<T>& res, const Matrix<T>& in, Matrix<float32>& mask, float32 drop_prob)
 {
+    LOG_MATRIX_OPS("dropout: ", in.shape, " -> ", res.shape, " (mask: ", mask.shape, ")");
     if (dropout_states == nullptr)
     {
         curandState* _states = nullptr;
@@ -274,6 +278,7 @@ __global__ void binary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, const Mat
 template <typename Tr, typename T, typename Tb, typename Op>
 void binary_apply(Matrix<Tr>& res, const Matrix<T>& A, const Matrix<Tb>& B, Op op)
 {
+    LOG_MATRIX_OPS("binary_apply: ", A.shape, " op ", B.shape, " -> ", res.shape);
     check_broadcast_sizes<T>(res, A, B);
     dim3 block(std::min(24u, res.width()), std::min(24u, res.height()));  // slightly inefficient
     auto grid = res.grid(block);
@@ -303,8 +308,9 @@ __global__ void unary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, Op op)
 template <typename T, typename Tr, typename Op>
 void unary_apply(Matrix<Tr>& res, const Matrix<T>& A, Op op)
 {
+    LOG_MATRIX_OPS("unary_apply: ", A.shape, " -> ", res.shape);
     check_broadcast_sizes(res, A);
-    dim3 block(32, 32, 1);
+    dim3 block(24, 24, 1);
     unary_apply_kernel<<<res.grid(block), block>>>(res, A, op);
     cudaErrCheck(cudaGetLastError());
 }
@@ -331,6 +337,7 @@ template <typename T, typename Op>
 void ternary_apply(Matrix<T>& res, const Matrix<T>& A, const Matrix<T>& B, const Matrix<T>& C,
                    Op op)
 {
+    LOG_MATRIX_OPS("ternary_apply: ", A.shape, " op ", B.shape, " op ", C.shape, " -> ", res.shape);
     check_broadcast_sizes<T>(res, A, B, C);
     dim3 block(16, 16, 1);
     ternary_apply_kernel<T, T, Op><<<res.grid(block), block>>>(res, A, B, C, op);

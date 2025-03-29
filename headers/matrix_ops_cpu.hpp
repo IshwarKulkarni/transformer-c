@@ -4,7 +4,7 @@
 #include <algorithm>
 #include "functors.cuh"
 #include "matrix.cuh"
-#include "matrix_ops.cuh"
+#include "matrix_ops.hpp"
 #include "matrix_size_checks.hpp"
 
 template <typename T, typename PostProcess = Identity<T>>

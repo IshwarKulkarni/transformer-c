@@ -189,6 +189,7 @@ struct Matrix
               this->rawData = nullptr;
           })
     {
+        LOG_MATRIX_CREATE(this->name, " : ", this->shape, " size: ", this->shape.numels, " bytes: ", this->shape.bytes<T>());
     }
 
     inline uint32 sum_batches(std::vector<const Matrix<T>*> mats)

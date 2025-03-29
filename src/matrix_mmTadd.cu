@@ -1,11 +1,8 @@
 #include <type_traits>
 #include "matrix.cuh"
-#include "matrix_ops.cuh"
+#include "matrix_ops.hpp"
 #include "matrix_size_checks.hpp"
 #include "types"
-
-//#define LOG_SIZE(...) LOG(__VA_ARGS__)
-#define LOG_SIZE(...)
 
 // computes the A * B^T + C
 // AccumNative => internal accumulation is done in T, else 32bit(T) if sizeof(T)
@@ -79,22 +76,24 @@ template <typename T, typename PProcess>
 void mmTadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Optional<Matrix<T>> C,
             PProcess pProcess)
 {
+    LOG_MATRIX_OPS("mmTadd: ", A.shape, " @ ", B.shape, "^T", (C.is_valid() ? " + C" : " "), " -> ",
+                   result.shape);
     check_mmTadd_sizes(result, A, B, C);
 
     if (result.numels() <= 256)
     {
         dim3 blockDim(A.height(), B.height(), result.batch());
-        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
-                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
-                 " gridDim: ", 1, " blockDim: ", blockDim);
+        LOG_KERNEL_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                        (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                        " gridDim: ", 1, " blockDim: ", blockDim);
         mmTadd_kernel<T><<<1, blockDim>>>(result, A, B, C, pProcess);
     }
     else if (result.shape.size2d <= 256)
     {
         dim3 blockDim(A.height(), B.height());
-        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
-                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
-                 " gridDim: ", result.batch(), " blockDim: ", blockDim);
+        LOG_KERNEL_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                        (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                        " gridDim: ", result.batch(), " blockDim: ", blockDim);
         mmTadd_kernel<T><<<result.batch(), blockDim>>>(result, A, B, C, pProcess);
     }
     else if (A.height() <= 1024)
@@ -103,9 +102,9 @@ void mmTadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Opt
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
         dim3 gridDim(iDivUp(result.height(), BLOCK_SIZE_MM), iDivUp(result.width(), BLOCK_SIZE_MM),
                      result.batch());
-        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
-                 (C ? " C: " + C->shape.str() : " no C, "), " result.shape: ", result.shape,
-                 " gridDim: ", gridDim, " blockDim: ", blockDim);
+        LOG_KERNEL_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                        (C ? " C: " + C->shape.str() : " no C, "), " result.shape: ", result.shape,
+                        " gridDim: ", gridDim, " blockDim: ", blockDim);
         tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(result, A, B, C, pProcess);
     }
     else if (A.height() <= 2048)
@@ -114,20 +113,20 @@ void mmTadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Opt
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
         dim3 gridDim(iDivUp(result.height(), BLOCK_SIZE_MM), iDivUp(result.width(), BLOCK_SIZE_MM),
                      result.batch());
-        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
-                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
-                 " gridDim: ", gridDim, " blockDim: ", blockDim);
+        LOG_KERNEL_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                        (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                        " gridDim: ", gridDim, " blockDim: ", blockDim);
         tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(result, A, B, C, pProcess);
     }
     else
     {
-        constexpr uint32 BLOCK_SIZE_MM = 24;
+        constexpr uint32 BLOCK_SIZE_MM = 20;
         dim3 blockDim(BLOCK_SIZE_MM, BLOCK_SIZE_MM);
         dim3 gridDim(iDivUp(result.height(), BLOCK_SIZE_MM), iDivUp(result.width(), BLOCK_SIZE_MM),
                      result.batch());
-        LOG_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
-                 (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
-                 " gridDim: ", gridDim, " blockDim: ", blockDim);
+        LOG_KERNEL_SIZE("A.shape: ", A.shape, " B.shape: ", B.shape,
+                        (C ? " C: " + C->shape.str() : "no C, "), " result.shape: ", result.shape,
+                        " gridDim: ", gridDim, " blockDim: ", blockDim);
         tiled_mmTadd_shmem<BLOCK_SIZE_MM, false><<<gridDim, blockDim>>>(result, A, B, C, pProcess);
     }
     cudaErrCheck(cudaGetLastError());

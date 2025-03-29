@@ -30,7 +30,6 @@ Attention: att
     v_bias: true
     common_act: sigmoid
 
-
 SelfAttention: sa1
     out_dim: 160
     prev: att

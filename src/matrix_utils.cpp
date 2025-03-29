@@ -1,0 +1,147 @@
+#include "matrix.cuh"
+#include "matrix_ops.hpp"
+#include "nodes/node.hpp"
+#include "utils.hpp"
+
+template <typename T>
+Matrix<T> init_argv(const char **argv, uint32 argc_offset)
+{  // expects argv[2..4] be b, h, w;
+    uint32 b = strtoul(argv[argc_offset + 0], nullptr, 10);
+    uint32 h = strtoul(argv[argc_offset + 1], nullptr, 10);
+    uint32 w = strtoul(argv[argc_offset + 2], nullptr, 10);
+    return normal_init<T>({b, h, w}, 0.f, 1.f, "A");
+};
+
+template <typename T>
+Matrix<T> read_csv(std::ifstream &file)
+{
+    std::streampos beg = file.tellg();
+    if (!file.is_open()) throw_rte_with_backtrace("Could not open file");
+
+    uint32 b = 0, h = 0, w = 0;
+    char c;
+    file >> c >> b >> h >> w;
+    Matrix<FloatT> m({b, h, w});
+    file.seekg(beg);
+    file >> m;
+    return m;
+}
+
+template <typename T>
+Matrix<T> read_csv(const std::string &filename)
+{
+    std::ifstream file(filename, std::ios::in);
+    return read_csv<T>(file);
+}
+
+void write_binary(const Matrix<float32> &m, const std::string &file)
+{
+    std::ofstream out(file, std::ios::out | std::ios::binary);
+    if (!out.is_open()) throw_rte_with_backtrace("Could not open file");
+
+    // write header: byte('#'), byte('F'), byte('4'), 4bytes(b), 4bytes(h), 4bytes(w)
+    // write data, 4bytes per element, row-major order, b*h*w elements
+    char header[3] = {'#', 'F', '4'};  // magic char, F4 : Float 4 bytes
+    out.write(header, 3);
+    out.write(reinterpret_cast<const char *>(&m.shape.batch), sizeof(uint32));
+    out.write(reinterpret_cast<const char *>(&m.shape.height), sizeof(uint32));
+    out.write(reinterpret_cast<const char *>(&m.shape.width), sizeof(uint32));
+    out.write(reinterpret_cast<const char *>(m.begin()), m.shape.bytes<float32>());
+}
+
+// read binary file written by above write_binary
+Matrix<float32> read_binary(const std::string &file = "")
+{
+    std::ifstream in(file, std::ios::in | std::ios::binary);
+    if (!in.is_open()) throw_rte_with_backtrace("Could not open file");
+
+    char header[3];
+    in.read(header, 3);
+    if (header[0] != '#' or header[1] != 'F' or header[2] != '4')
+    {
+        throw_rte_with_backtrace("Invalid file format");
+    }
+
+    uint32 b, h, w;
+    in.read(reinterpret_cast<char *>(&b), sizeof(uint32));
+    in.read(reinterpret_cast<char *>(&h), sizeof(uint32));
+    in.read(reinterpret_cast<char *>(&w), sizeof(uint32));
+
+    std::vector<float32> data(b * h * w);
+    in.read(reinterpret_cast<char *>(data.data()), b * h * w * 4);
+
+    Matrix<float32> m({b, h, w});
+    m.copy(data.data());
+    return m;
+}
+
+template <typename T>  // bilinear interpolation, like texture mode border
+T bilinear_sample(const Matrix<T> &m, uint32 b, float64 y, float64 x)
+{
+    if (x < 0 or x >= 1 or y < 0 or y >= 1) return 0;
+    uint32 y0 = static_cast<uint32>(y * (m.height() - 1));
+    uint32 x0 = static_cast<uint32>(x * (m.width() - 1));
+    uint32 y1 = y0 + 1;
+    uint32 x1 = x0 + 1;
+    if (y1 >= m.height()) y1 = y0;
+    if (x1 >= m.width()) x1 = x0;
+
+    float64 y_frac = y * m.height() - y0;
+    float64 x_frac = x * m.width() - x0;
+
+    float64 v0 = float64(m(b, y0, x0)) * (1 - y_frac) * (1 - x_frac);
+    float64 v1 = float64(m(b, y0, x1)) * (1 - y_frac) * x_frac;
+    float64 v2 = float64(m(b, y1, x0)) * y_frac * (1 - x_frac);
+    float64 v3 = float64(m(b, y1, x1)) * y_frac * x_frac;
+    float64 v(v0 + v1 + v2 + v3);
+    return T(v);
+}
+
+template <typename T>
+T sample(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 eps)
+{
+    auto cubicInterpolate = [](const std::array<float64, 4> &p, float64 x) {
+        return p[1] + 0.5 * x *
+                          (p[2] - p[0] +
+                           x * (2.0 * p[0] - 5.0 * p[1] + 4.0 * p[2] - p[3] +
+                                x * (3.0 * (p[1] - p[2]) + p[3] - p[0])));
+    };
+
+    y *= m.height();
+    x *= m.width();
+    int32 y1 = static_cast<int32>(y);
+    int32 x1 = static_cast<int32>(x);
+
+    if (std::abs(y - y1) < eps and std::abs(x - x1) < eps and uint32(x1) < m.width() and
+        uint32(y1) < m.height())
+    {
+        return m(b, y1, x1);
+    }
+
+    std::array<std::array<float64, 4>, 4> p;
+
+    for (int32 j = -1; j <= 2; ++j)
+    {
+        for (int32 i = -1; i <= 2; ++i)
+        {
+            int32 yj = std::max(0, std::min(static_cast<int32>(m.height() - 1), y1 + j));
+            int32 xi = std::max(0, std::min(static_cast<int32>(m.width() - 1), x1 + i));
+            p[i + 1][j + 1] = m(b, yj, xi);
+        }
+    }
+
+    std::array<float64, 4> arr;
+    for (int32 i = 0; i < 4; ++i)
+    {
+        arr[i] = cubicInterpolate(p[i], y - y1);
+    }
+
+    return cubicInterpolate(arr, x - x1);
+}
+
+template Matrix<FloatT> init_argv<FloatT>(char const **, uint32);
+
+template Matrix<FloatT> read_csv(std::ifstream &file);
+template Matrix<FloatT> read_csv(const std::string &filename);
+
+template FloatT sample<FloatT>(Matrix<FloatT> const &, uint32, float64, float64, float64);

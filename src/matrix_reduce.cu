@@ -1,12 +1,9 @@
 #include <cuda_device_runtime_api.h>
 #include <vector_types.h>
 #include "matrix.cuh"
-#include "matrix_ops.cuh"
+#include "matrix_ops.hpp"
 #include "matrix_size_checks.hpp"
 #include "utils.hpp"
-
-//#define LOG_SIZE(...) LOG(__VA_ARGS__)
-#define LOG_SIZE(...)
 
 #define OLD_SOFTMAX_GRAD 1
 
@@ -180,6 +177,7 @@ __global__ void sm_grad_kernel(Matrix<T> gradient_out, const Matrix<T> sm_out,
 template <typename T>
 void softmax_gradient(Matrix<T>& s_grad_out, const Matrix<T>& s_out, const Matrix<T>& grad_in)
 {
+    LOG_MATRIX_OPS("softmax_gradient: ", grad_in.shape, " -> ", s_grad_out.shape);
     dim3 gridDim(s_grad_out.width(), s_grad_out.height(), s_grad_out.batch());
     uint32 span = iDivUp(grad_in.width(), SM_GRAD_READ_CT);
     uint32 w = nextPow2(span);
@@ -192,11 +190,15 @@ void softmax_gradient(Matrix<T>& s_grad_out, const Matrix<T>& s_out, const Matri
             ", s_out: ", s_out.shape, " & grad_in: ", grad_in.shape);
     }
 
-    LOG_SIZE("s_grad_out: ", s_grad_out.shape, ", s_out: ", s_out.shape,
-             ", grad_in: ", grad_in.shape, ", in_width:", grad_in.width(), ", span: ", span,
-             ", w: ", w, ", grid: ", gridDim, ", block: ", blockDim);
+    LOG_KERNEL_SIZE("s_grad_out: ", s_grad_out.shape, ", s_out: ", s_out.shape,
+                    ", grad_in: ", grad_in.shape, ", in_width:", grad_in.width(), ", span: ", span,
+                    ", w: ", w, ", grid: ", gridDim, ", block: ", blockDim);
 
-    if (span <= 4)
+    if (span == 1)  // should probably write another kernel for small span cases
+        sm_grad_kernel<T, 1><<<gridDim, blockDim>>>(s_grad_out, s_out, grad_in);
+    else if (span <= 2)
+        sm_grad_kernel<T, 2><<<gridDim, blockDim>>>(s_grad_out, s_out, grad_in);
+    else if (span <= 4)
         sm_grad_kernel<T, 4><<<gridDim, blockDim>>>(s_grad_out, s_out, grad_in);
     else if (span <= 8)
         sm_grad_kernel<T, 8><<<gridDim, blockDim>>>(s_grad_out, s_out, grad_in);
@@ -272,6 +274,7 @@ __global__ void reduce_kernel_linear(Matrix<T> result, const Matrix<T> A, uint32
 template <typename T, uint32 dim, typename ReduceOp, typename PostProcess>
 void reduce(Matrix<T>& result, const Matrix<T>& A, ReduceOp op, T identity, PostProcess pProcess)
 {
+    LOG_MATRIX_OPS("reduce: ", A.shape, " -> ", result.shape, " (dim=", dim, ")");
     static_assert(dim < 3, "Invalid dimension for reduction");
     if (A.shape[dim] == 1)
     {
@@ -306,8 +309,8 @@ void reduce(Matrix<T>& result, const Matrix<T>& A, ReduceOp op, T identity, Post
         uint32 b2 = std::min(max_threads / b1, l2);
         dim3 blockDim(b1, b2, 1);
         dim3 gridDim(iDivUp(l1, b1), iDivUp(l2, b2), 1);
-        LOG_SIZE("Reduce ", A.shape, " to ", result.shape, " on dim [", dim, "] Block: ", blockDim,
-                 " Grid: ", gridDim, " using reduce_kernel_linear");
+        LOG_KERNEL_SIZE("Reduce ", A.shape, " to ", result.shape, " on dim [", dim,
+                        "] Block: ", blockDim, " Grid: ", gridDim, " using reduce_kernel_linear");
         reduce_kernel_linear<T, dim, ReduceOp>
             <<<gridDim, blockDim>>>(result, A, l1, l2, op, identity, pProcess);
         return;
@@ -318,8 +321,8 @@ void reduce(Matrix<T>& result, const Matrix<T>& A, ReduceOp op, T identity, Post
 
     dim3 blockDim(l0, 1, 1);
     dim3 gridDim(l1, l2);
-    LOG_SIZE("Reduce ", A.shape, " to ", result.shape, " on dim [", dim, "] Block: ", blockDim,
-             " Grid: ", gridDim, " using reduce_kernel_rolling");
+    LOG_KERNEL_SIZE("Reduce ", A.shape, " to ", result.shape, " on dim [", dim,
+                    "] Block: ", blockDim, " Grid: ", gridDim, " using reduce_kernel_rolling");
 
     if (l0 <= 2)
     {

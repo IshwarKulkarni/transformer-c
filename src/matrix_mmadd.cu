@@ -2,7 +2,7 @@
 #include <cuda_fp16.h>
 #include <type_traits>
 #include "matrix.cuh"
-#include "matrix_ops.cuh"
+#include "matrix_ops.hpp"
 #include "matrix_size_checks.hpp"
 #include "types"
 #include "utils.hpp"
@@ -103,6 +103,8 @@ template <typename T, typename PProcess>
 void mmadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Optional<Matrix<T>> C,
            PProcess pProcess)
 {
+    LOG_MATRIX_OPS("mmadd: ", A.shape, " @ ", B.shape, " + ", (C.is_valid() ? " + C" : ""), " -> ",
+                   result.shape);
     check_mmadd_sizes(result, A, B, C);
     if (A.height() <= 512)
     {

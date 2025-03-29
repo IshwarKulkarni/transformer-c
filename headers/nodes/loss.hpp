@@ -11,7 +11,7 @@ Nodes that implement various loss functions.
 template <typename T = FloatT>
 struct Loss2Node : Node<T>  // 2 input loss node
 {
-    Loss2Node(const NodePtrs<T>& prevs, const std::string& name = "Loss")
+    Loss2Node(const NodePtrVec<T>& prevs, const std::string& name = "Loss")
         : Node<T>({1, 1, 1}, prevs, name, 2),
           predictions(prevs[0]),
           target(dynamic_cast<Input<FloatT>*>(prevs[1]))
@@ -65,7 +65,7 @@ struct L2Loss : Loss2Node<T>
     Matrix<T> gradientOut;  // storage for output  of reduction for backward
     MultiplyBy<T> times2ByNumels;
 
-    L2Loss(const NodePtrs<T>& inputs, const std::string& name = "L2Loss")
+    L2Loss(const NodePtrVec<T>& inputs, const std::string& name = "L2Loss")
         : Loss2Node<T>(inputs, name),
           diff(inputs[0]->shape),
           nDiff(inputs[0]->shape),
@@ -83,7 +83,7 @@ struct L2Loss : Loss2Node<T>
 
     void backward() override
     {
-        LOG_TRACE("Backward for ", this->name);
+        LOG_NODE_TRACE("Backward for ", this->name);
         unary_apply(gradientOut, diff, times2ByNumels);
         this->predictions->backward(&gradientOut);
     }
@@ -97,7 +97,7 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
     Matrix<T> gradientOut;  // storage for output  of reduction for backward
     MultiplyBy<T> timesNByNumels;
 
-    L1Loss(const NodePtrs<T>& inputs, const std::string& name = "L2Loss")
+    L1Loss(const NodePtrVec<T>& inputs, const std::string& name = "L2Loss")
         : Loss2Node<T>(inputs, name),
           diff(inputs[0]->shape),
           nDiff(inputs[0]->shape),
@@ -115,7 +115,7 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
 
     void backward() override
     {
-        LOG_TRACE("Backward for ", this->name);
+        LOG_NODE_TRACE("Backward for ", this->name);
         unary_apply(gradientOut, diff, Sign<T>{FloatT(1) / diff.numels()});
         this->predictions->backward(&gradientOut);
     }
@@ -129,7 +129,7 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
 
     Matrix<T> nll = Matrix<T>(this->prev(0).shape);
 
-    NLLLoss(NodePtrs<T> prevs, const std::string& name = "NLLLoss") : Loss2Node<T>(prevs, name)
+    NLLLoss(NodePtrVec<T> prevs, const std::string& name = "NLLLoss") : Loss2Node<T>(prevs, name)
     {
         if (dynamic_cast<SoftmaxDim0<T>*>(prevs[0]) == nullptr and
             dynamic_cast<SoftmaxDim1<T>*>(prevs[0]) == nullptr)
@@ -146,7 +146,7 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
 
     void backward() override
     {
-        LOG_TRACE("Backward for ", this->name);
+        LOG_NODE_TRACE("Backward for ", this->name);
         NegLogLossBckwd<T> functor;
         functor.normalizing_factor = nll.numels();
         binary_apply(gradientOut, this->prev(1), this->prev(0), functor);
@@ -173,7 +173,7 @@ struct LogSoftmaxCELoss : Loss2Node<T>
     Matrix<T> gradientOut;
     Matrix<T> softmax;
 
-    LogSoftmaxCELoss(NodePtrs<T> prevs, const std::string& name = "CELoss")
+    LogSoftmaxCELoss(NodePtrVec<T> prevs, const std::string& name = "CELoss")
         : Loss2Node<T>(prevs, name),
           prevSize(prevs[0]->shape),
           exps(prevSize, name + "_exps"),
@@ -221,7 +221,7 @@ struct LogSoftmaxCELoss : Loss2Node<T>
 
     void backward() override
     {
-        LOG_TRACE("Backward for ", this->name);
+        LOG_NODE_TRACE("Backward for ", this->name);
         LSMCEBkwd<T> func;
         func.factor = gradientOut.height() * gradientOut.batch();
         binary_apply(gradientOut, *this->target, negLogSoftmax, func);

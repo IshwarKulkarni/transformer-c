@@ -7,6 +7,7 @@ means.
 */
 
 #include <cmath>
+#include <sstream>
 #include "matrix.cuh"
 #include "node.hpp"
 #include "nodes/elemwise.hpp"
@@ -52,8 +53,8 @@ struct SoftmaxDim1 : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
         transpose(gradientInT, *gradientIn);
         softmax_gradient(gradientOut, softmax, gradientInT);
         this->prev_nodes[0]->backward(&gradientOut);
@@ -97,8 +98,8 @@ struct SoftmaxDim0 : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
         softmax_gradient(gradientOut, *this, *gradientIn);
         transpose(gradientOutT, gradientOut);
         this->prev_nodes[0]->backward(&gradientOutT);
@@ -117,7 +118,7 @@ struct Product : Node<T>
     PostProcess pProcess;
     Composition<T, Neg<T>, PostProcess> pProcessN = {Neg<T>(), pProcess};
 
-    Product(NodePtrs<T> prevs, PostProcess pProcess, const std::string& name)
+    Product(NodePtrVec<T> prevs, PostProcess pProcess, const std::string& name)
         : Node<T>({prevs[0]->batch(), prevs[0]->height(), prevs[1]->width()}, prevs, name, 2),
           aT(this->prev(0).shape.t()),
           a_grad_in(this->prev(0).shape),
@@ -133,9 +134,9 @@ struct Product : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
-        transpose(aT, this->prev(0), Neg<T>());  // disable this in inference only mode.
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
+        transpose(aT, this->prev(0), Neg<T>());
         mmTadd(a_grad_in, *gradientIn, this->prev(1), {}, pProcess);
         mmadd(b_grad_in, aT, *gradientIn, {}, pProcessN);
         this->prev_nodes[0]->backward(&a_grad_in);
@@ -164,7 +165,7 @@ struct ProductT : Node<T>
     PostProcess pProcess;
     Composition<T, Neg<T>, PostProcess> pProcessN = {Neg<T>(), pProcess};
 
-    ProductT(NodePtrs<T> prevs, PostProcess pProcess, const std::string& name)
+    ProductT(NodePtrVec<T> prevs, PostProcess pProcess, const std::string& name)
         : Node<T>({prevs[0]->batch(), prevs[0]->height(), prevs[1]->height()}, prevs, name, 2),
           a_grad_inN(this->prev(0).shape),
           b_grad_in(this->prev(1).shape),
@@ -181,8 +182,9 @@ struct ProductT : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape,
+                       " and prev1: ", this->prev(1).name, this->prev(1).shape);
         mmadd(a_grad_inN, *gradientIn, this->prev(1), {}, pProcess);
         transpose(gradInT, *gradientIn, Neg<T>());
         mmadd(b_grad_in, gradInT, this->prev(0), {}, pProcessN);
@@ -214,8 +216,8 @@ struct Transpose : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with  gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with  gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
         transpose(gradientOut, *gradientIn);
         this->prev_nodes[0]->backward(&gradientOut);
     }
@@ -237,8 +239,8 @@ struct Mean : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
         unary_apply(this->gradientOut, *gradientIn, divOp);
         this->prev_nodes[0]->backward(&this->gradientOut);
     }
@@ -253,21 +255,54 @@ struct Mean : Node<T>
     }
 };
 
+// A proxy for an input node, used to pass input data to a node. But does not mark input
+// node as "prev", so that when backward is called, it does not backpropagate through to input node.
+// This is helpfull in mitigating a compounding number of back-prop path. E.g. if 2 SelfAttention
+// are connected sequentially, viz. x->SA1->SA2, x is input to all the Linear nodes inside SA1,
+// When back-prop'ing 9 gradients that come to x will be:
+//  sa2q->sa1q->x, sa2q->sa1k->x, sa2v->sa1v->x
+//  sa2k->sa1q->x, sa2k->sa1k->x, sa2k->sa1v->x
+//  sa2v->sa1q->x, sa2v->sa1k->x, sa2v->sa1v->x
+//  Instead if we use InputProxy and make the graph Proxy(x)->SA1->Proxy(SA1)->SA2, then only 3
+//  gradients will be back-propagated to xp:
+// 3 from SA2(q,k,v)->SA1(q,k,v)->Proxy(x). Now there will be 6 paths of length 2, instead of 9 of
+// length 2 This effect becomes even more pronounced in MultiHeadAttention, where the number of
+// paths get multiplied by the number of heads. this ::backward() only accumulates the gradient, so
+// the owner of this node should call the ::proxy_backward() so that back-prop'ing happens to the
+// actual input node
 template <typename T>
-struct Copy : Node<T>
+struct InputProxy : Node<T>
 {
     NodePtr<T> in;
     Matrix<T> gradientOut = Matrix<T>(this->shape, this->name + "_gradientOut");
-    Copy(NodePtr<T> prev, const std::string& name) : Node<T>(prev->shape, {}, name, 0), in(prev)
+    InputProxy(NodePtr<T> prev, const std::string& name)
+        : Node<T>(prev->shape, {}, name + "_proxy", 0), in(prev)
     {
         gradientOut.set_val(T(0));
+        this->set_data(in->get_data());
     }
-    void forward() override { this->copy(in->begin()); }
+    void forward() override {}
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
         binary_apply(gradientOut, *gradientIn, Plus<T>());
+    }
+    void proxy_backward()
+    {
+        LOG_NODE_TRACE("Proxy backward for ", this->name, " with gradientOut: ", gradientOut.name,
+                       gradientOut.shape);
+        in->backward(&gradientOut);
+        gradientOut.set_val(0.f);
+    }
+
+    virtual std::string dot_repr() override
+    {
+        std::stringstream ret;
+        ret << " [label=\"" << this->name
+            << "\", shape=rect, style=filled, fillcolor=\"#b9cbd2\"]\n";
+        ret << this->id << " -> " << in->id << " [style=dotted arrowhead=none]";
+        return ret.str();
     }
 };
 
@@ -277,7 +312,7 @@ template <typename T = FloatT, uint32 Dim = WIDTH_IDX>
 struct Normalize : public Node<T>
 {
     NodePtr<T> in;
-    Copy<T> x = Copy<T>(in, "NormInput");
+    InputProxy<T> x = InputProxy<T>(in, "NormInput");
     Mean<T> mu = Mean<T>(&x, "mu");
     Power<T> mu_sq = Power<T>(&mu, 2, "mu^2");
 
@@ -286,7 +321,7 @@ struct Normalize : public Node<T>
 
     Subtract<T> var = Subtract<T>({&sq_mu, &mu_sq}, "var");
     Power<T> std = Power<T>(&var, 0.5, "std");
-    Subtract<T> norm_num_sub = Subtract<T>(NodePtrs<T>{&x, &mu}, "x-mu");
+    Subtract<T> norm_num_sub = Subtract<T>(NodePtrVec<T>{&x, &mu}, "x-mu");
     Division<T> norm = Division<T>({&norm_num_sub, &std}, "Div");
 
     Normalize(NodePtr<T> prev, const std::string& name = "LayerNormSplit")
@@ -304,12 +339,13 @@ struct Normalize : public Node<T>
         this->prev_nodes[0]->backward(&x.gradientOut);
         x.gradientOut.set_val(T(0));
     }
-    virtual NodePtr<T> get_terminal_node() { return &norm; }
+
+    virtual NodePtr<T> get_terminal_node() override { return &norm; }
 
     virtual std::string dot_repr() override
     {
         const char* dims[3] = {"Layer", "Seq", "Batch"};
-        NodePtrList<T> nodes = {&x, &mu, &mu_sq, &sq, &sq_mu, &var, &std, &norm_num_sub, &norm};
+        NodePtrVec<T> nodes = {&x, &mu, &mu_sq, &sq, &sq_mu, &var, &std, &norm_num_sub, &norm};
         std::stringstream ss;
         ss << " subgraph cluster_" << this->id << " {\n\tlabel = \"\n" << this->name << "\"\n\t";
 
@@ -329,16 +365,16 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
     std::vector<Matrix<T>> grads;
     std::vector<Matrix<T>*> prevs_as_mats;
     std::vector<Matrix<T>*> grad_ptrs;
-    Concat0(NodePtrs<T> prevs, const std::string& name)
-        : Node<T>({prevs[0]->batch(), prevs[0]->height, prevs[0]->width * prevs.size()}, prevs,
-                  name, prevs.size())
+    Concat0(NodePtrVec<T> prevs, const std::string& name)
+        : Node<T>({prevs[0]->shape.set(WIDTH_IDX, prevs[0]->shape[WIDTH_IDX] * prevs.size())},
+                  prevs, name, prevs.size())
     {
         grads.reserve(prevs.size());
         for (auto p : prevs)
         {
-            if (p->height != this->height)
+            if (p->height() != this->height())
                 throw_rte_with_backtrace("Matrix dimensions do not match for Concat0 between ",
-                                         p->name, p->shape_str, " and ", this->name, p->shape_str);
+                                         p->name, p->shape, " and ", this->name, p->shape);
             grads.push_back(shaped_like(*p));
             prevs_as_mats.push_back((Matrix<T>*)p);
         }
@@ -350,8 +386,8 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
         split(grad_ptrs, *gradientIn);
         for (uint32 i = 0; i < this->prev_nodes.size(); ++i)
             this->prev_nodes[i]->backward(&grads[i]);
@@ -374,7 +410,7 @@ struct Input : Node<T>
     Input(Shape shape, const std::string& name) : Node<T>(shape, {}, name, 0) {}
     void forward() override {}
 
-    void backward(const Matrix<T>*) override { LOG_TRACE("Backward for ", this->name); }
+    void backward(const Matrix<T>*) override { LOG_NODE_TRACE("Backward for ", this->name); }
 
     // TODO this should move to NodeBase
     virtual std::string dot_repr() override
@@ -411,8 +447,8 @@ struct Dropout : Node<T>
 
     void backward(const Matrix<T>* gradientIn) override
     {
-        LOG_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                  gradientIn->shape);
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
         if (drop_probability > 0 and this->is_training)
         {
             dropout(gradientOut, *gradientIn, mask, -1);

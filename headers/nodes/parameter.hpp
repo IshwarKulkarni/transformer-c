@@ -2,7 +2,7 @@
 #define PARAMETER_HPP
 
 #include "matrix.cuh"
-#include "matrix_ops.cuh"
+#include "matrix_ops.hpp"
 
 struct ParameterBase
 {
@@ -47,14 +47,14 @@ struct Parameter : Matrix<TW>, public ParameterBase
         m.reset();
         v.reset();
 
-        LOG_TRACE("Parameter ", this->name, this->shape);
+        LOG_MATRIX_CREATE(" Param", this->name, " : ", this->shape);
     }
 
     // accumulate the mean of the gradient
     void accumulate_grad(const Matrix<TG>& gradDelta)
     {
-        LOG_TRACE("Accumulating gradients for ", BLUE, this->name, RESET,
-                  " with grad delta shape: ", gradDelta.shape);
+        LOG_NODE_TRACE("Accumulating gradients for ", BLUE, this->name, RESET,
+                       " with grad delta shape: ", gradDelta.shape);
         if (gradDelta.batch() > 1)
         {
             reduce<TG, BATCH_IDX>(updatedGradients, gradDelta);
@@ -83,12 +83,12 @@ struct Parameter : Matrix<TW>, public ParameterBase
         */
         if (accum_count == 0)
         {
-            LOG_TRACE(YELLOW, "No gradients accumulated for ", this->name);
+            LOG_NODE_TRACE(YELLOW, "No gradients accumulated for ", this->name);
             return;
         }
 
-        LOG_TRACE("Updating weights for ", YELLOW, this->name, RESET, " with ", accum_count,
-                  " accum'd grads for update# ", update_count);
+        LOG_NODE_TRACE("Updating weights for ", YELLOW, this->name, RESET, " with ", accum_count,
+                       " accum'd grads for update# ", update_count);
         if (accum_count > 1)
         {
             unary_apply(gradients, DividedBy<TG>(accum_count));
@@ -145,8 +145,9 @@ struct Parameter : Matrix<TW>, public ParameterBase
 
     void save_weights(std::ostream& os) const
     {
-        uint32 id = get_type_identifier<TW>();
-        uint32 size_type[4] = {this->shape.batch, this->shape.height, this->shape.width, id};
+        uint32 idw = get_type_identifier<TW>();
+        uint32 idg = get_type_identifier<TG>();
+        uint32 size_type[5] = {this->shape.batch, this->shape.height, this->shape.width, idw, idg};
         uint64 counts[2] = {update_count, accum_count};
         float64 decay[2] = {beta1Decayed, beta2Decayed};
 
@@ -160,15 +161,16 @@ struct Parameter : Matrix<TW>, public ParameterBase
 
     void load_weights(std::istream& is)
     {
-        uint32 size_type[4] = {0, 0, 0, 0};
+        uint32 size_type[5] = {0, 0, 0, 0, 0};
         uint64 counts[2] = {0, 0};
         float64 decay[2] = {0.0, 0.0};
 
         is.read(reinterpret_cast<char*>(size_type), sizeof(size_type));
         Shape s(size_type[0], size_type[1], size_type[2]);
-        if (size_type[3] != get_type_identifier<TW>())
+        if (size_type[3] != get_type_identifier<TW>() || size_type[4] != get_type_identifier<TG>())
             throw_rte_with_backtrace("Type mismatch for ", this->name, " expected ",
-                                     get_type_identifier<TW>(), " but got ", size_type[3]);
+                                     get_type_identifier<TW>(), " and ", get_type_identifier<TG>(),
+                                     " but got ", size_type[3], " and ", size_type[4]);
         if (s != this->shape)
             throw_rte_with_backtrace("Shape mismatch for ", this->name, " expected ", this->shape,
                                      " but got ", s);

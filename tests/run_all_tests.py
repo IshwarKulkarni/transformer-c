@@ -75,21 +75,21 @@ def test_mult():
 def test_softmax_grads():
     sizes = [(1, 24), (5, 17), (9, 512), (4, 65), (20, 30), (30, 40), (32, 300), (300, 15),
              (512, 512), (1024, 1024)]
-    for size in sizes[:3]:
+    for size in sizes:
         csvs = write_softmax_grad_data(*size)
         run_main(["test_softmax_grads"] + csvs)
 
 def test_bin_ops():
     sizes = [(2, 1, 24), (3, 5, 17), (6, 9, 512), (3, 4, 65), (4, 20, 30), 
             (5, 30, 40), (3, 32, 300), (10, 300, 15), (6, 512, 512), (4, 1024, 1024)]
-    for size in sizes[:3]:
+    for size in sizes:
         run_main(["test_bin_ops"] + list(size))
 
 
 def test_un_ops():
     sizes = [(2, 1, 24), (3, 5, 17), (6, 9, 512), (3, 4, 65), (4, 20, 30), 
             (5, 30, 40), (3, 32, 300), (10, 300, 15), (6, 512, 512), (4, 1024, 1024)]
-    for size in sizes[:3]:
+    for size in sizes:
         run_main(["test_un_ops"] + list(size))
 
 def test_transpose():
@@ -127,7 +127,7 @@ all_functions = [
     test_mult,
     test_transpose,
     test_reduce,
-    #test_softmax_grads,
+    test_softmax_grads,
     test_bin_ops, 
     test_un_ops
 ]
