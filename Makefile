@@ -38,7 +38,7 @@ ifeq ($(dbg),1)
     NVCCFLAGS += -g -G
 	CCFLAGS += -g -O0 -DDEBUG
 else
-	NVCCFLAGS += -lineinfo  
+	NVCCFLAGS += -lineinfo
 # -DDISABLE_SIZE_CHECK
 	CCFLAGS += -O3 
 endif
@@ -64,18 +64,13 @@ endif
 ################################################################################
 
 # Gencode arguments
-# SMS ?= 30 35 37 50 52 60 61 70
 SMS ?= 86
 
 # Generate SASS code for each SM architecture listed in $(SMS)
-#$(foreach sm,$(SMS),$(eval GENCODE_FLAGS += -gencode arch=compute_$(sm),code=sm_$(sm)))
+$(foreach sm,$(SMS),$(eval GENCODE_FLAGS += -arch=sm_$(sm)))
 
 # Generate PTX code from the highest SM architecture in $(SMS) to guarantee forward-compatibility
 HIGHEST_SM := $(lastword $(sort $(SMS)))
-ifneq ($(HIGHEST_SM),)
-GENCODE_FLAGS += -arch=compute_$(HIGHEST_SM) -code=compute_$(HIGHEST_SM) -allow-unsupported-compiler
-endif
-
 ################################################################################
 
 # Target rules

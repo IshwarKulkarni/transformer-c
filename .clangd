@@ -1,4 +1,7 @@
 CompileFlags:
+  Remove:
+    - -ccbin
+    - -sm_86
   Add:
     - -std=c++17
     - --cuda-path=/usr/local/cuda-12.5/bin

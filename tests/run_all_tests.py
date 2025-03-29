@@ -1,30 +1,23 @@
-#!/usr/bin/python3
+#!/ usr / bin / python3
 
-from pathlib import Path
-import os
-import sys
-import time
-import subprocess
-from datagen import write_sample_mult_data, write_softmax_grad_data
+from pathlib import Path import os import sys import time import subprocess from datagen import
+    write_sample_mult_data,
+    write_softmax_grad_data
 
-program = ["bin/test"]
-passed_tests = []
-failed_tests = []
+        program = ["bin/test"] passed_tests = [] failed_tests = []
 
-t_colors = {  # terminal colors
-    "red": "\033[91m",
-    "green": "\033[92m",
-    "yellow": "\033[93m",
-    "blue": "\033[94m",
-    "end": "\033[0m"
-}
+    t_colors = {
+        #terminal colors "red" : "\033[91m",
+        "green" : "\033[92m",
+        "yellow" : "\033[93m",
+        "blue" : "\033[94m",
+        "end" : "\033[0m"
+    }
 
-
-def run_main(args=[]):
-    out = ""
-    start = time.time()
-    try:
-        main_program = [str(x) for x in program + args]
+    def
+    run_main(args = [])
+    : out = "" start = time.time()
+try : main_program = [str(x) for x in program + args]
         main_prog_txt = ' '.join(main_program)
         print("Running test: ", main_prog_txt)
         out = subprocess.check_output(main_prog_txt, shell=True, text=True)
@@ -42,8 +35,7 @@ def run_main(args=[]):
 def build(debug=False):
     print("Building " + ("debug" if debug else "release") + " mode")
     build_app = ["make", "-j"] + (["debg=1"] if debug else [])
-    try:
-        make_result = subprocess.check_output(build_app, shell=True, text=True)
+    try : make_result = subprocess.check_output(build_app, shell=True, text=True)
     except subprocess.CalledProcessError as e:
         print("Test failed: ", make_result.returncode)
         print(make_result)
@@ -75,21 +67,21 @@ def test_mult():
 def test_softmax_grads():
     sizes = [(1, 24), (5, 17), (9, 512), (4, 65), (20, 30), (30, 40), (32, 300), (300, 15),
              (512, 512), (1024, 1024)]
-    for size in sizes[:3]:
+    for size in sizes:
         csvs = write_softmax_grad_data(*size)
         run_main(["test_softmax_grads"] + csvs)
 
 def test_bin_ops():
     sizes = [(2, 1, 24), (3, 5, 17), (6, 9, 512), (3, 4, 65), (4, 20, 30), 
             (5, 30, 40), (3, 32, 300), (10, 300, 15), (6, 512, 512), (4, 1024, 1024)]
-    for size in sizes[:3]:
+    for size in sizes:
         run_main(["test_bin_ops"] + list(size))
 
 
 def test_un_ops():
     sizes = [(2, 1, 24), (3, 5, 17), (6, 9, 512), (3, 4, 65), (4, 20, 30), 
             (5, 30, 40), (3, 32, 300), (10, 300, 15), (6, 512, 512), (4, 1024, 1024)]
-    for size in sizes[:3]:
+    for size in sizes:
         run_main(["test_un_ops"] + list(size))
 
 def test_transpose():
@@ -127,7 +119,7 @@ all_functions = [
     test_mult,
     test_transpose,
     test_reduce,
-    #test_softmax_grads,
+    test_softmax_grads,
     test_bin_ops, 
     test_un_ops
 ]

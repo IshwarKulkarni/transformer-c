@@ -1,6 +1,4 @@
-#include "datasets.hpp"
-#include "emotion_data.hpp"
-#include "network_builder.hpp"
+#include "network_graph.hpp"
 #include "nodes/loss.hpp"
 #include "nodes/parameterized.hpp"
 #include "signal.h"
@@ -18,13 +16,8 @@ int main()
     sa.sa_sigaction = segfault_sigaction;
     sigaction(SIGSEGV, &sa, nullptr);
 
-    NetworkBuilder builder("static_data/network.nd");
-    // print all nodes in the network
-    for (const auto& [name, node] : builder.get_nodes())
-    {
-        LOG(YELLOW, name, " - ", node->shape);
-    }
-    builder.save_network("static_data/network.ndw");
-    NetworkBuilder builder2("static_data/network.ndw");
+    NetworkGraph graph("static_data/network.ng");
+    for (const auto& [name, node] : graph.get_nodes()) LOG(YELLOW, name, " - ", node->shape);
+
     return 0;
 }

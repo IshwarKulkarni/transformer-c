@@ -1,10 +1,10 @@
-#ifndef MATRIX_OPS_HPP
-#define MATRIX_OPS_HPP
+#ifndef MATRIX_OPS_CPU_HPP
+#define MATRIX_OPS_CPU_HPP
 
 #include <algorithm>
 #include "functors.cuh"
 #include "matrix.cuh"
-#include "matrix_ops.cuh"
+#include "matrix_ops.hpp"
 #include "matrix_size_checks.hpp"
 
 template <typename T, typename PostProcess = Identity<T>>
@@ -200,4 +200,4 @@ float64 sumCPU(const Matrix<T>& A)
     return sum;
 }
 
-#endif
+#endif // MATRIX_OPS_CPU_HPP

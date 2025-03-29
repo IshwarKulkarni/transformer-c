@@ -1,5 +1,6 @@
 #include "datasets.hpp"
 #include "emotion_data.hpp"
+#include "network_graph.hpp"
 #include "nodes/loss.hpp"
 #include "nodes/parameterized.hpp"
 
@@ -65,23 +66,22 @@ int train_MLP_wine()
     dataset.normalize();
     timer_data.stop(true);
 
-    using LinR = Linear<FloatT, Relu<FloatT>>;
-    using LinI = Linear<FloatT, IActivation<FloatT>>;
+    using LinR = Linear<FloatT>;
+    using LinI = Linear<FloatT>;
 
-    LinR l1(LinR::LinearInput{32, dataset.input(), true, "Lin1"});
+    LinR l1(LinearInput<FloatT>{32, dataset.input(), true, "relu", "Lin1"});
     Dropout<FloatT> d1(0.5, &l1, "Dropout1");
 
-    LinR l2(LinR::LinearInput{16, &d1, true, "Lin2"});
+    LinR l2(LinearInput<FloatT>{16, &d1, true, "relu", "Lin2"});
     Dropout<FloatT> d2(0.25, &l2, "Dropout2");
 
-    LinR l3(LinR::LinearInput{12, &d2, true, "Lin2"});
-    Dropout<FloatT> d3(0.25, &l3, "Dropout2");
+    LinR l3(LinearInput<FloatT>{12, &d2, true, "relu", "Lin3"});
+    Dropout<FloatT> d3(0.25, &l3, "Dropout3");
 
-    LinI lf(LinI::LinearInput{dataset.target_size(), &d3, true, "Final"});
-    L1Loss<> loss({&lf, dataset.target()}, "L2Loss");
+    LinI lf(LinearInput<FloatT>{dataset.target_size(), &d3, true, "identity", "Final"});
+    L1Loss<> loss({&lf, dataset.target()}, "L1Loss");
 
-    std::ofstream dot("mlp.dot");
-    graph_to_dot(&loss, dot);
+    NetworkGraph::to_dotviz_file("mlp.dot", &loss);
 
     std::ofstream train_csv("train_losses.csv");
     train_csv << "batch,loss,misses\n";
@@ -136,21 +136,20 @@ int train_MLP_iris()
     dataset.normalize();
     timer_data.stop(true);
 
-    using LinR = Linear<FloatT, Relu<FloatT>>;
-    using LinI = Linear<FloatT, IActivation<FloatT>>;
+    using LinR = Linear<FloatT>;
+    using LinI = Linear<FloatT>;
 
-    LinR l1(LinR::LinearInput{64, dataset.input(), true, "Lin1"});
+    LinR l1(LinearInput<FloatT>{64, dataset.input(), true, "relu", "Lin1"});
     Dropout<FloatT> d1(0.5, &l1, "D1");
 
-    LinR l2(LinR::LinearInput{32, &d1, true, "Lin2"});
+    LinR l2(LinearInput<FloatT>{32, &d1, true, "relu", "Lin2"});
     Dropout<FloatT> d2(0.5, &l2, "D2");
 
-    LinI lf(LinI::LinearInput{dataset.target_size(), &d2, true, "Lin2"});
-    SoftmaxDim0<> softmax({&lf});
+    LinI lf(LinearInput<FloatT>{dataset.target_size(), &d2, true, "identity", "Final"});
+    SoftmaxDim0<> softmax(&lf);
     L2Loss<> loss({&softmax, dataset.target()}, "L2Loss");
 
-    std::ofstream dot("mlp.dot");
-    graph_to_dot(&loss, dot);
+    NetworkGraph::to_dotviz_file("mlp.dot", &loss);
 
     std::ofstream train_csv("train_losses.csv");
     train_csv << "batch,loss,misses\n";
@@ -196,22 +195,20 @@ int train_emotion()
     EmotionData valdn_dataset("static_data/emotion_validation.csv", nbatch, &word2vec);
     timer_data.stop(true);
 
-    using LinR = Linear<FloatT, Relu<FloatT>>;
-    using LinI = Linear<FloatT, IActivation<FloatT>>;
-
-    LinR l1(LinR::LinearInput{64, train_dataset.features.get(), true, "Lin1"});
+    Linear<FloatT> l1(
+        LinearInput<FloatT>{64, train_dataset.features_node.get(), true, "relu", "Lin1"});
     Dropout<FloatT> d1(0.5, &l1, "Dropout1");
 
-    SelfAttention<FloatT> sa1(32, &d1, "SelfAttention");
+    SelfAttention<FloatT> sa1(LinearInput<FloatT>{32, &d1, false, "identity", "SelfAttention"});
     Normalize<FloatT, 1> norm1(&sa1, "Norm1");
     Dropout<FloatT> d2(0.5, &norm1, "Dropout2");
 
-    Mean<FloatT, 1> sum({&d2}, "Mean");
-    LinI lf(LinI::LinearInput{train_dataset.target_size(), &sum, true, "Final"});
+    Mean<FloatT, 1> sum(&d2, "Mean");
+    Linear<FloatT> lf(
+        LinearInput<FloatT>{train_dataset.target_size(), &sum, true, "identity", "Final"});
     LogSoftmaxCELoss<> loss({&lf, train_dataset.target()}, "CELoss");
 
-    std::ofstream dot("emotion_train.dot");
-    graph_to_dot(&loss, dot);
+    NetworkGraph::to_dotviz_file("emotion_train.dot", &loss);
 
     std::ofstream train_csv("train_losses.csv");
     train_csv << "batch,loss,misses\n";

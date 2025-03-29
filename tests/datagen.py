@@ -7,6 +7,28 @@ from scipy.ndimage import gaussian_filter
 import math
 from pathlib import Path
 
+"""
+This file generates test data for various matrix operations.
+
+Key functions:
+- save_tensor_to_csv: Saves a PyTorch tensor to a CSV file with shape metadata
+- write_sample_reduce_data: Generates test data for reduction operations (sum, min, max)
+- write_softmax_grad_data: Generates test data for softmax gradient computation
+- gen_data_adam_heightmap: Generates test data for Adam heightmap
+- write_sample_mult_data: Generates test data for matrix multiplication
+
+The test data is used to validate the CUDA implementations of these operations.
+Data is saved to the ./data directory with appropriate filenames.
+
+The data generation includes:
+- Random tensors for input data
+- Expected outputs computed using PyTorch's implementations
+- Gradient information for backpropagation testing
+
+This allows comparing the custom CUDA kernels results against known-good PyTorch results.
+
+"""
+
 data_path = Path('./data')
 os.makedirs(data_path, exist_ok=True)
 
@@ -51,10 +73,16 @@ def write_softmax_grad_data(height, width):
     mse.retain_grad()
     mse.backward()
 
-    save_tensor_to_csv(s,      'data/s_out.csv')
-    save_tensor_to_csv(s.grad, 'data/s_grad_in.csv')
-    save_tensor_to_csv(a.grad, 'data/s_grad_out.csv')
-    return ['data/s_out.csv', 'data/s_grad_in.csv', 'data/s_grad_out.csv']
+    names = [
+        f'data/s_out{height}x{width}.csv',
+        f'data/s_grad_in{height}x{width}.csv',
+        f'data/s_grad_out{height}x{width}.csv'
+    ]
+
+    save_tensor_to_csv(s,      names[0])
+    save_tensor_to_csv(s.grad, names[1])
+    save_tensor_to_csv(a.grad, names[2])
+    return names
 
 
 def write_sample_mult_data(height, width, height2=None):
@@ -108,19 +136,21 @@ if __name__ == "__main__":
     height = int(sys.argv[2])
     width = int(sys.argv[3])
 
-    if sys.argv[1] == "gen_data_mult":
+    all = (sys.argv[1] == "all")
+
+    if sys.argv[1] == "gen_data_mult" or all:
         write_sample_mult_data(height, width, int(sys.argv[4]))
-    elif sys.argv[1] == "gen_data_transpose":
+    elif sys.argv[1] == "gen_data_transpose" or all:
         write_sample_mult_data(height, width)
-    elif sys.argv[1] == "gen_data_reduce_sum":
+    elif sys.argv[1] == "gen_data_reduce_sum" or all:
         write_sample_reduce_data(height, width, "sum")
-    elif sys.argv[1] == "gen_data_reduce_min":
+    elif sys.argv[1] == "gen_data_reduce_min" or all:
         write_sample_reduce_data(height, width, "min")
-    elif sys.argv[1] == "gen_data_reduce_max":
+    elif sys.argv[1] == "gen_data_reduce_max" or all:
         write_sample_reduce_data(height, width, "max")
-    elif sys.argv[1] == "gen_data_softmax_grad":
+    elif sys.argv[1] == "gen_data_softmax_grad" or all:
         write_softmax_grad_data(height, width)
-    elif sys.argv[1] == "gen_data_adam":
+    elif sys.argv[1] == "gen_data_adam" or all:
         if(height != width):
             print("Height and width must be equal for adam heightmap")
         gen_data_adam_heightmap(height, height)
