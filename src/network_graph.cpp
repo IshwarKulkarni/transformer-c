@@ -217,15 +217,14 @@ void NetworkGraph::parse_network_desc()
 
                 try
                 {
-                    m_nodes[value] = NodeCreatorMap::get(key)(is, value, *this);
+                    auto* node = NodeCreatorMap::get(key)(is, value, *this);
+                    m_nodes[value] = node;
                 }
                 catch (const std::exception& e)
                 {
                     LOG(RED, "\nParsing error on line ", line_number, ":\n", orig);
                     throw_rte_with_backtrace("Error creating node ", value, "  ", e.what());
                 }
-
-                LOG(GREEN, "Created node ", value, " with type ", key);
             }
             else if (key[0] == '$')
             {

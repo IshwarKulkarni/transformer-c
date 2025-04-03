@@ -99,6 +99,11 @@ struct Node : public Matrix<T>, NodeBase
 
     virtual void save_weights(std::ostream&) const {}
     virtual void load_weights(std::istream&) {}
+
+    // returns the nodes that this node depends on, separate function because
+    // some nodes can have input proxies that are not "prev_nodes", but inputs
+    // are read via `set_data()` like functions.
+    virtual std::vector<NodePtr<T>> get_dependencies() const { return prev_nodes; }
 };
 
 template <typename Ta, typename Tb = Ta>

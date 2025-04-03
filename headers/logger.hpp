@@ -132,7 +132,7 @@ inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
 }
 
 
-#ifndef LOG_NODE_TRACE_ON
+#ifdef LOG_NODE_TRACE_ON
 #define LOG_NODE_TRACE(...) Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " NODE TRACE #, " __VA_ARGS__)
 #else
 #define LOG_NODE_TRACE(...)

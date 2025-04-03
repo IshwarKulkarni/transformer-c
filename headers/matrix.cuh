@@ -10,6 +10,8 @@
 #include "logger.hpp"
 #include "types"
 #include "utils.hpp"
+#include <cuda_runtime.h>
+#include <cuda_texture_types.h>
 
 static constexpr uint32 WIDTH_IDX = 0;
 static constexpr uint32 HEIGHT_IDX = 1;
@@ -389,6 +391,13 @@ struct Matrix
             cudaMemAdvise(data.get(), shape.bytes<T>(), cudaMemAdviseSetAccessedBy, device));
     }
 };
+
+template <typename T>
+void resample_matrix(const Matrix<T>& out, Matrix<T>& in);
+
+void gen_heat_map(Matrix<uint32>& color_image, const Matrix<float32>& mat_in, const std::string& name);
+
+void write_ppm_image(const Matrix<uint32>& image, std::string name);
 
 template <typename T>
 inline std::ostream& operator<<(std::ostream& os,

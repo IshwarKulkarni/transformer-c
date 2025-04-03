@@ -35,6 +35,8 @@
 
 struct NetworkGraph;
 
+typedef std::pair<NodePtr<FloatT>, NodePtr<FloatT>> Edge;
+
 using StringStringMap = std::map<std::string, std::string>;
 using StringVector = std::vector<std::string>;
 using StringPairVec = std::vector<std::pair<std::string, std::string>>;
@@ -205,22 +207,31 @@ struct NetworkGraph
 
     NodePtr<FloatT> get_root_node() const
     {
+        std::vector<Edge> forward_edges;
+        
+        for (const auto& [name, node] : m_nodes)
+            for (const auto& prev_node : node->get_dependencies())
+                forward_edges.push_back({prev_node, node});
+
         std::set<NodePtr<FloatT>> all_nodes;
         for (const auto& [name, node] : m_nodes)
-        {
             all_nodes.insert(node);
-        }
-        for (const auto& [name, node] : m_nodes)
-        {
-            for (const auto& prev_node : node->prev_nodes)
-            {
-                all_nodes.erase(prev_node);
-            }
-        }
+
+        for (const auto& edge : forward_edges)
+            all_nodes.erase(edge.first);
+
         if(all_nodes.empty())
             throw_rte_with_backtrace("There's Loop in the network");
+
         if(all_nodes.size() > 1)
+        {
+            for (const auto& node : all_nodes)
+            {
+                LOG(YELLOW, node->name);
+            }
             throw_rte_with_backtrace("There's more than one root node in the network");
+        }
+
         return *all_nodes.begin();
     }
 
@@ -238,7 +249,7 @@ struct NetworkGraph
     // Nodes appear in sorted order of their names
     void save_network(const std::string& filename) const;
 
-    inline void to_dotviz_file(std::string filename)
+    inline void write_dotviz(std::string filename)
     {
         to_dotviz_file(filename, get_root_node());
     }

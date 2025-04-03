@@ -361,6 +361,11 @@ struct Attention : Node<T>
         K.load_weights(is);
         V.load_weights(is);
     }
+
+    virtual std::vector<NodePtr<T>> get_dependencies() const override
+    {
+        return {Q.prev_nodes[0], K.prev_nodes[0], V.prev_nodes[0]};
+    }
 };
 
 template <typename T = FloatT>
@@ -403,6 +408,8 @@ struct SelfAttention : Attention<T>  // Optimizes number of gradient paths when 
         Attention<T>::backward(gradientIn);
         if (x) x->proxy_backward();
     }
+
+    virtual std::vector<NodePtr<T>> get_dependencies() const override { return {x->in}; }
 };
 
 template <typename T = FloatT>
@@ -451,6 +458,13 @@ struct CrossAttention : Attention<T>  // Optimizes number of gradient paths usin
         ss << Attention<T>::dot_repr() << "subgraph cluster_" << Attention<T>::id << "{"
            << this->KV_proxy->id << "}";
         return ss.str();
+    }
+
+    virtual std::vector<NodePtr<T>> get_dependencies() const
+    {
+        std::vector<NodePtr<T>> deps = {this->Q.prev_nodes[0]};
+        if (KV_proxy) deps.push_back(KV_proxy->in);
+        return deps;
     }
 };
 /*
@@ -556,6 +570,11 @@ struct MultiHeadAttention : Node<T>
             for (auto& head : heads) head->load_weights(is);
         }
         linear->load_weights(is);
+    }
+
+    virtual std::vector<NodePtr<T>> get_dependencies() const override
+    {
+        return heads[0]->get_dependencies();
     }
 };
 

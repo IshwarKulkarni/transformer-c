@@ -2,6 +2,7 @@
 #include <cstring>
 #include <fstream>
 #include "datasets.hpp"
+#include "matrix.cuh"
 #include "matrix_ops_cpu.hpp"
 #include "network_graph.hpp"
 #include "nodes/loss.hpp"
@@ -646,6 +647,7 @@ int32 test_attention()
 
 int32 test_network_graph()
 {
+    LOG("TEST NETWORK GRAPH");
     std::stringstream graph_str;
     uint32 bn = 10, Ei = 14, Eq = 13, Sl = 11;
     graph_str << "\n"
@@ -682,12 +684,9 @@ int32 test_network_graph()
             predictions: attn
             target: target
     )";
-
-    LOG(YELLOW, graph_str.str());
-
     NetworkGraph graph;
     graph.load_from_desc_stream(graph_str);
-    NetworkGraph::to_dotviz_file("self_attention.dot", graph.get_root_node());
+    graph.write_dotviz("self_attention.dot");
 
     auto* x = graph.get_typed_node<Input<FloatT>>("x");
     auto* target = graph.get_typed_node<Input<FloatT>>("target");
@@ -695,6 +694,8 @@ int32 test_network_graph()
     auto* A = graph.get_typed_node<SelfAttention<FloatT>>("attn");
     auto* In = graph.get_typed_node<Linear<FloatT>>("In");
     if (!A || !In || !x || !target || !loss) throw_rte_with_backtrace("Failed to get all nodes");
+
+    LOG(GREEN, "Test Network Graph passed");
 
     return 0;
 }
@@ -882,6 +883,7 @@ int32 test_LSMCELoss()
 
 int32 test_adam()
 {
+    LOG("TEST ADAM");
     Matrix<FloatT> mat_v = read_csv<FloatT>("data/adam_v.csv");
 
     Matrix<FloatT> grad_d({1, 2, 1}, "grad");
@@ -1144,6 +1146,20 @@ int32 test_layer_norm()
     return err;
 }
 
+int test_resampling_heatmap()
+{
+    auto a = read_csv<float32>("data/adam_v.csv");
+    Matrix<float32> b({a.batch(), 768, 768}, "b");
+    LOG("resampling from ", a.shape, " to ", b.shape);
+    resample_matrix(b, a);
+    write_csv(b, "b.csv");
+
+    Matrix<uint32> c({b.batch(), b.height(), b.width()}, "c");
+    gen_heat_map(c, b, "twilight");
+    write_ppm_image(c, "c.ppm");
+    return 0;
+}
+
 // Test for Node<> level stuff except for concat and dropout
 //, uses data from compare.ipynb
 int32 run_unparameterized_tests()
@@ -1170,12 +1186,15 @@ int32 run_unparameterized_tests()
 
     // Test NetworkGraph creation
     err += test_network_graph();
+
+    // Test resampling and heatmap generation
+    err += test_resampling_heatmap();
     return err;
 }
 
-int32 main(int32 argc, char const* argv[])
+int32 main1(int32 argc, char const* argv[])
 {
     if (argc > 1) return run_parameterized_tests(argc, argv);
-     run_unparameterized_tests();
+    run_unparameterized_tests();
     return 0;
 }

@@ -2,6 +2,8 @@ import torch
 import os
 import math
 import sys
+import numpy as np
+from scipy.ndimage import gaussian_filter
 from datagen import save_tensor_to_csv
 
 data_dir = "data/"
@@ -498,6 +500,59 @@ def gen_cross_attention_data():
 
     for tensor in [x, Iq, Ikv, Q, K, V, target, x_q, x_kv, q_, k_, v_, qkt, smax, output, Q.grad, K.grad, V.grad, Iq.grad, Ikv.grad]:
         save_tensor_to_csv(tensor, filename, True)
+
+def gen_adam_data():
+    """Generate test data for adam optimizer"""
+    torch.manual_seed(511)
+    torch.set_printoptions(precision=8, linewidth=2000)
+
+    bn = 4
+    def gaussian_2d(x, y, amplitude, x_mean, y_mean, x_stddev, y_stddev, theta=0):
+        """
+        2D Gaussian function.
+        """
+        a = np.cos(theta)**2 / (2 * x_stddev**2) + np.sin(theta)**2 / (2 * y_stddev**2)
+        b = -np.sin(2 * theta) / (4 * x_stddev**2) + np.sin(2 * theta) / (4 * y_stddev**2)
+        c = np.sin(theta)**2 / (2 * x_stddev**2) + np.cos(theta)**2 / (2 * y_stddev**2)
+        exponent = a * (x - x_mean)**2 + 2 * b * (x - x_mean) * (y - y_mean) + c * (y - y_mean)**2
+        return amplitude * np.exp(-exponent)
+
+    x_lin = np.linspace(-1, 1, 400)
+    y_lin = np.linspace(-1, 1, 400)
+    X, Y = np.meshgrid(x_lin, y_lin)
+
+    Z1 = gaussian_2d(X, Y, 1.0, -.75, .5, .50, 2, math.pi/4)
+    Z2 = gaussian_2d(X, Y, 0.5, -.2, .5, .4, 2, -math.pi/4) * 2
+    Z3 = gaussian_2d(X, Y, 1.0, .75, 0.15, .25, 3, math.pi/3) * -.5
+    Z4 = gaussian_2d(X, Y, 1.0, 1.05, 0.2, .25, 3, math.pi/3) * -.5
+
+    r = np.random.randn(*Z1.shape) * 2
+    r = gaussian_filter(r, 12)
+    Z = Z1 + Z2 + Z3 + Z4 + r
+
+    g0, g1 = np.gradient(Z)
+    g = (g1**2 + g0**2) ** 0.5
+
+
+    if False:
+        fig, ax = plt.subplots(1, 4)
+        ax[0].imshow(Z1, cmap='viridis')
+        ax[1].imshow(Z2, cmap='viridis')
+        ax[2].imshow(Z3, cmap='viridis')
+        ax[3].imshow(Z4, cmap='viridis')
+
+        plt.show()
+        plt.imshow(Z, cmap='terrain')
+        plt.colorbar()
+        plt.show()
+
+        plt.imshow(g, cmap='viridis')
+        plt.colorbar()
+
+    save_tensor_to_csv(torch.Tensor(Z), "data/adam_v.csv")
+    save_tensor_to_csv(torch.Tensor(g0), "data/adam_g0.csv")
+    save_tensor_to_csv(torch.Tensor(g1), "data/adam_g1.csv")
+    
 
 if __name__ == "__main__":
     functions = {name: obj for name, obj in globals().items() 
