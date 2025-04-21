@@ -1,23 +1,29 @@
-#!/ usr / bin / python3
+#!/usr/bin/python3
 
-from pathlib import Path import os import sys import time import subprocess from datagen import
-    write_sample_mult_data,
-    write_softmax_grad_data
+from pathlib import Path
+import os
+import sys
+import time
+import subprocess
+from datagen import write_sample_mult_data, write_softmax_grad_data
 
-        program = ["bin/test"] passed_tests = [] failed_tests = []
+program = ["bin/test"]
+passed_tests = []
+failed_tests = []
 
-    t_colors = {
-        #terminal colors "red" : "\033[91m",
-        "green" : "\033[92m",
-        "yellow" : "\033[93m",
-        "blue" : "\033[94m",
-        "end" : "\033[0m"
-    }
+t_colors = {  # terminal colors
+    "red": "\033[91m",
+    "green": "\033[92m",
+    "yellow": "\033[93m",
+    "blue": "\033[94m",
+    "end": "\033[0m"
+}
 
-    def
-    run_main(args = [])
-    : out = "" start = time.time()
-try : main_program = [str(x) for x in program + args]
+def run_main(args=[]):
+    out = ""
+    start = time.time()
+    try:
+        main_program = [str(x) for x in program + args]
         main_prog_txt = ' '.join(main_program)
         print("Running test: ", main_prog_txt)
         out = subprocess.check_output(main_prog_txt, shell=True, text=True)

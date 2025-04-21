@@ -29,7 +29,7 @@ HOST_COMPILER := g++-11
 NVCC          := /usr/local/cuda-12.5/bin/nvcc -ccbin $(HOST_COMPILER)
 
 # Flags
-NVCCFLAGS     := -m64 
+NVCCFLAGS     := -m64 --expt-relaxed-constexpr
 CCFLAGS       := --std=c++17 -fPIC -rdynamic -Wall -Wextra -Wsign-compare -I/usr/include/c++/11 -I/usr/include/x86_64-linux-gnu/c++/11
 LDFLAGS       :=
 
@@ -81,7 +81,10 @@ HIGHEST_SM := $(lastword $(sort $(SMS)))
 build: $(ROOT_TARGETS)
 
 clean:
-	rm -fr bin/* temp/* *.csv test.info
+	rm -fr temp/* *.csv *.info *.ppm *.dot
+
+clean_all: clean
+	rm -fr $(BUILDDIR)/*
 
 $(OBJDIR)/%.cu.o: $(SRCDIR)/%.cu
 	@mkdir -p $(OBJDIR);

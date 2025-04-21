@@ -1,3 +1,12 @@
+#! /usr/bin/env python3
+
+# -------------------------------------------------------------------------------
+# Author: Ishwar Kulkarni
+#
+# This file is distributed under the MIT license.
+# See: https://mit-license.org
+# -------------------------------------------------------------------------------
+
 import torch
 import os
 import math

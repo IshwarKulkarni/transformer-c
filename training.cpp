@@ -30,10 +30,11 @@ std::pair<FloatT, uint32> run_validation(Loss2Node<FloatT>& loss, DatasetT& data
     loss.set_is_training(false);
     float32 valdn_loss = 0;
     uint32 misses = 0;
+    Context ctx;
     for (uint32 j = 0; j < dataset.num_batches(DataMode::TEST); j++)
     {
         dataset.load(DataMode::TEST, j);
-        loss.compute();
+        loss.compute(&ctx);
         valdn_loss += loss.value();
         misses += count_misses(softmax, dataset.target());
     }
@@ -48,9 +49,11 @@ std::pair<FloatT, uint32> run_validation_emo(Loss2Node<FloatT>& loss, EmotionDat
     loss.set_is_training(false);
     float32 valdn_loss = 0;
     uint32 misses = 0;
+    Context ctx;
     for (uint32 j = 0; j < dataset.num_batches(); j++)
     {
-        loss.compute();
+        dataset.load(DataMode::TEST, j);
+        loss.compute(&ctx);
         valdn_loss += loss.value();
         misses += count_misses(softmax, dataset.target());
     }
@@ -81,7 +84,7 @@ int train_MLP_wine()
     LinI lf(LinearInput<FloatT>{dataset.target_size(), &d3, true, "identity", "Final"});
     L1Loss<> loss({&lf, dataset.target()}, "L1Loss");
 
-    NetworkGraph::to_dotviz_file("mlp.dot", &loss);
+    NetworkGraph::write_dotviz("mlp.dot", &loss);
 
     std::ofstream train_csv("train_losses.csv");
     train_csv << "batch,loss,misses\n";
@@ -90,7 +93,7 @@ int train_MLP_wine()
     valdn_csv << "batch,loss,misses\n";
 
     Timer timer("MLP_Train");
-
+    Context ctx;
     uint32 epoch = 0;
     uint32 train_batches = dataset.num_batches(DataMode::TRAIN);
     for (uint32 batch = 0; batch < 400 or epoch < 25; batch++)
@@ -98,8 +101,8 @@ int train_MLP_wine()
         epoch = batch / train_batches;
         dataset.load(DataMode::TRAIN, batch % train_batches);
 
-        loss.compute();
-        loss.backward();
+        loss.compute(&ctx);
+        loss.backward(&ctx);
         loss.update_weights(3e-3);
 
         // run validation and count misses
@@ -149,7 +152,7 @@ int train_MLP_iris()
     SoftmaxDim0<> softmax(&lf);
     L2Loss<> loss({&softmax, dataset.target()}, "L2Loss");
 
-    NetworkGraph::to_dotviz_file("mlp.dot", &loss);
+    NetworkGraph::write_dotviz("mlp.dot", &loss);
 
     std::ofstream train_csv("train_losses.csv");
     train_csv << "batch,loss,misses\n";
@@ -158,14 +161,14 @@ int train_MLP_iris()
     valdn_csv << "batch,loss,misses\n";
 
     Timer timer("MLP_Train");
-
+    Context ctx;
     for (uint32 batch = 0; batch < 500; batch++)
     {
         uint32 epoch = batch / dataset.num_batches(DataMode::TRAIN);
         dataset.load(DataMode::TRAIN, batch % dataset.num_batches(DataMode::TRAIN));
 
-        loss.compute();
-        loss.backward();
+        loss.compute(&ctx);
+        loss.backward(&ctx);
         loss.update_weights(3e-3);
 
         // run validation and count misses
@@ -208,7 +211,7 @@ int train_emotion()
         LinearInput<FloatT>{train_dataset.target_size(), &sum, true, "identity", "Final"});
     LogSoftmaxCELoss<> loss({&lf, train_dataset.target()}, "CELoss");
 
-    NetworkGraph::to_dotviz_file("emotion_train.dot", &loss);
+    NetworkGraph::write_dotviz("emotion_train.dot", &loss);
 
     std::ofstream train_csv("train_losses.csv");
     train_csv << "batch,loss,misses\n";
@@ -218,13 +221,14 @@ int train_emotion()
 
     uint32 epoch = 0;
     Timer timer("Emotion_Train");
+    Context ctx;
     for (uint32 batch = 0; batch < 100 or epoch < 25; batch++)
     {
         epoch = batch / train_dataset.num_batches();
         train_dataset.load(DataMode::TRAIN, batch);
 
-        loss.compute();
-        loss.backward();
+        loss.compute(&ctx);
+        loss.backward(&ctx);
         cudaErrCheck(cudaDeviceSynchronize());
         loss.update_weights(3e-3);
 

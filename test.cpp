@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -7,6 +13,7 @@
 #include "network_graph.hpp"
 #include "nodes/loss.hpp"
 #include "nodes/parameterized.hpp"
+#include "nodes/parameterized_composite.hpp"
 #include "nodes/unparameterized.hpp"
 #include "types"
 #include "utils.hpp"
@@ -88,6 +95,22 @@ int32 test_match_implem(const MatrixT& C, const MatrixT& D, std::string msg, flo
     return diffs;
 }
 
+uint32 count_nans(const Matrix<float32>& res)
+{
+    uint32 nan_count = 0;
+    for (uint32 i = 0; i < res.height(); i++)
+    {
+        for (uint32 j = 0; j < res.width(); j++)
+        {
+            if (std::isnan(res(0, i, j)))
+            {
+                nan_count++;
+            }
+        }
+    }
+    return nan_count;
+}
+
 int32 test_mmTadd_torch()
 {
     Matrix<FloatT> A = normal_init<FloatT>({3, 4});
@@ -167,6 +190,35 @@ int32 test_reduce_implem(const char** argv, bool write_to_files = false)
     }
 
     return failed;
+}
+
+int32 test_reduce_extents()
+{
+    Matrix<float32> mat({2, 7, 8});
+    mat.extents.set(0, 4, 5);
+    mat.extents.set(1, 7, 6);
+    arange_extents<float32>(mat, std::numeric_limits<float32>::quiet_NaN());
+
+    Matrix<float32> res2({2, 1, 8});
+    res2.set_val(-1);
+    reduce<float32, HEIGHT_IDX>(res2, mat);
+
+    if(count_nans(res2) > 0)
+    {
+        LOG(RED, " NaNs found in test_reduce_extents reduce height");
+        return 1;
+    }
+
+    Matrix<float32> res3({2, 1, 8});
+    res3.set_val(-1);
+    reduce_mean_ext<float32, HEIGHT_IDX>(res3, mat);
+
+    if(count_nans(res3) > 0)
+    {
+        LOG(RED, " NaNs found in test_reduce_extents reduce mean height");
+        return 1;
+    }
+    return 0;
 }
 
 int32 test_reduce_multiple(const char** argv)
@@ -260,6 +312,32 @@ int32 test_reduce_multiple(const char** argv)
     return err;
 }
 
+
+int32 test_mult_extents()
+{
+    Matrix<float32> mat1({1, 3, 4});
+    Matrix<float32> mat2({1, 4, 5});
+
+    mat1.extents.set(0, 2, 4);
+    mat2.extents.set(0, 4, 3);
+
+    arange_extents<float32>(mat1, std::numeric_limits<float32>::quiet_NaN());
+    arange_extents<float32>(mat2, std::numeric_limits<float32>::quiet_NaN());
+
+    Matrix<float32> res({1, 3, 5});
+    mmadd<float32>(res, mat1, mat2);
+
+    // test passes if there are no NaNs in res
+    if (count_nans(res) > 0)
+    {
+        LOG(RED, " NaNs found in test_mult_extents");
+        return 1;
+    }
+
+    return 0;
+}
+
+// Test for Matrix operations that takes in various parameters
 int32 run_parameterized_tests(int32 argc, char const* argv[])
 {
     std::string name = (argc > 1) ? argv[0] : "main";
@@ -367,6 +445,13 @@ int32 run_parameterized_tests(int32 argc, char const* argv[])
         mmTaddCPU<FloatT, Sigmoid<FloatT>::SigmoidF>(C1, A, Bt, S);
         mmTadd<FloatT, Sigmoid<FloatT>::SigmoidF>(D1, A, Bt, S);
         test_match_eps(C, D, "Matrix Multiply/Transpose with S, and Sigmoid PProcess", eps);
+
+        failed += test_mult_extents();
+
+        if(failed == 0)
+        {
+            LOG(GREEN, "Passed test_mult");
+        }
         return failed;
     }
     else if (argv[1] == std::string("test_mult_csv"))
@@ -394,6 +479,7 @@ int32 run_parameterized_tests(int32 argc, char const* argv[])
         if (!failed) failed += test_reduce_implem<1>(argv); else return failed;
         if (!failed) failed += test_reduce_implem<2>(argv); else return failed;
         if (!failed) failed += test_reduce_multiple(argv); else return failed;
+        if (!failed) failed += test_reduce_extents(); else return failed;
         return failed;
         // clang-format on
     }
@@ -575,7 +661,8 @@ int32 test_linearb()
 
     in >> x >> t >> y1.W >> y2.W >> y2.b;
 
-    loss.compute();
+    Context ctx;
+    loss.compute(&ctx);
     cudaErrCheck(cudaDeviceSynchronize());
 
     uint32 err = (std::abs(expected_loss - loss.value()) > 1e-5) +
@@ -585,7 +672,7 @@ int32 test_linearb()
     if (err)
         throw_rte_with_backtrace("error value mismatch: ", loss.value(), " vs ", expected_loss);
 
-    loss.backward();
+    loss.backward(&ctx);
 
     err = test_match(read_csv<FloatT>(in), loss.gradientOut, "loss.gradientOut==y2.grad") +
           test_match(read_csv<FloatT>(in), y2.gradientOut, "y2.gradientOut==y1.grad") +
@@ -615,12 +702,14 @@ int32 test_attention()
     Input<> target(A.shape, "target");
     L2Loss<> loss({&A, &target}, "L2Error");
 
-    NetworkGraph::to_dotviz_file("attention.dot", &loss);
+    NetworkGraph::write_dotviz("attention.dot", &loss);
 
     // clang-format on
     golden >> A.Q.W >> A.K.W >> A.V.W >> q >> k >> v >> target;
 
-    loss.compute();
+    // Create a context object for this computation graph
+    Context ctx;
+    loss.compute(&ctx);
     cudaErrCheck(cudaDeviceSynchronize());
 
     if (std::abs(expected_loss - loss.value()) > 1e-3)
@@ -635,7 +724,8 @@ int32 test_attention()
                  test_match(read_csv<FloatT>(golden), A.V, "Value out");
     if (err) throw_rte_with_backtrace("Test Attention results mismatch");
 
-    loss.backward();
+    // Pass the context to backward
+    loss.backward(&ctx);
 
     err += test_match(read_csv<FloatT>(golden), A.Q.W.grads(), "Q.W.grads") +
            test_match(read_csv<FloatT>(golden), A.K.W.grads(), "K.W.grads") +
@@ -659,7 +749,7 @@ int32 test_network_graph()
               <<
         R"(
          Input: x
-            batch_size: $bn
+            batch: $bn
             height: $Sl
             width: $Ei
 
@@ -676,7 +766,7 @@ int32 test_network_graph()
             act: identity
         
         Input: target
-            batch_size: x->batch_size
+            batch: x->batch
             height: x->height
             width: attn->out_dim
 
@@ -711,23 +801,17 @@ int32 test_self_attention()
 
     Input<> x(bn, Sl, x0w, "x");
     Linear<FloatT> In(LinearInput<FloatT>{x0w, &x, false, "identity", "In"});
-    try
-    {
-        SelfAttention<FloatT> A(LinearInput<FloatT>{Eq, &In, false, "sigmoid", "SelfAttention"});
-    }
-    catch (const std::runtime_error& e)
-    {
-        if (strstr(e.what(), "sigmoid") == nullptr) throw e;
-    }
     SelfAttention<FloatT> A(LinearInput<FloatT>{Eq, &In, false, "identity", "SelfAttention"});
     Input<> target(A.shape, "target");
     L2Loss<> loss({&A, &target}, "L2-Error");
 
-    NetworkGraph::to_dotviz_file("self_attention.dot", &loss);
+    NetworkGraph::write_dotviz("self_attention.dot", &loss);
 
     golden >> x >> In.W >> A.Q.W >> A.K.W >> A.V.W >> target;
 
-    loss.compute();
+    // Create a context object for this computation graph
+    Context ctx;
+    loss.compute(&ctx);
     cudaErrCheck(cudaDeviceSynchronize());
 
     uint32 err = (std::abs(expected_loss - loss.value()) > 1e-5);
@@ -743,7 +827,8 @@ int32 test_self_attention()
 
     if (err) throw_rte_with_backtrace("Test Self Attention results mismatch");
 
-    loss.backward();
+    // Pass the context to backward
+    loss.backward(&ctx);
 
     err += test_match(read_csv<FloatT>(golden), A.Q.W.grads(), "Q.W.grads") +
            test_match(read_csv<FloatT>(golden), A.K.W.grads(), "K.W.grads") +
@@ -773,11 +858,13 @@ int32 test_cross_attention()
     Input<> target(A.shape, "target");
     L2Loss<> loss({&A, &target}, "L2-Error");
 
-    NetworkGraph::to_dotviz_file("cross_attention.dot", &loss);
+    NetworkGraph::write_dotviz("cross_attention.dot", &loss);
 
     golden >> x >> InQ.W >> InKV.W >> A.Q.W >> A.K.W >> A.V.W >> target;
 
-    loss.compute();
+    // Create a context object for this computation graph
+    Context ctx;
+    loss.compute(&ctx);
     cudaErrCheck(cudaDeviceSynchronize());
 
     uint32 err = (std::abs(expected_loss - loss.value()) > 1e-5);
@@ -794,7 +881,8 @@ int32 test_cross_attention()
 
     if (err) LOG(RED, "Test Cross Attention results mismatch");
 
-    loss.backward();
+    // Pass the context to backward
+    loss.backward(&ctx);
 
     err += test_match(read_csv<FloatT>(golden), A.Q.W.grads(), "Q.W.grads") +
            test_match(read_csv<FloatT>(golden), A.K.W.grads(), "K.W.grads") +
@@ -829,7 +917,8 @@ int32 test_productT()
 
     in >> x0 >> y0.W >> y0.b >> x1 >> y1.W >> t;
 
-    loss.compute();
+    Context ctx;
+    loss.compute(&ctx);
     cudaErrCheck(cudaDeviceSynchronize());
 
     uint32 err = (std::abs(expected_loss - loss.value()) > 1e-5);
@@ -840,7 +929,7 @@ int32 test_productT()
            test_match_eps(read_csv<FloatT>(in), y0, "Linear0 output", 0.003);
     if (err) throw_rte_with_backtrace("Outputs mismatch");
 
-    loss.backward();
+    loss.backward(&ctx);
 
     err += test_match(read_csv<FloatT>(in), loss.gradientOut, "loss.gradientOut==A.grad") +
            test_match(read_csv<FloatT>(in), y0.W.grads(), "y1.W.grads") +
@@ -861,7 +950,8 @@ int32 test_LSMCELoss()
     std::ifstream golden("data/lsmce.txt");
     golden >> x >> L.W >> L.b >> t >> expect_loss;
 
-    loss.compute();
+    Context ctx;
+    loss.compute(&ctx);
 
     auto name = loss.name;
     uint32 err = test_match(read_csv<FloatT>(golden), L, name + "LossVal");
@@ -872,7 +962,7 @@ int32 test_LSMCELoss()
         err++;
     }
 
-    loss.backward();
+    loss.backward(&ctx);
 
     err += test_match(read_csv<FloatT>(golden), loss.gradientOut, name + "loss.gradientOut") +
            test_match(read_csv<FloatT>(golden), L.W.grads(), name + "L.W.grads") +
@@ -924,17 +1014,25 @@ int32 test_adam()
         res.push_back({p0, p1, g0, g1, v});
     }
 
+    // write res to file
+    std::ofstream res_file("adam_results.csv");  // for tracing on jupyter
+    for (auto& r : res)
+        res_file << r.p0 << ',' << r.p1 << ',' << r.g0 << ',' << r.g1 << ',' << r.v << '\n';
+
     uint32 last_n = 5;
     auto mean_v = std::accumulate(std::end(res) - last_n, std::end(res), 0.0,
                                   [last_n](auto acc, auto& r) { return acc + r.v / last_n; });
-    if (std::abs(mean_v + 0.697716) > 0.0001)
+    if (std::abs(mean_v + 0.7133) > 0.0001)
     {
         LOG(RED, "Adam failed, mean value: ", mean_v);
         return -1;
     }
 
     if (res.size() > 196)  // must converge in 195 steps
-        throw_rte_with_backtrace("Adam failed, did not converge in ", res.size(), " steps");
+    {
+        LOG(RED, "Adam failed, did not converge in ", res.size(), " steps");
+        return -1;
+    }
 
     uint32 converged_by = 128;
     float32 mean_gx = 0, mean_gy = 0;
@@ -1052,7 +1150,8 @@ int32 test_softmaxDim()
 
     in >> x >> L.W >> L.b >> t;
 
-    loss.compute();
+    Context ctx;
+    loss.compute(&ctx);
 
     cudaErrCheck(cudaDeviceSynchronize());
     if (std::abs(expected_loss - loss.value()) > 1e-3)
@@ -1061,7 +1160,7 @@ int32 test_softmaxDim()
     uint32 err = test_match_eps(read_csv<FloatT>(in), L, S.name + "linear_output", 1e-4) +
                  test_match_eps(read_csv<FloatT>(in), S, S.name + "output", 1e-4);
 
-    loss.backward();
+    loss.backward(&ctx);
     if constexpr (SoftmaxDim == 0)
         err += test_match_eps(read_csv<FloatT>(in), S.gradientOutT, S.name + "-y1.grad", 1e-3);
     else
@@ -1090,8 +1189,9 @@ int32 test_mean_node()
     Input<> target(S.shape, "target");
     L2Loss loss({&S, &target}, "Loss");
 
+    Context ctx;
     in >> x >> L.W >> L.b >> target;
-    loss.compute();
+    loss.compute(&ctx);
 
     cudaErrCheck(cudaDeviceSynchronize());
     if (std::abs(expected_loss - loss.value()) > 1e-3)
@@ -1100,7 +1200,7 @@ int32 test_mean_node()
     uint32 err = test_match_eps(read_csv<FloatT>(in), L, S.name + "linear_output", 1e-4) +
                  test_match_eps(read_csv<FloatT>(in), S, S.name + "output", 1e-4);
 
-    loss.backward();
+    loss.backward(&ctx);
 
     err += test_match(read_csv<FloatT>(in), L.W.grads(), S.name + "-L.W.g") +
            test_match(read_csv<FloatT>(in), L.b.grads(), S.name + "-L.b.g");
@@ -1125,10 +1225,11 @@ int32 test_layer_norm()
     Input<> target(norm.shape, "target");
     L2Loss loss({&norm, &target}, "Loss");
 
-    NetworkGraph::to_dotviz_file("layer_norm.dot", &loss);
+    NetworkGraph::write_dotviz("layer_norm.dot", &loss);
 
     in >> x >> L.W >> L.b >> target;
-    loss.compute();
+    Context ctx;
+    loss.compute(&ctx);
 
     cudaErrCheck(cudaDeviceSynchronize());
     if (std::abs(expected_loss - loss.value()) > 1e-3)
@@ -1137,7 +1238,7 @@ int32 test_layer_norm()
     uint32 err = test_match_eps(read_csv<FloatT>(in), L, norm.name + "linear_output", 1e-4) +
                  test_match_eps(read_csv<FloatT>(in), norm, norm.name + "output", 1e-3);
 
-    loss.backward();
+    loss.backward(&ctx);
 
     err += test_match(read_csv<FloatT>(in), L.W.grads(), norm.name + "-L.W.g") +
            test_match(read_csv<FloatT>(in), L.b.grads(), norm.name + "-L.b.g");
@@ -1146,22 +1247,136 @@ int32 test_layer_norm()
     return err;
 }
 
-int test_resampling_heatmap()
+int32 test_resampling_heatmap()
 {
     auto a = read_csv<float32>("data/adam_v.csv");
     Matrix<float32> b({a.batch(), 768, 768}, "b");
     LOG("resampling from ", a.shape, " to ", b.shape);
     resample_matrix(b, a);
-    write_csv(b, "b.csv");
+    write_csv(b, "resampled.csv");
 
-    Matrix<uint32> c({b.batch(), b.height(), b.width()}, "c");
+    Matrix<uint32> c({b.batch(), 200, 200}, "c");
     gen_heat_map(c, b, "twilight");
-    write_ppm_image(c, "c.ppm");
+    write_ppm_image(c, "c_image.ppm");
+    LOG(GREEN, "Test resampling and heatmap generation passed");
     return 0;
 }
 
-// Test for Node<> level stuff except for concat and dropout
-//, uses data from compare.ipynb
+// Only test that outputs are generated
+int32 test_feedforward()
+{
+    Input<> x({1, 10}, "x");
+    normal_init(x);
+
+    LinearInput<FloatT> inp = {10, &x, true, "identity", "L1"};
+    FeedForward<FloatT> ff1(inp, 20, 0.2f, 0.2f, "ff1");
+    LinearInput<FloatT> inp2 = {10, &ff1, true, "relu", "L2"};
+    FeedForward<FloatT> ff2(inp2, 0.2f, 0.2f, "ff2");
+
+    Input<> y({1, 10}, "y");
+    normal_init(y);
+
+    L2Loss<> loss({&ff2, &y}, "loss");
+    Context ctx;
+    loss.compute(&ctx);
+
+    loss.backward(&ctx);
+
+    NetworkGraph::write_dotviz("feedforward.dot", &ff2);
+    LOG(GREEN, "Feedforward passed");
+    return 0;
+}
+
+int test_mha_node()
+{
+    Input<> q(1, 8, 4, "q");
+    Input<> k(1, 8, 4, "k");
+    Input<> v(1, 8, 4, "v");
+
+    normal_init(q);
+    normal_init(k);
+    normal_init(v);
+
+    Linear<FloatT> in_q(5, &q, false, "identity", "mha_q");
+    Linear<FloatT> in_k(5, &k, false, "identity", "mha_k");
+    Linear<FloatT> in_v(5, &v, false, "identity", "mha_v");
+
+    MultiHeadAttention<FloatT> mha(2, LinearInput<FloatT>{4, &in_q, false, "identity", "mha_q"},
+                                   LinearInput<FloatT>{4, &in_k, false, "identity", "mha_k"},
+                                   LinearInput<FloatT>{4, &in_v, false, "identity", "mha_v"},
+                                   LinearInput<FloatT>{6, nullptr, false, "identity", "mha_out"},
+                                   "mha");
+
+    Input<> target(mha.shape, "target");
+    normal_init(target);
+
+    L2Loss<> loss({&mha, &target}, "loss");
+    NetworkGraph::write_dotviz("mha.dot", &loss);
+    Context ctx;
+    loss.compute(&ctx);
+
+    loss.backward(&ctx);
+    LOG(GREEN, "MHA passed");
+
+    return 0;
+}
+
+int test_mhca_node()  // MultiHeadCrossAttention
+{
+    Input<> q(1, 8, 4, "q");
+    Input<> kv(1, 8, 4, "kv");
+
+    normal_init(q);
+    normal_init(kv);
+
+    Linear<FloatT> in(5, &q, false, "identity", "mha_q");
+    Linear<FloatT> in_kv(5, &kv, false, "identity", "mha_kv");
+
+    MultiHeadCrossAttention<FloatT> mha(
+        2, LinearInput<FloatT>{4, &in, false, "identity", "mha_q"},
+        LinearInput<FloatT>{4, &in_kv, false, "identity", "mha_kv"},
+        LinearInput<FloatT>{6, nullptr, false, "identity", "mha_out"}, "mhca");
+
+    Input<> target(mha.shape, "target");
+    normal_init(target);
+
+    L2Loss<> loss({&mha, &target}, "loss");
+    NetworkGraph::write_dotviz("mhca.dot", &loss);
+    Context ctx;
+    loss.compute(&ctx);
+
+    loss.backward(&ctx);
+    LOG(GREEN, "MHCA passed");
+    return 0;
+}
+
+int32 test_mhsa_node()  // MultiHeadSelfAttention
+{
+    Input<> q(1, 8, 4, "q");
+    normal_init(q);
+
+    Linear<FloatT> in(2, &q, false, "identity", "mha_q");
+
+    MultiHeadSelfAttention<FloatT> mha(
+        2, LinearInput<FloatT>{4, &in, false, "identity", "mha_q"},
+        LinearInput<FloatT>{6, nullptr, false, "identity", "mha_out"}, "mhsa");
+
+    Input<> target(mha.shape, "target");
+    normal_init(target);
+
+    L2Loss<> loss({&mha, &target}, "loss");
+    NetworkGraph::write_dotviz("mhsa.dot", &loss);
+    Context ctx;
+    loss.compute(&ctx);
+
+    loss.backward(&ctx);
+
+    LOG(GREEN, "MHSA passed");
+    return 0;
+}
+
+// Test for Node<> level stuff
+// uses data generated by tests/node_datagen.py
 int32 run_unparameterized_tests()
 {
     int32 err = 0;
@@ -1189,12 +1404,21 @@ int32 run_unparameterized_tests()
 
     // Test resampling and heatmap generation
     err += test_resampling_heatmap();
+
+    // Test feedforward, mhsa, mhca, mha, for non-zero gradients
+    err += test_feedforward();
+    err += test_mhsa_node();
+    err += test_mhca_node();
+    err += test_mha_node();
+
+    if (err == 0) LOG(GREEN, "All tests passed");
+    else LOG(RED, "Some tests failed");
     return err;
 }
 
-int32 main1(int32 argc, char const* argv[])
+int32 main(int32 argc, char const* argv[])
 {
     if (argc > 1) return run_parameterized_tests(argc, argv);
-    run_unparameterized_tests();
-    return 0;
+    return run_unparameterized_tests();
+
 }

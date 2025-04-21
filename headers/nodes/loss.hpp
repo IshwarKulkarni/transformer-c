@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef NODES_LOSS_HPP
 #define NODES_LOSS_HPP
 
@@ -18,8 +24,9 @@ struct Loss2Node : Node<T>  // 2 input loss node
     {
         if (this->prev(0).shape != this->prev(1).shape)
             throw_rte_with_backtrace(
-                "LossNode inputs must have the same shape input 1: " + this->prev(0).shape.str() +
-                " and input 2: " + this->prev(1).shape.str());
+                "LossNode inputs must have the same shape input 0 (predictions): ",
+                predictions->name, predictions->shape.str(),
+                " and input 1 (target): ", target->name, target->shape.str());
 
         if (target == nullptr)
         {
@@ -27,15 +34,16 @@ struct Loss2Node : Node<T>  // 2 input loss node
         }
     }
 
-    virtual void backward(const Matrix<T>* null) override
+    virtual void backward(const Matrix<T>* null, Context* ctx) override
     {
+        (void)ctx;
         if (null)
             throw_rte_with_backtrace(
                 "LossNode backward should not be called with a null argument or call the backward "
                 "with no arguments");
     }
 
-    virtual void backward() = 0;
+    virtual void backward(Context* ctx) = 0;
 
     virtual std::string dot_repr() override
     {
@@ -74,18 +82,20 @@ struct L2Loss : Loss2Node<T>
     {
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Pow<T>(2));
         this->reduce_and_copy(nDiff);
     }
 
-    void backward() override
+    void backward(Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name);
         unary_apply(gradientOut, diff, times2ByNumels);
-        this->predictions->backward(&gradientOut);
+        this->predictions->backward(&gradientOut, ctx);
     }
 };
 
@@ -106,18 +116,20 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
     {
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
         binary_apply(diff, this->prev(0), this->prev(1), Sub<T>());
         unary_apply(nDiff, diff, Abs<T>());
         this->reduce_and_copy(nDiff);
     }
 
-    void backward() override
+    void backward(Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name);
         unary_apply(gradientOut, diff, Sign<T>{FloatT(1) / diff.numels()});
-        this->predictions->backward(&gradientOut);
+        this->predictions->backward(&gradientOut, ctx);
     }
 };
 
@@ -138,19 +150,21 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
         }
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
         binary_apply(nll, this->prev(1), this->prev(0), NegLogLossFwd<T>());
         this->reduce_and_copy(nll);
     }
 
-    void backward() override
+    void backward(Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name);
         NegLogLossBckwd<T> functor;
         functor.normalizing_factor = nll.numels();
         binary_apply(gradientOut, this->prev(1), this->prev(0), functor);
-        this->predictions->backward(&gradientOut);
+        this->predictions->backward(&gradientOut, ctx);
     }
 };
 
@@ -188,8 +202,9 @@ struct LogSoftmaxCELoss : Loss2Node<T>
         LOG(BLUE, this->name, " ", prevs[0]->shape);
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
         // exps = e^xi
         unary_apply(exps, *this->predictions, Exp<T>());
         // logSumExps = log(Sum(e^xj))
@@ -219,13 +234,14 @@ struct LogSoftmaxCELoss : Loss2Node<T>
         this->copy(temp->begin());
     }
 
-    void backward() override
+    void backward(Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name);
         LSMCEBkwd<T> func;
         func.factor = gradientOut.height() * gradientOut.batch();
         binary_apply(gradientOut, *this->target, negLogSoftmax, func);
-        this->predictions->backward(&gradientOut);
+        this->predictions->backward(&gradientOut, ctx);
     }
 
     void debug_print()

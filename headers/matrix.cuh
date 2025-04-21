@@ -1,7 +1,15 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef MATRIX_CUH
 #define MATRIX_CUH
 
 #include <cuda.h>
+#include <cuda_runtime.h>
+#include <cuda_texture_types.h>
 #include <limits>
 #include <map>
 #include <memory>
@@ -10,18 +18,30 @@
 #include "logger.hpp"
 #include "types"
 #include "utils.hpp"
-#include <cuda_runtime.h>
-#include <cuda_texture_types.h>
 
 static constexpr uint32 WIDTH_IDX = 0;
 static constexpr uint32 HEIGHT_IDX = 1;
 static constexpr uint32 BATCH_IDX = 2;
+
+static_assert(WIDTH_IDX < HEIGHT_IDX && HEIGHT_IDX < BATCH_IDX, "Invalid dimension order");
 
 static constexpr uint32 WIDTH_BIT = 0x1 << WIDTH_IDX;
 static constexpr uint32 HEIGHT_BIT = 0x1 << HEIGHT_IDX;
 static constexpr uint32 BATCH_BIT = 0x1 << BATCH_IDX;
 
 inline __device__ __host__ uint32 iDivUp(uint32 a, uint32 b) { return (a + b - 1) / b; }
+
+template <uint32 Dim>  // i is the index in the dimension Dim, other two are the other dimensions in
+                       // order of b, y, x
+constexpr inline __host__ __device__ std::tuple<uint32, uint32, uint32> get_indices(uint32 i,
+                                                                                    uint32 i1,
+                                                                                    uint32 i2)
+{
+    static_assert(Dim <= BATCH_IDX, "Invalid dimension for get_indices");
+    if constexpr (Dim == WIDTH_IDX) return std::make_tuple(i1, i2, i);
+    if constexpr (Dim == HEIGHT_IDX) return std::make_tuple(i1, i, i2);
+    if constexpr (Dim == BATCH_IDX) return std::make_tuple(i, i1, i2);
+}
 
 struct Shape
 {
@@ -72,10 +92,8 @@ struct Shape
     template <uint32 Dim>
     inline __host__ __device__ uint64 offset_in_dim(uint32 i, uint32 i1, uint32 i2) const
     {
-        static_assert(Dim < 3, "dim must be 0, 1 or 2");
-        if (Dim == WIDTH_IDX) return offset(i1, i2, i);
-        if (Dim == HEIGHT_IDX) return offset(i1, i, i2);
-        return offset(i, i1, i2);
+        auto [b, y, x] = get_indices<Dim>(i, i1, i2);
+        return offset(b, y, x);
     }
 
     template <unsigned int bits>
@@ -117,24 +135,46 @@ inline std::ostream& operator<<(std::ostream& os, const Shape& s) { return os <<
 
 typedef struct MatrixInitUitls
 {
-    static uint32 get_id() { return id++; }
+    static uint32 get_id() { return ++id; }
     static uint32 peek_id() { return id; }
     static uint64 get_alloced_bytes() { return alloced_bytes; }
 
     template <typename T>
-    static T* allocManaged(const Shape& shape)
+    static T* allocManaged(const Shape& shape, uint32 id)
     {
         T* ptr = nullptr;
         if (shape.numels == 0) throw_rte_with_backtrace("Cannot allocate a matrix with 0 elements");
+        LOG_ALLOC("Allocating matrix ", id);
+        (void)id;
         cudaErrCheck(cudaMallocManaged((void**)&ptr, shape.bytes<T>()));
         alloced_bytes += shape.numels * sizeof(T);
         id_to_alloced_bytes[id] = shape.numels * sizeof(T);
         return ptr;
     }
 
-    template <typename T>
-    static void free(uint32 id, T* ptr)
+    static uint32* allocManagedExtent(uint32 length, uint32 id)
     {
+        uint32* ptr = nullptr;
+        LOG_ALLOC("Allocating extent for matrix ", id, " len: ", length);
+        (void)id;
+        cudaErrCheck(cudaMallocManaged((void**)&ptr, length * sizeof(uint32)));
+        alloced_bytes += length * sizeof(uint32);
+        return ptr;
+    }
+
+    static void free(uint32* ptr, uint32 length, uint32 id)
+    {
+        LOG_FREE("Freeing extent for matrix ", id);
+        (void)id;
+        cudaErrCheck(cudaFree(ptr));
+        freed_bytes += length * sizeof(uint32);
+    }
+
+    template <typename T>
+    static void free(T* ptr, uint32 id)
+    {
+        LOG_FREE("Freeing matrix ", id);
+        (void)id;
         cudaErrCheck(cudaFree(ptr));
         freed_bytes += id_to_alloced_bytes[id];
     }
@@ -154,6 +194,116 @@ struct MatrixBase
     static std::vector<const MatrixBase*> all_matrices;
 };
 
+// This class embodies "valid extents" for a batched 2d matrix.
+// A Matrix is expected to have a valid element at (b, y, x) if
+// y < y_extent[b] and x < x_extent[b], for a batch b.
+// I.e. valid values span from (b, 0, 0) to (b, y_extent[b], x_extent[b]).
+// Can also set x_extent[b] and y_extent[b] to 0 to make the batch invalid.
+struct Extents2d
+{
+    const uint32 matrixid;
+    const Shape shape;
+
+    // all rows and cols are valid
+    Extents2d(uint32 matrixid, const Shape& shape) : matrixid(matrixid), shape(shape)
+    {
+        // set all row values to shape.height and all col values to shape.width
+        for (uint32 i = 0; i < shape.batch; i++) set(i, shape.height, shape.width);
+    }
+
+    template <uint32 Dim>
+    inline __host__ __device__ uint32 set(uint32 batch, uint32 val)
+    {
+        if constexpr (Dim == WIDTH_IDX)
+            set(batch, shape.height, val);
+        else if constexpr (Dim == HEIGHT_IDX)
+            set(batch, val, shape.width);
+        throw_rte_with_backtrace("Invalid dimension: ", Dim);
+    }
+
+    void set(uint32 batch, uint32 y, uint32 x)
+    {
+        if (batch >= shape.batch)
+        {
+            throw_rte_with_backtrace("Invalid batch: ", batch, " for matrix ", matrixid);
+        }
+
+        if (y > shape.height)
+        {
+            throw_rte_with_backtrace("Invalid row y extent: ", y, " for batch ", batch,
+                                     " and matrix ", matrixid);
+        }
+        if (x > shape.width)
+        {
+            throw_rte_with_backtrace("Invalid col x extent: ", x, " for batch ", batch,
+                                     " and matrix ", matrixid);
+        }
+        y_extent[batch] = y;
+        x_extent[batch] = x;
+    }
+
+    __host__ __device__ uint32 operator()(uint32 batch, uint32 dim) const
+    {
+        if (dim == WIDTH_IDX) return x_extent[batch];
+        if (dim == HEIGHT_IDX) return y_extent[batch];
+        if (dim == BATCH_IDX) return shape.batch;  // for completeness, not used
+        throw_rte_with_backtrace("Invalid dimension: ", dim);
+        return 0;
+    }
+
+    __host__ __device__ std::tuple<uint32, uint32> operator()(uint32 batch) const
+    {
+        return std::make_tuple(y_extent[batch], x_extent[batch]);
+    }
+
+    template <uint32 Dim>  // same logic as Shape::offset_in_dim
+    __host__ __device__ bool in_bounds(uint32 i, uint32 i1, uint32 i2) const
+    {
+        auto [b, y, x] = get_indices<Dim>(i, i1, i2);
+        return in(b, y, x);
+    }
+
+    __host__ __device__ bool in(uint32 batch, uint32 y, uint32 x) const
+    {
+        return batch < shape.batch && y < y_extent[batch] && x < x_extent[batch];
+    }
+
+    __host__ __device__ uint32 width(uint32 batch) const { return x_extent[batch]; }
+
+    __host__ __device__ uint32 height(uint32 batch) const { return y_extent[batch]; }
+
+    bool all_valid() const
+    {
+        // all x_extent_ptr are width and all y_extent_ptr are height
+        for (uint32 i = 0; i < shape.batch; i++)
+        {
+            if (x_extent[i] != shape.width || y_extent[i] != shape.height) return false;
+        }
+        return true;
+    }
+
+ private:
+    Extents2d() = delete;
+    std::shared_ptr<uint32[]> extent = std::shared_ptr<uint32[]>(
+        MatrixInitUitls::allocManagedExtent(shape.batch * 2, matrixid), [this](uint32* ptr) {
+            MatrixInitUitls::free(ptr, shape.batch, matrixid);
+            y_extent = nullptr;
+            x_extent = nullptr;
+        });
+
+    uint32* x_extent = extent.get();
+    uint32* y_extent = extent.get() + shape.batch;
+};
+
+inline std::ostream& operator<<(std::ostream& os, const Extents2d& extents)
+{
+    for (uint32 i = 0; i < extents.shape.batch; i++)
+    {
+        os << i << ": [" << extents(i, HEIGHT_IDX) << ", " << extents(i, WIDTH_IDX) << "]\t";
+    }
+    return os;
+}
+
 /*
 Matrix class for 3d tensors (batch, height, width) with managed memory allocation
 and automatic deallocation on destruction. The data is stored in a shared pointer
@@ -166,32 +316,27 @@ and increment of pointer from get() or begin() is along the width dimension.
 Access is done with
     3-element () operator: batchIdx, heightIdx, widthIdx
     1-element [] operator: linear offset
-    or index method: index<0>(i, m, n) is equivalent to operator()(m, n, i), i is width
-                     index<1>(i, m, n) is equivalent to operator()(m, i, n), i is height
-                     index<2>(i, m, n) is equivalent to operator()(i, m, n), i is batch
+    or index method: index<0>(i, m, n) is equivalent to operator()(m, n, i), i is width dim index
+                     index<1>(i, m, n) is equivalent to operator()(m, i, n), i is height dim index
+                     index<2>(i, m, n) is equivalent to operator()(i, m, n), i is batch dim index
 */
 template <typename T>
 struct Matrix
 {
-    const uint32 id;
+    const uint32 id = MatrixInitUitls::get_id();
     const std::string name;
     const Shape shape;
+    Extents2d extents = Extents2d(id, shape);
 
     typedef std::shared_ptr<T[]> CudaPtr;
 
-    Matrix() : id(static_cast<uint32>(-1)), name("Empty"), shape(0, 0, 0), data() {}
+    Matrix() : id(0), name("Empty"), shape(0, 0, 0), data() {}
 
     Matrix(Shape shape, const std::string& name_ = "Matrix")
-        : id(MatrixInitUitls::get_id()),
-          name(name_ + '{' + std::to_string(id) + '}'),
-          shape(shape),
-          data(MatrixInitUitls::allocManaged<T>(shape), [this](T* ptr) {
-              // LOG(YELLOW, "Freeing ", this->name, "-", this->shape);
-              MatrixInitUitls::free<T>(id, ptr);
-              this->rawData = nullptr;
-          })
+        : name(name_ + '{' + std::to_string(id) + '}'), shape(shape)
     {
-        LOG_MATRIX_CREATE(this->name, " : ", this->shape, " size: ", this->shape.numels, " bytes: ", this->shape.bytes<T>());
+        LOG_MATRIX_CREATE(this->name, " : ", this->shape, " size: ", this->shape.numels,
+                          " bytes: ", this->shape.bytes<T>());
     }
 
     inline uint32 sum_batches(std::vector<const Matrix<T>*> mats)
@@ -275,13 +420,13 @@ struct Matrix
     template <unsigned int Dim>
     inline __device__ __host__ T& index(uint32 i, uint32 i1, uint32 i2)
     {
-        return rawData[shape.offset_in_dim<Dim>(i, i1, i2)];
+        return rawData[shape.template offset_in_dim<Dim>(i, i1, i2)];
     }
 
     template <unsigned int Dim>
     inline __device__ __host__ const T& index(uint32 i, uint32 i1, uint32 i2) const
     {
-        return rawData[shape.offset_in_dim<Dim>(i, i1, i2)];
+        return rawData[shape.template offset_in_dim<Dim>(i, i1, i2)];
     }
 
     // grid size for given block to have a thread for each element in matrix
@@ -342,10 +487,6 @@ struct Matrix
         return attr.type == cudaMemoryTypeDevice;
     }
 
-    // T* __device__ get_raw_data() { return rawData; }
-
-    // const T* __device__ get_raw_data() const { return rawData; }
-
     virtual ~Matrix<T>() = default;
 
     CudaPtr get_data() const { return data; }
@@ -360,7 +501,10 @@ struct Matrix
     }
 
  private:
-    CudaPtr data;
+    CudaPtr data = CudaPtr(MatrixInitUitls::allocManaged<T>(shape, id), [this](T* ptr) {
+        MatrixInitUitls::free<T>(ptr, id);
+        this->rawData = nullptr;
+    });
     T* rawData = data.get();
 
     template <typename U>
@@ -393,19 +537,14 @@ struct Matrix
 };
 
 template <typename T>
-void resample_matrix(const Matrix<T>& out, Matrix<T>& in);
-
-void gen_heat_map(Matrix<uint32>& color_image, const Matrix<float32>& mat_in, const std::string& name);
-
-void write_ppm_image(const Matrix<uint32>& image, std::string name);
-
-template <typename T>
 inline std::ostream& operator<<(std::ostream& os,
                                 const Matrix<T>& m)  // usable to paste in torch ()
 {
     std::setiosflags(std::ios::fixed);
     uint32 precision = 6;
-    os << ' ' << m.name << m.shape << "\t([" << std::fixed << std::setfill(' ');
+    os << ' ' << m.name << m.shape;
+    if (!m.extents.all_valid()) os << "\nExtents: " << m.extents;
+    os << "\t([" << std::fixed << std::setfill(' ');
 
     for (uint32 b = 0; b < m.batch(); b++)
     {

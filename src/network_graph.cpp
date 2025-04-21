@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include "network_graph.hpp"
 #include <fstream>
 #include <istream>
@@ -96,7 +102,7 @@ StringPairVec::iterator match_key_substr(const std::string& key, StringPairVec& 
 // is found, throw an error if an empty line is encountered before all key values are set, throw an
 // error end of block is an empty line.
 void NetworkGraph::read_params(std::istream& is, const std::string& node_name,
-                               StringPairVec& key_vals)
+                               StringStringMap& key_vals)
 {
     StringPairVec key_value_pairs;  // all key value pairs in block
 
@@ -117,18 +123,11 @@ void NetworkGraph::read_params(std::istream& is, const std::string& node_name,
         if (key.empty())
             throw_rte_with_backtrace("Parameter `", key, "` in node `", node_name,
                                      "` is not defined");
-        auto it = match_key_substr(key, key_vals);
+        auto it = key_vals.find(key);
         if (it == key_vals.end())
             throw_rte_with_backtrace("Parameter `", key, "` in node `", node_name, "` unknown");
         it->second = value;
         m_indirect_literals[node_name + "->" + key] = value;
-    }
-
-    for (const auto& [key, value] : key_vals)
-    {
-        if (value.empty())
-            throw_rte_with_backtrace("Parameter `", key, "` in node `", node_name,
-                                     "` is not defined");
     }
 }
 
@@ -223,7 +222,7 @@ void NetworkGraph::parse_network_desc()
                 catch (const std::exception& e)
                 {
                     LOG(RED, "\nParsing error on line ", line_number, ":\n", orig);
-                    throw_rte_with_backtrace("Error creating node ", value, "  ", e.what());
+                    throw_rte_with_backtrace("Error creating node ", value);
                 }
             }
             else if (key[0] == '$')
@@ -280,17 +279,17 @@ void NetworkGraph::save_network(const std::string& filename) const
     file_out.close();
 }
 
-void NetworkGraph::to_dotviz_file(std::string filename, const NodePtr<FloatT> node)
+void NetworkGraph::write_dotviz(std::string filename, const NodePtr<FloatT> node)
 {
     NodePtrVec<FloatT> nodes;
 
     nodes.push_back(node);
-    std::set<std::string> edge_node_strs;
-
-    auto make_edge = [](NodePtr<FloatT> a, NodePtr<FloatT> b, float32 weight = 3.f) {
+    std::set<std::string> strings_reps;
+    auto make_edge = [](NodePtr<FloatT> a, NodePtr<FloatT> b, float32 weight = 3.f,
+                        const std::string& lbl = "") {
         char edge_buffer[256];
-        snprintf(edge_buffer, 256, "%d -> %d [label=\"%dx%d\" weight=%2.1f]", a->id, b->id,
-                 a->shape[1], a->shape[0], weight);
+        snprintf(edge_buffer, 256, "%d -> %d [label=\"%dx%d %s\" weight=%2.1f]", a->id, b->id,
+                 a->shape[1], a->shape[0], lbl.c_str(), weight);
         return std::string(edge_buffer);
     };
 
@@ -300,25 +299,25 @@ void NetworkGraph::to_dotviz_file(std::string filename, const NodePtr<FloatT> no
         nodes.pop_back();
         for (auto* p : n->prev_nodes)
         {
-            edge_node_strs.insert(make_edge(p, n));
+            strings_reps.insert(make_edge(p, n, 3.f));
             nodes.push_back(p);
         }
-        edge_node_strs.insert(std::to_string(n->id) + n->dot_repr());
+
         auto* terminal = n->get_terminal_node();
         if (terminal)
         {
             nodes.push_back(terminal);
-            auto term_edge = make_edge(n, terminal, 1.f);
+            std::string term_edge = make_edge(n, terminal, 1.f, "\n-is-\n");
             term_edge = "\nedge [style=dotted arrowhead=none]\n" + term_edge +
                         "\nedge [style=normal arrowhead=normal];\n";
-            edge_node_strs.insert(term_edge);
+            strings_reps.insert(term_edge);
         }
+        strings_reps.insert(std::to_string(n->id) + n->dot_repr());
     }
     std::ofstream os(filename);
     os << "digraph G {\n compound=true;\n";
-    std::copy(edge_node_strs.begin(), edge_node_strs.end(),
+    std::copy(strings_reps.begin(), strings_reps.end(),
               std::ostream_iterator<std::string>(os, "\n"));
+
     os << '}' << std::endl;
 }
-
-void NetworkGraph::train() {}

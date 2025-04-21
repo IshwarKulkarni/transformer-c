@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef TYPES_H
 #define TYPES_H
 
@@ -31,11 +37,10 @@ static_assert(sizeof(int16) == 2, "Not 2 bytes");
 static_assert(sizeof(uint8) == 1, "Not 1 byte");
 static_assert(sizeof(uint16) == 2, "Not 2 bytes");
 
-
 inline bool is_little_endian()
 {
     int num = 1;
-    char *ptr = reinterpret_cast<char*>(&num);
+    char *ptr = reinterpret_cast<char *>(&num);
     return *ptr == 1;
 }
 

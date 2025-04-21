@@ -1,166 +1,247 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
+#include <stdexcept>
 #include "network_graph.hpp"
 #include "nodes/loss.hpp"
 #include "nodes/node.hpp"
 #include "nodes/parameterized.hpp"
+#include "nodes/parameterized_composite.hpp"
 #include "nodes/unparameterized.hpp"
 
 std::map<std::string, NodeCreatorFunc> NodeCreatorMap::m_node_creators;
 
-static const std::string act_key = "activation act_function common_act common_act_function";
-static const std::string bias_key = "bias use_bias";
-static const std::string prev_key = "prev input input_node";
-static const std::string batch_key = "batch batch_size";
-static const std::string dim_key = "out_size output_size out_dim output_dim";
+static const StringStringMap linear_params = {
+    {"out_dim", ""}, {"prev", ""}, {"bias", "true"}, {"act", "relu"}};
+static const StringStringMap dropout_params = {{"rate", ".25"}, {"prev", ""}};
+
+static StringStringMap add_key_prefix(const StringStringMap& params, const std::string& prefix)
+{
+    StringStringMap new_params;
+    for (auto& [key, value] : params)
+    {
+        new_params[prefix + key] = value;
+    }
+    return new_params;
+}
+
+// get the value of a parameter from the map, if not found or empty, return default_value
+static std::string get_value(const StringStringMap& params, const std::string& key,
+                             const std::string& default_value)
+{
+    auto it = params.find(key);
+    if (it != params.end() && !it->second.empty()) return it->second;
+    return default_value;
+}
+
+template <typename T>
+LinearInput<T> get_linear_input(NetworkGraph& graph, const StringStringMap& params,
+                                const std::string& name, std::string default_dim = "",
+                                std::string default_bias = "false",
+                                std::string default_act = "identity")
+{
+    auto prev_it = params.find("prev");
+    if (prev_it == params.end()) throw_rte_with_backtrace("Linear: prev is not specified");
+
+    const auto& prev = graph.get_node(prev_it->second);
+
+    if (default_dim == "") default_dim = std::to_string(prev->width());
+    // match these to the linear_params
+    const auto& odim = graph.get_value<uint32>(get_value(params, "out_dim", default_dim));
+    const auto& bias = graph.get_value<bool>(get_value(params, "bias", default_bias));
+    const auto& act = get_value(params, "act", default_act);
+    return LinearInput<T>{odim, prev, bias, act, name};
+}
 
 // define NodeCreatorFunc for each node type
-NodePtr<FloatT> create_input_node(std::istream& is, const std::string& name, NetworkGraph& builder)
+NodePtr<FloatT> create_input_node(std::istream& is, const std::string& name, NetworkGraph& graph)
 {
-    StringPairVec params = {
-        {batch_key, ""}, {"height num_samples", ""}, {"width row_vec_size", ""}};
-    builder.read_params(is, name, params);
-    return new Input<FloatT>(builder.get_value<uint32>(params[0].second),
-                             builder.get_value<uint32>(params[1].second),
-                             builder.get_value<uint32>(params[2].second), name);
+    StringStringMap params = {{"batch", ""}, {"height", ""}, {"width", ""}};
+    graph.read_params(is, name, params);
+    return new Input<FloatT>(graph.get_value<uint32>(params["batch"]),
+                             graph.get_value<uint32>(params["height"]),
+                             graph.get_value<uint32>(params["width"]), name);
 }
 
-NodePtr<FloatT> create_dropout_node(std::istream& is, const std::string& name,
-                                    NetworkGraph& builder)
+NodePtr<FloatT> create_dropout_node(std::istream& is, const std::string& name, NetworkGraph& graph)
 {
-    StringPairVec params = {{"p rate dropout_rate", ".25"}, {prev_key, ""}};
-    builder.read_params(is, name, params);
-    return new Dropout<FloatT>(builder.get_value<float>(params[0].second),
-                               builder.get_node(params[1].second), name);
+    StringStringMap params = dropout_params;
+    graph.read_params(is, name, params);
+    return new Dropout<FloatT>(graph.get_value<float32>(get_value(params, "rate", ".25")),
+                               graph.get_node(params["prev"]), name);
 }
 
-NodePtr<FloatT> create_linear_node(std::istream& is, const std::string& name, NetworkGraph& builder)
+NodePtr<FloatT> create_l2_loss_node(std::istream& is, const std::string& name, NetworkGraph& graph)
 {
-    StringPairVec params = {{dim_key, ""}, {prev_key, ""}, {bias_key, "true"}, {act_key, "relu"}};
-
-    builder.read_params(is, name, params);
-
-    const auto& odim = builder.get_value<uint32>(params[0].second);
-    const auto& prev = builder.get_node(params[1].second);
-    const auto& bias = builder.get_value<bool>(params[2].second);
-    const auto& act = params[3].second;
-
-    return new Linear<FloatT>(LinearInput<FloatT>{odim, prev, bias, act, name});
-}
-
-NodePtr<FloatT> create_self_attention_node(std::istream& is, const std::string& name,
-                                           NetworkGraph& builder)
-{
-    StringPairVec params = {{dim_key, ""}, {prev_key, ""}, {bias_key, "true"}, {act_key, "relu"}};
-    builder.read_params(is, name, params);
-    const auto& odim = builder.get_value<uint32>(params[0].second);
-    const auto& prev = builder.get_node(params[1].second);
-    const auto& bias = builder.get_value<bool>(params[2].second);
-    const auto& act = params[3].second;
-    LinearInput<FloatT> inp = {odim, prev, bias, act, name};
-    return new SelfAttention<FloatT>(inp);
-}
-
-NodePtr<FloatT> create_l2_loss_node(std::istream& is, const std::string& name,
-                                    NetworkGraph& builder)
-{
-    StringPairVec params = {{"predictions", ""}, {"target", ""}};
-    builder.read_params(is, name, params);
+    StringStringMap params = {{"predictions", ""}, {"target", ""}};
+    graph.read_params(is, name, params);
     return new L2Loss<FloatT>(
-        {builder.get_node(params[0].second), builder.get_node(params[1].second)}, name);
+        {graph.get_node(params["predictions"]), graph.get_node(params["target"])}, name);
+}
+
+NodePtr<FloatT> create_mean_node(std::istream& is, const std::string& name, NetworkGraph& graph)
+{
+    StringStringMap params = {{"prev", ""}, {"dim", "0"}};
+    graph.read_params(is, name, params);
+    NodePtr<FloatT> prev = graph.get_node(params["prev"]);
+    uint32 dim = graph.get_value<uint32>(params["dim"]);
+    if (dim == 0)
+        return new Mean<FloatT, 0>(prev, name);
+    else if (dim == 1)
+        return new Mean<FloatT, 1>(prev, name);
+    else if (dim == 2)
+        return new Mean<FloatT, 2>(prev, name);
+    else
+        throw_rte_with_backtrace("Mean: dim must be 0, 1, or 2");
+}
+
+NodePtr<FloatT> create_linear_node(std::istream& is, const std::string& name, NetworkGraph& graph)
+{
+    StringStringMap params = linear_params;
+
+    graph.read_params(is, name, params);
+    return new Linear<FloatT>(get_linear_input<FloatT>(graph, params, name));
 }
 
 NodePtr<FloatT> create_attention_node(std::istream& is, const std::string& name,
-                                      NetworkGraph& builder)
+                                      NetworkGraph& graph)
 {
-    StringPairVec params = {{"q_size q_output_size q_out_dim", ""},
-                            {"q_input q_prev q_input_node", ""},
-                            {"q_bias", "true"},
+    StringStringMap q_params = add_key_prefix(linear_params, "q_");
+    StringStringMap k_params = add_key_prefix(linear_params, "k_");
+    StringStringMap v_params = add_key_prefix(linear_params, "v_");
+    graph.read_params(is, name, q_params);
+    graph.read_params(is, name, k_params);
+    graph.read_params(is, name, v_params);
 
-                            {"k_size k_output_size k_out_dim", ""},
-                            {"k_input k_prev k_input_node", ""},
-                            {"k_bias", "true"},
+    return new Attention<FloatT>(
+        get_linear_input<FloatT>(graph, q_params, name + "_q"),
+        get_linear_input<FloatT>(graph, k_params, name + "_k", q_params["dim"]),
+        get_linear_input<FloatT>(graph, v_params, name + "_v", q_params["dim"]));
+}
 
-                            {"v_size v_output_size v_out_dim", ""},
-                            {"v_input v_prev v_input_node", ""},
-                            {"v_bias", "true"},
+NodePtr<FloatT> create_self_attention_node(std::istream& is, const std::string& name,
+                                           NetworkGraph& graph)
+{
+    StringStringMap params = linear_params;
+    graph.read_params(is, name, params);
+    return new SelfAttention<FloatT>(get_linear_input<FloatT>(graph, params, name));
+}
 
-                            {act_key + " act_function common_act common_act_function", "relu"}};
-    builder.read_params(is, name, params);
+NodePtr<FloatT> create_cross_attention_node(std::istream& is, const std::string& name,
+                                            NetworkGraph& graph)
+{
+    StringStringMap q_params = add_key_prefix(linear_params, "q_");
+    StringStringMap kv_params = add_key_prefix(linear_params, "kv_");
+    graph.read_params(is, name, q_params);
+    graph.read_params(is, name, kv_params);
 
-    uint32 sizes[3];
-    NodePtr<FloatT> prevs[3];
-    bool biases[3];
+    LinearInput<FloatT> q_inp = get_linear_input<FloatT>(graph, q_params, name + "_q");
+    LinearInput<FloatT> kv_inp = get_linear_input<FloatT>(graph, kv_params, name + "_kv");
 
-    for (uint32 i = 0; i < 3; ++i)
-    {
-        sizes[i] = builder.get_value<uint32>(params[i * 3].second);
-        prevs[i] = builder.get_node(params[i * 3 + 1].second);
-        biases[i] = builder.get_value<bool>(params[i * 3 + 2].second);
-    }
-
-    const auto& act_str = params[9].second;
-
-    LinearInput<FloatT> q_inp = {sizes[0], prevs[0], biases[0], act_str, name + "_q"};
-    LinearInput<FloatT> k_inp = {sizes[1], prevs[1], biases[1], act_str, name + "_k"};
-    LinearInput<FloatT> v_inp = {sizes[2], prevs[2], biases[2], act_str, name + "_v"};
-
-    return new Attention<FloatT>(q_inp, k_inp, v_inp, name);
+    return new CrossAttention<FloatT>(q_inp, kv_inp, name);
 }
 
 NodePtr<FloatT> create_multi_head_attention_node(std::istream& is, const std::string& name,
-                                                 NetworkGraph& builder)
+                                                 NetworkGraph& graph)
 {
-    StringPairVec params = {
-        {"q_size q_output_size q_out_dim", "dummy"},  // 0
-        {"q_input q_prev q_input_node", ""},
-        {"q_bias", "true"},
+    StringStringMap q_params = add_key_prefix(linear_params, "q_");
+    StringStringMap k_params = add_key_prefix(linear_params, "k_");
+    StringStringMap v_params = add_key_prefix(linear_params, "v_");
+    StringStringMap output_params = add_key_prefix(linear_params, "output_");
+    StringStringMap params = {{"num_heads", "2"}};
 
-        {"k_size k_output_size k_out_dim", "dummy"},  // 3
-        {"k_input k_prev k_input_node", ""},
-        {"k_bias", "true"},
+    graph.read_params(is, name, q_params);
+    graph.read_params(is, name, k_params);
+    graph.read_params(is, name, v_params);
+    graph.read_params(is, name, output_params);
+    graph.read_params(is, name, params);
 
-        {"v_size v_output_size v_out_dim", ""},  // 6
-        {"v_input v_prev v_input_node", ""},
-        {"v_bias", "true"},
+    const auto& num_heads = graph.get_value<uint32>(params["num_heads"]);
 
-        {"qkv_act qkv_act_function common_act common_act_function", "relu"},  // 9
-        {"output_act output_act_function common_act common_act_function", "relu"},
-        {"num_heads", "1"}};
-    builder.read_params(is, name, params);
-
-    uint32 sizes[3];
-    NodePtr<FloatT> prevs[3];
-    bool biases[3];
-
-    auto q_size = params[0].second != "dummy" ? builder.get_value<uint32>(params[0].second) : 0;
-    auto k_size = params[3].second != "dummy" ? builder.get_value<uint32>(params[1].second) : 0;
-
-    if (q_size == 0 and k_size == 0)
-        throw_rte_with_backtrace("MultiHeadAttention: one of q_size or k_size must be specified");
-
-    if (q_size == 0)
-        params[0].second = params[3].second;
-    else if (k_size == 0)
-        params[3].second = params[0].second;
-    else if (q_size != k_size)
-        throw_rte_with_backtrace("MultiHeadAttention: q_size and k_size must be the same");
-
-    for (uint32 i = 0; i < 3; ++i)
-    {
-        sizes[i] = builder.get_value<uint32>(params[i * 3].second);
-        prevs[i] = builder.get_node(params[i * 3 + 1].second);
-        biases[i] = builder.get_value<bool>(params[i * 3 + 2].second);
-    }
-
-    const auto& qkv_act_str = params[8].second;
-    const auto& output_act_str = params[9].second;
-    const auto& num_heads = builder.get_value<uint32>(params[10].second);
-
-    LinearInput<FloatT> q_inp = {sizes[0], prevs[0], biases[0], qkv_act_str, name + "_q"};
-    LinearInput<FloatT> k_inp = {sizes[1], prevs[1], biases[1], qkv_act_str, name + "_k"};
-    LinearInput<FloatT> v_inp = {sizes[2], prevs[2], biases[2], qkv_act_str, name + "_v"};
-    LinearInput<FloatT> output_inp = {0, nullptr, false, output_act_str, name + "_output"};
+    LinearInput<FloatT> q_inp = get_linear_input<FloatT>(graph, q_params, name + "_q");
+    LinearInput<FloatT> k_inp =
+        get_linear_input<FloatT>(graph, k_params, name + "_k", q_params["dim"]);
+    LinearInput<FloatT> v_inp =
+        get_linear_input<FloatT>(graph, v_params, name + "_v", q_params["dim"]);
+    LinearInput<FloatT> output_inp =
+        get_linear_input<FloatT>(graph, output_params, name + "_output");
 
     return new MultiHeadAttention<FloatT>(num_heads, q_inp, k_inp, v_inp, output_inp, name);
+}
+
+NodePtr<FloatT> create_multi_head_self_attention_node(std::istream& is, const std::string& name,
+                                                      NetworkGraph& graph)
+{
+    StringStringMap qkv_params = linear_params;
+    StringStringMap out_params = add_key_prefix(linear_params, "output_");
+    StringStringMap params = {{"num_heads", "2"}};
+
+    graph.read_params(is, name, qkv_params);
+    graph.read_params(is, name, out_params);
+    graph.read_params(is, name, params);
+
+    return new MultiHeadSelfAttention<FloatT>(
+        graph.get_value<uint32>(params["num_heads"]),
+        get_linear_input<FloatT>(graph, qkv_params, name),
+        get_linear_input<FloatT>(graph, out_params, name, qkv_params["dim"]), name);
+}
+
+NodePtr<FloatT> create_multi_head_cross_attention_node(std::istream& is, const std::string& name,
+                                                       NetworkGraph& graph)
+{
+    StringStringMap q_params = add_key_prefix(linear_params, "q_");
+    StringStringMap kv_params = add_key_prefix(linear_params, "kv_");
+    StringStringMap out_params = add_key_prefix(linear_params, "output_");
+    StringStringMap params = {{"num_heads", "2"}};
+
+    graph.read_params(is, name, q_params);
+    graph.read_params(is, name, kv_params);
+    graph.read_params(is, name, out_params);
+    graph.read_params(is, name, params);
+
+    return new MultiHeadCrossAttention<FloatT>(
+        graph.get_value<uint32>(params["num_heads"]),
+        get_linear_input<FloatT>(graph, q_params, name),
+        get_linear_input<FloatT>(graph, kv_params, name, q_params["dim"]),
+        get_linear_input<FloatT>(graph, out_params, name, q_params["dim"]), name);
+}
+
+NodePtr<FloatT> create_sine_positional_embedding_node(std::istream& is, const std::string& name,
+                                                      NetworkGraph& graph)
+{
+    StringStringMap params = {{"prev", ""}};
+    graph.read_params(is, name, params);
+    return new SinePositionalEmbedding<FloatT>(graph.get_node(params["prev"]), name);
+}
+
+NodePtr<FloatT> create_feed_forward_node(std::istream& is, const std::string& name,
+                                         NetworkGraph& graph)
+{
+    StringStringMap l1_params = linear_params;
+    StringStringMap params = {{"rate1", ".25"}, {"rate2", ".25"}, {"intermediate_dim", ""}};
+
+    graph.read_params(is, name, l1_params);
+    graph.read_params(is, name, params);
+
+    LinearInput<FloatT> l1_inp = get_linear_input<FloatT>(graph, l1_params, name + "_l1");
+
+    if (params["intermediate_dim"] != "")
+    {
+        if (l1_params["dim"] != params["intermediate_dim"])
+            throw_rte_with_backtrace("FeedForward: intermediate_dim and l1_dim must be the same");
+
+        return new FeedForward<FloatT>(l1_inp, graph.get_value<uint32>(params["intermediate_dim"]),
+                                       graph.get_value<float32>(params["rate1"]),
+                                       graph.get_value<float32>(params["rate2"]), name);
+    }
+    else
+    {
+        return new FeedForward<FloatT>(l1_inp, graph.get_value<float32>(params["rate1"]),
+                                       graph.get_value<float32>(params["rate2"]), name);
+    }
 }
 
 // Initialize all node creator functions
@@ -168,9 +249,15 @@ void initialize_node_creators()
 {
     NodeCreatorMap::register_func("Input", create_input_node);
     NodeCreatorMap::register_func("Dropout", create_dropout_node);
-    NodeCreatorMap::register_func("Linear", create_linear_node);
-    NodeCreatorMap::register_func("SelfAttention", create_self_attention_node);
     NodeCreatorMap::register_func("L2Loss", create_l2_loss_node);
+    NodeCreatorMap::register_func("Linear", create_linear_node);
     NodeCreatorMap::register_func("Attention", create_attention_node);
+    NodeCreatorMap::register_func("SelfAttention", create_self_attention_node);
+    NodeCreatorMap::register_func("CrossAttention", create_cross_attention_node);
     NodeCreatorMap::register_func("MultiHeadAttention", create_multi_head_attention_node);
+    NodeCreatorMap::register_func("MultiHeadSelfAttention", create_multi_head_self_attention_node);
+    NodeCreatorMap::register_func("MultiHeadCrossAttention",
+                                  create_multi_head_cross_attention_node);
+    NodeCreatorMap::register_func("SinePositionalEmbedding", create_sine_positional_embedding_node);
+    NodeCreatorMap::register_func("FeedForward", create_feed_forward_node);
 }

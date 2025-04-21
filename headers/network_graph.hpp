@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef NETWORK_BUILDER_HPP
 #define NETWORK_BUILDER_HPP
 
@@ -11,10 +17,11 @@
     It also provides logic for saving and loading the network to and from a file
     (saves it with description and weights)
 
-    Incomplete Grammar for network description language: 
-    // incomplete because it's not context free (need to parse nested structures/nodes to define other nodes)
+    Incomplete Grammar for network description language:
+    // incomplete because it's not context free (need to parse nested structures/nodes to define
+   other nodes)
 
-    NetworkGraph := node* | literal_def* | node* | comment* 
+    NetworkGraph := node* | literal_def* | node* | comment*
 
     node := name_value_pair | newline | definition_lines | newline
     definition_lines := definition_line+
@@ -43,7 +50,8 @@ using StringPairVec = std::vector<std::pair<std::string, std::string>>;
 
 using NodePtrMap = std::map<std::string, NodePtr<FloatT>>;
 using LiteralMap = std::map<std::string, std::string>;
-using NodeCreatorFunc = NodePtr<FloatT> (*)(std::istream& is, const std::string& name, NetworkGraph& builder);
+using NodeCreatorFunc = NodePtr<FloatT> (*)(std::istream& is, const std::string& name,
+                                            NetworkGraph& builder);
 
 void initialize_node_creators();
 StringPairVec::iterator match_key_substr(const std::string& key, StringPairVec& opt_params);
@@ -57,7 +65,7 @@ struct NodeCreatorMap
 
     static NodeCreatorFunc get(const std::string& name)
     {
-        if(m_node_creators.find(name) == m_node_creators.end())
+        if (m_node_creators.find(name) == m_node_creators.end())
         {
             throw_rte_with_backtrace("Node creator function for `", name, "` is not defined");
         }
@@ -72,9 +80,10 @@ struct NodeCreatorMap
 
 struct NetworkGraph
 {
-    private:
+ private:
     LiteralMap m_literals;
-    NodePtrMap m_nodes;
+    NodePtrMap
+        m_nodes;  // this map has raw pointers to the nodes, and are deleted in the destructor
     std::set<std::string> m_used_literals;
     std::set<NodePtr<FloatT>> m_used_nodes;
     std::string m_network_desc_string;
@@ -86,10 +95,19 @@ struct NetworkGraph
     static constexpr uint32 HEADER[4] = {MAGIC_NUMBER, VERSION_MAJOR, VERSION_MINOR, 0};
     static constexpr char TEXT_DELIM[] = "--------------------------------";
 
-    public:
-
-    NetworkGraph() {};
+ public:
+    NetworkGraph(){};
     explicit NetworkGraph(std::string network_desc_filename);
+
+    // Method added specifically for testing variable resolution
+    void define_variable(const std::string& name, const std::string& value)
+    {
+        if (name.empty() || name[0] != '$')
+        {
+            throw_rte_with_backtrace("Variable name must start with '$': ", name);
+        }
+        m_literals[name] = value;
+    }
 
     void load_from_desc_stream(std::istream& is);
 
@@ -103,9 +121,9 @@ struct NetworkGraph
 
     bool attempt_load_weight_file(std::string filename);
 
-    void parse_network_desc(); // load network description from m_network_desc_string
+    void parse_network_desc();  // load network description from m_network_desc_string
 
-    void read_params(std::istream& is, const std::string& node_name, StringPairVec& key_vals);
+    void read_params(std::istream& is, const std::string& node_name, StringStringMap& key_vals);
 
     NodePtr<FloatT> get_node(const std::string& name)
     {
@@ -119,51 +137,57 @@ struct NetworkGraph
         return nullptr;
     }
 
-    template<typename NodeType>
+    template <typename NodeType>
     NodeType* get_typed_node(const std::string& name)
     {
-       auto it = m_nodes.find(name);
+        auto it = m_nodes.find(name);
         if (it != m_nodes.end())
         {
             auto node = dynamic_cast<NodeType*>(it->second);
-            if(!node)
-                throw_rte_with_backtrace("Node with name `", name, "` is not of type ", typeid(NodeType).name());
+            if (!node)
+                throw_rte_with_backtrace("Node with name `", name, "` is not of type ",
+                                         typeid(NodeType).name());
             return node;
         }
         throw_rte_with_backtrace("Node with name `", name, "` is not defined");
         return nullptr;
-    }   
+    }
 
     template <typename T>
     inline T parse_value(const std::string& str)
     {
-        try {
-        if constexpr (std::is_same<T, float>::value)
-            return std::stof(str);
-        else if constexpr (std::is_same<T, int>::value)
-            return std::stoi(str);
-        else if constexpr (std::is_same<T, double>::value)
-            return std::stod(str);
-        else if constexpr (std::is_same<T, bool>::value)
-            return str == "true" || str == "1" || str == "yes" || str == "y";
-        else if constexpr (std::is_same<T, uint32>::value)
-            return std::stoul(str);
-        else if constexpr (std::is_same<T, uint64>::value)
+        try
+        {
+            if constexpr (std::is_same<T, float>::value)
+                return std::stof(str);
+            else if constexpr (std::is_same<T, int>::value)
+                return std::stoi(str);
+            else if constexpr (std::is_same<T, double>::value)
+                return std::stod(str);
+            else if constexpr (std::is_same<T, bool>::value)
+                return str == "true" || str == "1" || str == "yes" || str == "y";
+            else if constexpr (std::is_same<T, uint32>::value)
+                return std::stoul(str);
+            else if constexpr (std::is_same<T, uint64>::value)
                 return std::stoull(str);
-        else 
-            throw_rte_with_backtrace("Unsupported type: ", typeid(T).name());
-        } catch (const std::invalid_argument& e) {
-            throw_rte_with_backtrace("Invalid argument in parsing `", str, "` with function: ",
-                                     e.what(), ". Is it a literal? They begin with `$`");
+            else
+                throw_rte_with_backtrace("Unsupported type: ", typeid(T).name());
+        }
+        catch (const std::invalid_argument& e)
+        {
+            throw_rte_with_backtrace("Invalid argument in parsing `", str,
+                                     "` with function: ", e.what(),
+                                     ". Is it a literal? They begin with `$`");
         }
     }
 
-    void train();
+    void add_node_ptr(NodePtr<FloatT> node) { m_nodes[node->name] = node; }
 
-    template <typename T> // if name is in m_literals, return the literal as T, else parse param_value as T and return the parsed value    
+    template <typename T>  // if name is in m_literals, return the literal as T, else parse
+                           // param_value as T and return the parsed value
     inline T get_value(const std::string& param_value)
     {
-        if(param_value[0] == '$')
+        if (param_value[0] == '$')
         {
             auto it = m_literals.find(param_value);
             if (it == m_literals.end())
@@ -178,7 +202,8 @@ struct NetworkGraph
                         LOG(YELLOW, key, " - ", value);
                     }
                 }
-                throw_rte_with_backtrace("Indirect literal `", param_value, "` cannot begin with `$`");
+                throw_rte_with_backtrace("Indirect literal `", param_value,
+                                         "` cannot begin with `$`");
             }
             m_used_literals.insert(it->first);
             return parse_value<T>(it->second);
@@ -192,12 +217,15 @@ struct NetworkGraph
                 auto node_found = m_nodes.find(node_name);
                 if (node_found == m_nodes.end())
                 {
-                    throw_rte_with_backtrace("Node `", node_name, "`, used in indirect literal `", param_value,
-                    "` it needs to be textually defined before being used in an indirect literal");
+                    throw_rte_with_backtrace("Node `", node_name, "`, used in indirect literal `",
+                                             param_value,
+                                             "` it needs to be textually defined before being used "
+                                             "in an indirect literal");
                 }
                 else
                 {
-                    throw_rte_with_backtrace("Node `", node_name, "` does not have a key `", key, "`");
+                    throw_rte_with_backtrace("Node `", node_name, "` does not have a key `", key,
+                                             "`");
                 }
             }
             return get_value<T>(it->second);
@@ -208,22 +236,19 @@ struct NetworkGraph
     NodePtr<FloatT> get_root_node() const
     {
         std::vector<Edge> forward_edges;
-        
+
         for (const auto& [name, node] : m_nodes)
             for (const auto& prev_node : node->get_dependencies())
                 forward_edges.push_back({prev_node, node});
 
         std::set<NodePtr<FloatT>> all_nodes;
-        for (const auto& [name, node] : m_nodes)
-            all_nodes.insert(node);
+        for (const auto& [name, node] : m_nodes) all_nodes.insert(node);
 
-        for (const auto& edge : forward_edges)
-            all_nodes.erase(edge.first);
+        for (const auto& edge : forward_edges) all_nodes.erase(edge.first);
 
-        if(all_nodes.empty())
-            throw_rte_with_backtrace("There's Loop in the network");
+        if (all_nodes.empty()) throw_rte_with_backtrace("There's Loop in the network");
 
-        if(all_nodes.size() > 1)
+        if (all_nodes.size() > 1)
         {
             for (const auto& node : all_nodes)
             {
@@ -235,31 +260,22 @@ struct NetworkGraph
         return *all_nodes.begin();
     }
 
-    const std::string& get_network_desc_string() const
-    {
-        return m_network_desc_string;
-    }
+    const std::string& get_network_desc_string() const { return m_network_desc_string; }
 
     // save the network description to a file, followed by nodes and their weights
     // the format is:
-    // network_desc 
+    // network_desc
     // ###########
     // node_name: node weights
     // node_name: node weights
     // Nodes appear in sorted order of their names
     void save_network(const std::string& filename) const;
 
-    inline void write_dotviz(std::string filename)
-    {
-        to_dotviz_file(filename, get_root_node());
-    }
+    inline void write_dotviz(std::string filename) { write_dotviz(filename, get_root_node()); }
 
-    static void to_dotviz_file(std::string filename, const NodePtr<FloatT> node);
+    static void write_dotviz(std::string filename, const NodePtr<FloatT> node);
 
-    const NodePtrMap& get_nodes() const
-    {
-        return m_nodes;
-    }
+    const NodePtrMap& get_nodes() const { return m_nodes; }
 };
 
 #endif  // NETWORK_BUILDER_HPP

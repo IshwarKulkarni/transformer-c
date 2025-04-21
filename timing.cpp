@@ -68,10 +68,11 @@ void time_linear_node()
 
     uint32 max_iters = 3;
     uint32 iters = 0;
+    Context ctx;
     float64 time = flushing_exec(max_iters, "Linear Node", [&]() {
         normal_init(x, 1, 2 * iters);
-        loss.compute();
-        loss.backward();
+        loss.compute(&ctx);
+        loss.backward(&ctx);
         return bytes;
     });
 
@@ -148,7 +149,7 @@ int time_attention()
     uint32 Sl = 20;    //  sequence length
 
     // clang-format off
-     Input<> q(bn, Sl, Ei, "Qi"), 
+     Input<> q(bn, Sl, Ei, "Qi"),
              k(bn, Sl, Ei, "Ki"),
              v(bn, Sl, Ei, "Vi");
 
@@ -161,9 +162,10 @@ int time_attention()
     L2Loss<> loss({&A, &target}, "L2Error");
 
     uint32 bytes = A.numels() * sizeof(FloatT);
+    Context ctx;
     flushing_exec(3, "Attention", [&]() {
-        loss.compute();
-        loss.backward();
+        loss.compute(&ctx);
+        loss.backward(&ctx);
         return bytes;
     });
     return 0;

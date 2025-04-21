@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef MATRIX_SIZE_CHECK
 #define MATRIX_SIZE_CHECK
 

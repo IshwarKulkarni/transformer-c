@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef MATRIX_OPS_HPP
 #define MATRIX_OPS_HPP
 
@@ -51,6 +57,11 @@ template <typename T, typename PostProcess = Identity<T>>
 void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B,
            const Optional<Matrix<T>> C = {}, PostProcess pProcess = PostProcess());
 
+// Matrix multiply add, result = A * B + C (if C is not null)
+// C is broadcasted to the same shape as result
+// A and B are broadcasted to the same shape as result
+// If A and B have extents, such that for some batch index AxM * NxB are valid, and M != N,
+// then result has values as if mutliplication was done with Axp * pxB where p = min(M, N)
 template <typename T, typename PProcess = Identity<T>>
 void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B,
            const Optional<Matrix<T>> C = {}, PProcess pProcess = PProcess());
@@ -103,6 +114,14 @@ template <typename T, uint32 dim = 0>
 void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
 {
     reduce<T, dim>(result, A, Plus<T>(), T(0), DividedBy<T>(A.shape[dim]));
+}
+
+template <typename T, uint32 dim = 0>
+void reduce_mean_ext(Matrix<T> &result, const Matrix<T> &A)
+{
+    DivByExtent<T, dim> divOp;
+    divOp.extents = &A.extents;
+    reduce<T, dim>(result, A, Plus<T>(), T(0), divOp);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -257,13 +276,34 @@ Matrix<is_floating_point<T>> uniform(Shape shape, T min = 0, T max = 1)
 }
 
 template <typename T>
-void arange(Matrix<is_floating_point<T>> &A)
+void arange(Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> &A)
 {
     for (uint32 b = 0; b < A.batch(); b++)
     {
         for (uint32 i = 0; i < A.numels(); i++)
         {
-            A[b * A.shape.size2d() + i] = T(i);
+            A[b * A.shape.size2d + i] = T(i);
+        }
+    }
+}
+
+template <typename T>
+void arange_extents(Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> &A,
+                    T invalid_val, bool decimal_bacth = true)
+{
+    uint32 v = 0;
+    for (uint32 b = 0; b < A.batch(); b++)
+    {
+        v = (decimal_bacth ? 0 : v);
+        for (uint32 y = 0; y < A.height(); y++)
+        {
+            for (uint32 x = 0; x < A.width(); x++)
+            {
+                if (A.extents.in(b, y, x))
+                    A(b, y, x) = T(v++) + (decimal_bacth ? T(0.1) * b : b);
+                else
+                    A(b, y, x) = invalid_val;
+            }
         }
     }
 }
@@ -476,6 +516,14 @@ T gradient_y(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 d = 1e-
     auto y1 = sample(m, b, y - d, x, eps);
     return (y2 - y1) / (2 * d);
 }
+
+template <typename T>
+void resample_matrix(const Matrix<T> &out, Matrix<T> &in);
+
+void gen_heat_map(Matrix<uint32> &color_image, const Matrix<float32> &mat_in,
+                  const std::string &name);
+
+void write_ppm_image(const Matrix<uint32> &image, std::string name);
 
 /*
 Gradient using second order centerered difference at (y, x), fwd/bwd difference at edges

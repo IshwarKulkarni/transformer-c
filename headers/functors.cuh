@@ -1,13 +1,63 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef FUNCTOR_CUH
 #define FUNCTOR_CUH
 
 #include <cuda_runtime.h>
 #include <cmath>
 #include <limits>
-#include "types"
 #include <string>
-#include "logger.hpp"
+#include <type_traits>
 #include "errors.hpp"
+#include "logger.hpp"
+#include "matrix.cuh"
+#include "types"
+
+// Helper to remove member pointer
+template <typename T>
+struct remove_member_pointer
+{
+    using type = T;
+};
+
+template <typename R, typename C, typename... Args>
+struct remove_member_pointer<R (C::*)(Args...)>
+{
+    static constexpr size_t arity = sizeof...(Args);
+};
+
+template <typename R, typename C, typename... Args>
+struct remove_member_pointer<R (C::*)(Args...) const>
+{
+    static constexpr size_t arity = sizeof...(Args);
+};
+
+// class to detect if passed functor class has operator() with 1 or 2 arguments
+template <typename T>
+struct FunctorArity
+{
+    static constexpr size_t value = remove_member_pointer<decltype(&T::operator())>::arity;
+};
+
+template <typename T,
+          typename Op>  // Misnomer, applies a functor to a value based on the functor's arity;
+__host__ __device__ inline T UnaryApply(Op op, T val, uint32 b, uint32 y, uint32 x)
+{
+    static_assert(FunctorArity<Op>::value == 1 or FunctorArity<Op>::value == 4,
+                  "UnaryApply only supports functors with 1 or 4 arguments");
+    if constexpr (FunctorArity<Op>::value == 1)
+    {
+        return op(val);
+    }
+    else if constexpr (FunctorArity<Op>::value == 4)
+    {
+        return op(val, b, y, x);
+    }
+};
 
 //////////////////////////////////////////////////////////////////////////////////////
 // Unary functors
@@ -84,6 +134,18 @@ struct DividedBy
     DividedBy(T divisor_) : divisor(divisor_) {}
     __host__ __device__ inline T operator()(T a) const { return a / divisor; }
     static constexpr char const* name = "DividedBy";
+};
+
+template <typename T, uint32 Dim>
+struct DivByExtent
+{
+    Extents2d* extents = nullptr;
+    __host__ __device__ inline T operator()(T a, uint32 b, uint32, uint32) const
+    {
+        auto ext = (*extents)(b, Dim);
+        return a / ext;
+    }
+    static constexpr char const* name = "DivByExtent";
 };
 
 template <typename T>
@@ -436,7 +498,7 @@ inline ActivationEnum get_activation_enum(const std::string& act)
         return ActivationEnum::IActivation;
 
     throw_rte_with_backtrace("Unknown activation function: " + act);
-    return ActivationEnum::IActivation; // Default case after throw
+    return ActivationEnum::IActivation;  // Default case after throw
 }
 
 inline const char* get_act_name(const ActivationEnum& act)

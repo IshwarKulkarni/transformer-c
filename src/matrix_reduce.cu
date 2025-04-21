@@ -232,12 +232,17 @@ __global__ void reduce_kernel_rolling(Matrix<T> result, const Matrix<T> A, Reduc
 {
     __shared__ T As[BLOCK_X + 1];
     uint32 i0 = threadIdx.x;  // reduction dimension index
-    uint32 i1 = blockIdx.x;   // 1st of other two dimensions in order of w, h, b
-    uint32 i2 = blockIdx.y;   // 2nd of other two dimensions in order of w, h, b
+    uint32 i1 = blockIdx.x;   // 1st of other two dimensions in order of b, h, w
+    uint32 i2 = blockIdx.y;   // 2nd of other two dimensions in order of b, h, w
 
-    As[i0] = i0 < A.shape[dim] ? A.template index<dim>(i0, i1, i2) : identity;
+    auto [b, y, x] = get_indices<dim>(0, i1, i2);
+    uint32 ext = A.extents(b, dim);
+
+    bool in = A.extents.template in_bounds<dim>(i0, i1, i2);
+
+    As[i0] = in ? A.template index<dim>(i0, i1, i2) : identity;
 #pragma unroll
-    for (uint32 otherIdx = i0 + blockDim.x; otherIdx < A.shape[dim]; otherIdx += blockDim.x)
+    for (uint32 otherIdx = i0 + blockDim.x; otherIdx < ext; otherIdx += blockDim.x)
     {
         As[i0] = reduceOp(As[i0], A.template index<dim>(otherIdx, i1, i2));
     }
@@ -245,12 +250,12 @@ __global__ void reduce_kernel_rolling(Matrix<T> result, const Matrix<T> A, Reduc
     rolling_reduce<T, BLOCK_X, ReduceOp>(As, reduceOp, i0);
     if (i0 == 0)
     {
-        result.template index<dim>(0, i1, i2) = postProcess(As[0]);
+        result.template index<dim>(0, i1, i2) = UnaryApply(postProcess, As[0], b, y, x);
     }
 }
 
 // Reduces a matrix along a dimension using a reduction operation and postPorcess'es the restult
-// This kernel is used when number of elements to reduce is < 32
+// This kernel is used when number of elements to reduce is small
 template <typename T, uint32 dim, typename ReduceOp, typename PostProcess>
 __global__ void reduce_kernel_linear(Matrix<T> result, const Matrix<T> A, uint32 l1, uint32 l2,
                                      ReduceOp reduceOp, T identity = T(0),
@@ -261,14 +266,15 @@ __global__ void reduce_kernel_linear(Matrix<T> result, const Matrix<T> A, uint32
 
     if (i1 >= l1 or i2 >= l2) return;
 
-    T res = A.template index<dim>(0, i1, i2);
+    T res = identity;
 #pragma unroll
-    for (uint32 i0 = 1; i0 < A.shape[dim]; i0++)
+    for (uint32 i0 = 0; i0 < A.shape[dim]; i0++)
     {
-        res = reduceOp(res, A.template index<dim>(i0, i1, i2));
+        if (A.extents.template in_bounds<dim>(i0, i1, i2))
+            res = reduceOp(res, A.template index<dim>(i0, i1, i2));
     }
-
-    result.template index<dim>(0, i1, i2) = postProcess(res);
+    auto [b, y, x] = get_indices<dim>(0, i1, i2);
+    result.template index<dim>(0, i1, i2) = UnaryApply(postProcess, res, b, y, x);
 }
 
 template <typename T, uint32 dim, typename ReduceOp, typename PostProcess>
@@ -286,23 +292,23 @@ void reduce(Matrix<T>& result, const Matrix<T>& A, ReduceOp op, T identity, Post
     check_reduction_sizes<T, dim>(result, A);
 
     uint32 l0 = A.shape[dim], l1, l2;  // l0 is |reduction dimension|
-    if (dim == 0)
+    if constexpr (dim == WIDTH_IDX)
     {
         l1 = A.batch();
         l2 = A.height();
     }
-    if (dim == 1)
+    if constexpr (dim == HEIGHT_IDX)
     {
         l1 = A.batch();
         l2 = A.width();
     }
-    if (dim == 2)
+    if constexpr (dim == BATCH_IDX)
     {
         l1 = A.height();
         l2 = A.width();
     }
 
-    if (l0 <= 20)
+    if (l0 <= 5)
     {
         static constexpr uint32 max_threads = 160;
         uint32 b1 = std::min(l1, max_threads);
@@ -443,17 +449,26 @@ template void reduce<FloatT, 1u, Plus<FloatT, FloatT>, Loge<FloatT>>(Matrix<Floa
                                                                      Plus<FloatT, FloatT>, FloatT,
                                                                      Loge<FloatT>);
 
-template void reduce<float, 0u, Plus<float, float>, Neg<float>>(Matrix<float>&,
-                                                                Matrix<float> const&,
-                                                                Plus<float, float>, float,
-                                                                Neg<float>);
+template void reduce<FloatT, 0u, Plus<FloatT, FloatT>, Neg<FloatT>>(Matrix<FloatT>&,
+                                                                    Matrix<FloatT> const&,
+                                                                    Plus<FloatT, FloatT>, FloatT,
+                                                                    Neg<FloatT>);
 
-template void reduce<float, 1u, Plus<float, float>, Neg<float>>(Matrix<float>&,
-                                                                Matrix<float> const&,
-                                                                Plus<float, float>, float,
-                                                                Neg<float>);
+template void reduce<FloatT, 1u, Plus<FloatT, FloatT>, Neg<FloatT>>(Matrix<FloatT>&,
+                                                                    Matrix<FloatT> const&,
+                                                                    Plus<FloatT, FloatT>, FloatT,
+                                                                    Neg<FloatT>);
 
-template void reduce<float, 2u, Plus<float, float>, Neg<float>>(Matrix<float>&,
-                                                                Matrix<float> const&,
-                                                                Plus<float, float>, float,
-                                                                Neg<float>);
+template void reduce<FloatT, 2u, Plus<FloatT, FloatT>, Neg<FloatT>>(Matrix<FloatT>&,
+                                                                    Matrix<FloatT> const&,
+                                                                    Plus<FloatT, FloatT>, FloatT,
+                                                                    Neg<FloatT>);
+
+template void reduce<FloatT, 1u, Plus<FloatT, FloatT>, Div<FloatT, FloatT>>(
+    Matrix<FloatT>&, Matrix<FloatT> const&, Plus<FloatT, FloatT>, FloatT, Div<FloatT, FloatT>);
+
+template void reduce<FloatT, 0u, Plus<FloatT, FloatT>, Div<FloatT, FloatT>>(
+    Matrix<FloatT>&, Matrix<FloatT> const&, Plus<FloatT, FloatT>, FloatT, Div<FloatT, FloatT>);
+
+template void reduce<FloatT, 2u, Plus<FloatT, FloatT>, Div<FloatT, FloatT>>(
+    Matrix<FloatT>&, Matrix<FloatT> const&, Plus<FloatT, FloatT>, FloatT, Div<FloatT, FloatT>);

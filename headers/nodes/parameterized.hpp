@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef NODES_PARAMETERIZED_HPP
 #define NODES_PARAMETERIZED_HPP
 
@@ -9,9 +15,11 @@ Various nodes that have learnable parameters, currently they are either Linear<>
 #include <cstdlib>
 #include <memory>
 #include "functors.cuh"
+#include "logger.hpp"
 #include "matrix_ops.hpp"
 #include "node.hpp"
 #include "nodes/unparameterized.hpp"
+#include "types"
 
 template <typename T = FloatT>
 struct LinearInput  // Consolidated input arguments for Linear.
@@ -74,8 +82,9 @@ struct Linear : Node<T>
     {
     }
 
-    __attribute__((always_inline)) inline void forward() override
+    __attribute__((always_inline)) inline void forward(Context* ctx) override
     {
+        (void)ctx;
         auto* input_node = this->prev_nodes[0];
         LOG_NODE_TRACE(CYAN, "Linear::forward for ", RESET, this->name,
                        " with input: ", input_node->name, input_node->shape);
@@ -102,8 +111,9 @@ struct Linear : Node<T>
         }
     }
 
-    __attribute__((always_inline)) void backward(const Matrix<T>* gradientIn) override
+    __attribute__((always_inline)) void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE(CYAN, "Linear-", get_act_name(act), "::backward for ", this->name,
                        " with gradientIn: ", gradientIn->name, gradientIn->shape);
         auto const* gradIn = &temp;
@@ -147,7 +157,7 @@ struct Linear : Node<T>
         if (dynamic_cast<Input<T>*>(input_node)) return;
 
         multiply(gradientOut, *gradientIn, W);
-        input_node->backward(&gradientOut);
+        input_node->backward(&gradientOut, ctx);
     }
 
     std::string dot_repr() override
@@ -228,19 +238,20 @@ struct LinearProxy : Node<T>
         gradientOut.set_val(T(0));
         this->set_data(in->get_data());
     }
-    void forward() override {}
-    void backward(const Matrix<T>* gradientIn) override
+    void forward(Context*) override {}
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("LinearProxy::backward for ", this->name,
                        " with gradientIn: ", gradientIn->name, gradientIn->shape,
                        "accumulating grads");
         binary_apply(gradientOut, *gradientIn, Plus<T>());
     }
-    void proxy_backward()
+    void proxy_backward(Context* ctx)
     {
         LOG_NODE_TRACE("LinearProxy::proxy_backward for ", this->name,
                        " with gradientOut: ", gradientOut.name, gradientOut.shape);
-        in->backward(&gradientOut);
+        in->backward(&gradientOut, ctx);
         gradientOut.set_val(0.f);
     }
 
@@ -256,9 +267,8 @@ struct LinearProxy : Node<T>
     static LinearProxy<T>* get_proxy(const LinearInput<T>& inp)
     {
         if (auto linear = dynamic_cast<Linear<T>*>(inp.prev))
-        {
-            return new LinearProxy<T>(linear, inp.name);
-        }
+            if (get_activation_enum(inp.act_name) == ActivationEnum::IActivation)
+                return new LinearProxy<T>(linear, inp.name);
         return nullptr;
     }
 };
@@ -300,23 +310,28 @@ struct Attention : Node<T>
           attention({&attention_weights, &V}, Identity<T>(), name + "_Softmax*V")
     {
         if (Qinp.out_size != Kinp.out_size)
-            throw_rte_with_backtrace("Q and V output sizes do not match for Attention ",
-                                     Qinp.out_size, " != ", Kinp.out_size);
+            throw_rte_with_backtrace("Q and V output sizes do not match for Attention ", this->name,
+                                     " : ", Qinp.out_size, " != ", Kinp.out_size);
+
+        if (Kinp.prev->height() != Vinp.prev->height())
+            throw_rte_with_backtrace("K and V input sequence lengths do not match for Attention ",
+                                     this->name, " : ", Kinp.prev->height(),
+                                     " != ", Vinp.prev->height());
         this->set_data(attention.get_data());
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
         LOG_NODE_TRACE("Attention::forward for ", this->name, " with input: ", Q.prev(0).name,
                        Q.prev(0).shape);
-        attention.compute();
+        attention.compute(ctx);
     }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Attention::backward for ", this->name,
                        " with gradientIn: ", gradientIn->name);
-        attention.backward(gradientIn);
+        attention.backward(gradientIn, ctx);
     }
 
     void print_desc()
@@ -342,7 +357,6 @@ struct Attention : Node<T>
         ss << "\n\t{rank=same; " << Q.id << ' ' << K.id << ' ' << V.id << " }"
            << "\n\t{rank=same; " << attention_weights.id << ' ' << attention.id << " }"
            << "\n\t" << this->id << "}\n";  // is attention
-
         return ss.str();
     }
 
@@ -373,11 +387,10 @@ struct SelfAttention : Attention<T>  // Optimizes number of gradient paths when 
                                      // same, using LinearProxy
 {
     std::unique_ptr<LinearProxy<T>> x;
-    SelfAttention(const LinearInput<T>& inp)
+    SelfAttention(const LinearInput<T>& inp, std::string name = "SelfAttention")
         : Attention<T>({inp.out_size, inp.prev, inp.useBias, inp.act_name, inp.name + "_Q"},
                        {inp.out_size, inp.prev, inp.useBias, inp.act_name, inp.name + "_K"},
-                       {inp.out_size, inp.prev, inp.useBias, inp.act_name, inp.name + "_V"},
-                       inp.name)
+                       {inp.out_size, inp.prev, inp.useBias, inp.act_name, inp.name + "_V"}, name)
     {
         LOG(BLUE, "SAttn: ", this->name, this->shape, " for input: ", inp.prev->name,
             inp.prev->shape);
@@ -394,19 +407,19 @@ struct SelfAttention : Attention<T>  // Optimizes number of gradient paths when 
                 inp.prev->shape, " does not use LinearProxy");
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
         LOG_NODE_TRACE("SelfAttention::forward for ", this->name);
-        if (x) x->in->compute();
-        Attention<T>::forward();
+        if (x) x->in->compute(ctx);
+        Attention<T>::forward(ctx);
     }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("SelfAttention::backward for ", this->name,
                        " with gradientIn: ", gradientIn->name);
-        Attention<T>::backward(gradientIn);
-        if (x) x->proxy_backward();
+        Attention<T>::backward(gradientIn, ctx);
+        if (x) x->proxy_backward(ctx);
     }
 
     virtual std::vector<NodePtr<T>> get_dependencies() const override { return {x->in}; }
@@ -438,18 +451,18 @@ struct CrossAttention : Attention<T>  // Optimizes number of gradient paths usin
                 KVinp.prev->shape, " does not use LinearProxy");
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
         LOG_NODE_TRACE("CrossAttention::forward for ", this->name);
-        if (KV_proxy) KV_proxy->in->compute();
-        Attention<T>::forward();
+        if (KV_proxy) KV_proxy->in->compute(ctx);
+        Attention<T>::forward(ctx);
     }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name);
-        Attention<T>::backward(gradientIn);
-        if (KV_proxy) KV_proxy->proxy_backward();
+        Attention<T>::backward(gradientIn, ctx);
+        if (KV_proxy) KV_proxy->proxy_backward(ctx);
     }
 
     virtual std::string dot_repr() override
@@ -460,251 +473,11 @@ struct CrossAttention : Attention<T>  // Optimizes number of gradient paths usin
         return ss.str();
     }
 
-    virtual std::vector<NodePtr<T>> get_dependencies() const
+    virtual std::vector<NodePtr<T>> get_dependencies() const override
     {
         std::vector<NodePtr<T>> deps = {this->Q.prev_nodes[0]};
         if (KV_proxy) deps.push_back(KV_proxy->in);
         return deps;
-    }
-};
-/*
-MultiHeadAttention:
-Input is a std::vector of 3 matrices, each of size `S x Ei`, where S is the sequence length.
-With `n_heads`, each head projects querys and keys to `S x q_size`
-to generate attention and, values are projected to `S x v_size` to generate each output,
-that are concatenated to `S x n_heads * v_size`, which are then linearly transformed to
-`S x out_size`.
-*/
-template <typename T = FloatT>
-struct MultiHeadAttention : Node<T>
-{
-    using Att = Attention<T>;
-    std::vector<std::unique_ptr<Att>> heads;
-    std::unique_ptr<Concat0<T>> concat;
-    std::unique_ptr<Linear<T>> linear;
-
-    MultiHeadAttention(uint32 num_heads, LinearInput<T> Qinp, LinearInput<T> Kinp,
-                       LinearInput<T> Vinp, LinearInput<T> Oinp, std::string name = "MHA")
-        : Node<T>({Qinp.prev->batch(), Qinp.prev->height(), Oinp.out_size},
-                  {Qinp.prev, Kinp.prev, Vinp.prev}, name, 3)
-    {
-        LOG(BLUE, "MultiHeadAttention: ", this->name, " with input Qinp: ", Qinp.prev->name,
-            Qinp.prev->shape, " Kinp: ", Kinp.prev->name, Kinp.prev->shape,
-            " Vinp: ", Vinp.prev->name, Vinp.prev->shape, " Oinp: ", Oinp.prev->name,
-            Oinp.prev->shape);
-        if (num_heads == 1)
-        {
-            throw_rte_with_backtrace("num_heads 1 , use Attention instead");
-        }
-
-        NodePtrVec<T> head_ptrs;
-        for (uint32 i = 0; i < num_heads; ++i)
-        {
-            auto att = new Att(Qinp, Kinp, Vinp, name + "_Head_" + std::to_string(i));
-            heads.emplace_back(att);
-            head_ptrs.push_back(att);
-        }
-        concat = std::make_unique<Concat0<T>>(head_ptrs, name + "_Concat");
-        Oinp.prev = concat.get();
-        Oinp.name = name + "_Linear";
-        linear = std::make_unique<Linear<T>>(Oinp);
-        this->set_data(linear->get_data());
-    }
-
-    void forward() override { linear->compute(); }
-
-    void backward(const Matrix<T>* gradientIn) override
-    {
-        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
-        linear->backward(gradientIn);
-    }
-
-    void print_desc()
-    {
-        LOG(BLUE, "MultiHeadAttention with ", heads.size(),
-            " heads; Linear projection matrix shape: ", linear->W().shape,
-            " to output: ", this->shape, " each attention looks like: ");
-        heads[0]->print_desc();
-    }
-
-    virtual std::string dot_repr() override
-    {
-        std::stringstream ss;
-
-        ss << " [label=\"" << this->name << '\n'
-           << linear->W.shape << ':' << linear->W.numels()
-           << " \", shape=box3d,  style=filled, fillcolor=azure ]\n"
-           << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "\"\n"
-           << '\t' << concat->id << '\n'
-           << '\t' << this->id << "\n}\n";
-        return ss.str();
-    }
-
-    void save_weights(std::ostream& os) const override
-    {
-        uint32 num_heads = heads.size();
-        os.write(reinterpret_cast<const char*>(&num_heads), sizeof(num_heads));
-        for (auto& head : heads) head->save_weights(os);
-        linear->save_weights(os);
-    }
-
-    void load_weights(std::istream& is) override
-    {
-        uint32 num_heads = 0;
-        is.read(reinterpret_cast<char*>(&num_heads), sizeof(num_heads));
-        if (num_heads != heads.size())
-        {
-            if (num_heads != 1)
-                throw_rte_with_backtrace("Number of heads mismatch for MultiHeadAttention ",
-                                         num_heads, " != ", heads.size());
-            auto pos = is.tellg();
-            for (uint32 i = 0; i < num_heads; ++i)  // replicate the head
-            {
-                is.seekg(pos);
-                heads[i]->load_weights(is);
-            }
-        }
-        else
-        {
-            for (auto& head : heads) head->load_weights(is);
-        }
-        linear->load_weights(is);
-    }
-
-    virtual std::vector<NodePtr<T>> get_dependencies() const override
-    {
-        return heads[0]->get_dependencies();
-    }
-};
-
-template <typename T = FloatT>
-struct MultiHeadSelfAttention : MultiHeadAttention<T>
-{
-    std::unique_ptr<LinearProxy<T>> x;
-    MultiHeadSelfAttention(uint32 num_heads, LinearInput<T> Linp, LinearInput<T> Oinp,
-                           std::string name = "MHSA")
-        : MultiHeadAttention<T>(num_heads, Linp, Linp, Linp, Oinp, name),
-          x(Linp.prev, name + "_LinearProxy")
-    {
-        LOG(BLUE, "MultiHeadSelfAttention: ", this->name, " with input Linp: ", Linp.prev->name,
-            Linp.prev->shape, " Oinp: ", Oinp.prev->name, Oinp.prev->shape);
-
-        if (auto proxy = LinearProxy<T>::get_proxy(Linp))
-        {
-            x = std::unique_ptr<LinearProxy<T>>(proxy);
-            for (uint32 i = 0; i < num_heads; ++i)
-            {
-                this->heads[i]->Q.prev_nodes = {x.get()};
-                this->heads[i]->K.prev_nodes = {x.get()};
-                this->heads[i]->V.prev_nodes = {x.get()};
-            }
-        }
-    }
-    void backward(const Matrix<T>* gradientIn) override
-    {
-        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
-        MultiHeadAttention<T>::backward(gradientIn);
-        if (x) x->proxy_backward();
-    }
-};
-
-template <typename T = FloatT>
-struct MultiHeadCrossAttention : MultiHeadAttention<T>
-{
-    std::unique_ptr<LinearProxy<T>> x;
-    MultiHeadCrossAttention(uint32 num_heads, LinearInput<T> Qinp, LinearInput<T> KVinp,
-                            LinearInput<T> Oinp, std::string name = "MHXA")
-        : MultiHeadAttention<T>(num_heads, Qinp, KVinp, KVinp, Oinp, name),
-          x(Qinp.prev, name + "_LinearProxy")
-    {
-        if (auto proxy = LinearProxy<T>::get_proxy(KVinp))
-        {
-            x = std::unique_ptr<LinearProxy<T>>(proxy);
-            for (uint32 i = 0; i < num_heads; ++i)
-            {
-                this->heads[i]->K.prev_nodes = {x.get()};
-                this->heads[i]->V.prev_nodes = {x.get()};
-            }
-        }
-    }
-};
-
-template <typename T = FloatT>
-struct FeedForward : Node<T>
-{
-    std::unique_ptr<Linear<T>> l_in;
-    std::unique_ptr<Dropout<T>> dropout;
-    std::unique_ptr<Linear<T>> l_out;
-
-    FeedForward(LinearInput<T> l1i, LinearInput<T> l2i, FloatT dropout_ratio,
-                const std::string& name = "MLP")
-        : Node<T>(l1i.prev->shape.set(WIDTH_IDX, l2i.out_size), {l1i.prev}, name, 1)
-    {
-        if (l2i.prev != nullptr)
-        {
-            throw_rte_with_backtrace(
-                "MLP: Linear2 should not have a previous node (it's assigned to as yet "
-                "non-existent Linear1)");
-        }
-        l_in = std::make_unique<Linear<T>>(l1i);
-        dropout = std::make_unique<Dropout<T>>(dropout_ratio, l_in.get(), name + "_Dropout");
-        l2i.prev = dropout.get();
-        l_out = std::make_unique<Linear<T>>(l2i);
-
-        this->prev_nodes = {l_out.get()};
-    }
-
-    FeedForward(uint32 l1_size, uint32 l2_size, const NodePtr<T> prev, FloatT dropout_ratio,
-                const std::string& name = "MLP")
-        : FeedForward({l1_size, prev, false, name + "_Lin1"},
-                      {l2_size, nullptr, true, name + "_Lin2"}, dropout_ratio, name)
-    {
-    }
-
-    void forward() override { this->copy(l_out->begin()); }
-
-    void backward(const Matrix<T>* gradientIn) override
-    {
-        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
-        l_out->backward(gradientIn);
-    }
-
-    virtual std::string dot_repr() override
-    {
-        uint32 learnable_count = l_in->param_count() + l_out->param_count();
-        std::stringstream ss;
-        ss << " [label=\"" << this->name
-           << "\", shape=doubleoctagon, style=filled, fillcolor=\"#46bfe8\"]\n"
-           << "subgraph cluster_" << this->id << "   {\nlabel = \"" << this->name << "\n["
-           << learnable_count << "]\"\n"
-           << '\t' << l_in->id << '\n'
-           << '\t' << dropout->id << '\n'
-           << '\t' << l_out->id << '\n'
-           << '\t' << this->id << "\n}\n";
-        return ss.str();
-    }
-
-    void debug_print()
-    {
-        LOG("Debug print for ", this->name);
-        l_in->debug_print();
-        dropout->debug_print();
-        l_out->debug_print();
-    }
-
-    void save_weights(std::ostream& os) const override
-    {
-        l_in->save_weights(os);
-        l_out->save_weights(os);
-    }
-
-    void load_weights(std::istream& is) override
-    {
-        l_in->load_weights(is);
-        l_out->load_weights(is);
     }
 };
 

@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef NODE_HPP
 #define NODE_HPP
 
@@ -23,6 +29,14 @@ using NodePtrVec = std::vector<NodePtr<T>>;
 
 template <typename T = FloatT>  // should be NodePtrInitList
 using NodePtrList = std::initializer_list<const NodePtr<T>>;
+
+struct Context
+{
+    uint32 depth = 0;
+    uint32 epoch = 0;
+    uint32 forward_pass_count = 0;
+    uint32 backward_pass_count = 0;
+};
 
 struct NodeBase
 {
@@ -57,20 +71,21 @@ struct Node : public Matrix<T>, NodeBase
     }
 
     // call compute on all previous nodes to populate their outputs, then call forward
-    virtual void compute(uint32 depth = 0)
+    virtual void compute(Context* ctx)
     {
-        LOG_NODE_TRACE("Computing inputs for `", this->name, "` : ", depth);
-        for (auto& p : prev_nodes) p->compute(depth + 1);
-        this->forward();
+        LOG_NODE_TRACE("Computing inputs for `", this->name, "` : ", ctx->depth);
+        for (auto& p : prev_nodes) p->compute(ctx);
+        this->forward(ctx);
     }
 
-    virtual void forward() = 0;  // Assumes that all `prev_nodes` are completed forward pass.
-    virtual void backward(const Matrix<T>* e) = 0;
+    virtual void forward(
+        Context* ctx) = 0;  // Assumes that all `prev_nodes` are completed forward pass.
+    virtual void backward(const Matrix<T>* e, Context* ctx) = 0;
     virtual void update_weights(FloatT lr)
     {
         for (auto& n : prev_nodes) n->update_weights(lr);
         for (auto& p : params) p->update(lr);
-        if (this->get_terminal_node()) this->get_terminal_node()->update_weights(lr);
+        if (auto terminal = this->get_terminal_node()) terminal->update_weights(lr);
     }
 
     std::vector<Parameter<T, T>*> params;

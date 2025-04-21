@@ -26,13 +26,16 @@ __global__ void tiled_mmadd_shmem(Matrix<T> result, const Matrix<T> A, const Mat
     uint32 b_b = B.batch() > 1 ? b : 0;
 
     uint32 k_max = iDivUp(A.width(), TILE_SZ) * TILE_SZ;
+
 #pragma unroll
     for (uint32 k = 0; k < k_max; k += TILE_SZ)
     {
         auto x_a = k + threadIdx.y;
         auto y_b = k + threadIdx.x;
-        auto aa = (x_a < A.width() && x < A.height()) ? A(b_a, x, x_a) : T(0);
-        auto bb = (y_b < B.height() && y < B.width()) ? B(b_b, y_b, y) : T(0);
+        // auto aa = (x_a < A.width() && x < A.height()) ? A(b_a, x, x_a) : T(0);
+        // auto bb = (y_b < B.height() && y < B.width()) ? B(b_b, y_b, y) : T(0);
+        auto aa = A.extents.in(b_a, x, x_a) ? A(b_a, x, x_a) : T(0);
+        auto bb = B.extents.in(b_b, y_b, y) ? B(b_b, y_b, y) : T(0);
 
         As[threadIdx.x][threadIdx.y] = aa;
         Bs[threadIdx.x][threadIdx.y] = bb;

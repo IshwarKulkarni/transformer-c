@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include <sys/types.h>
 #include "matrix.cuh"
 #include "matrix_ops.hpp"
@@ -206,8 +212,8 @@ void gen_heat_map(Matrix<uint32>& color_image, const Matrix<float32>& mat_in,
     dim3 blockDim(std::min<uint32>(mat_in.width(), 16), std::min<uint32>(mat_in.height(), 16), 1);
     dim3 gridDim = color_image.grid(blockDim);
 
-    LOG("Launching heat_map_kernel with gridDim: ", gridDim, " and blockDim: ", blockDim,
-        "color_image shape: ", color_image.shape);
+    LOG_MATRIX_OPS("Launching heat_map_kernel with gridDim: ", gridDim, " and blockDim: ", blockDim,
+                   "color_image shape: ", color_image.shape);
     auto [texObj, data] = create_texture_object(mat_in, 0);
     heat_map_kernel<<<gridDim, blockDim>>>(color_image, texObj, -.8, 2, interpolaters[name]);
 

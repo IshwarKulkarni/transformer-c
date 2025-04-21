@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef NODES_ELEM_HPP
 #define NODES_ELEM_HPP
 
@@ -23,13 +29,18 @@ struct Sum : Node<T>
         LOG(BLUE, this->name, "\t", prevs[0]->shape, " -> ", this->shape);
     }
 
-    void forward() override { binary_apply(*this, this->prev(0), this->prev(1), Plus<T>()); }
-
-    void backward(const Matrix<T>* gradientIn) override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
+        binary_apply(*this, this->prev(0), this->prev(1), Plus<T>());
+    }
+
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
+    {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
-        this->prev_nodes[0]->backward(gradientIn);
-        this->prev_nodes[1]->backward(gradientIn);
+        this->prev_nodes[0]->backward(gradientIn, ctx);
+        this->prev_nodes[1]->backward(gradientIn, ctx);
     }
 
     virtual std::string dot_repr() override
@@ -63,12 +74,17 @@ struct Subtract : Node<T>
                                      "in more than 1 dimension in ", this->name);
     }
 
-    void forward() override { binary_apply(*this, this->prev(0), this->prev(1), Sub<T>()); }
-
-    void backward(const Matrix<T>* gradIn) override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
+        binary_apply(*this, this->prev(0), this->prev(1), Sub<T>());
+    }
+
+    void backward(const Matrix<T>* gradIn, Context* ctx) override
+    {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradIn->shape);
-        A->backward(gradIn);
+        A->backward(gradIn, ctx);
 
         // We could have broadcasted B to A, so we need to sum the gradient in broadcasted
         // dimensions, and negate the result
@@ -80,7 +96,7 @@ struct Subtract : Node<T>
             reduce<T, 2>(gradientB, *gradIn, Plus<T>(), T(0), Neg<T>());
         else
             unary_apply(gradientB, *gradIn, Neg<T>());  // no broadcast
-        B->backward(&gradientB);
+        B->backward(&gradientB, ctx);
     }
     virtual std::string dot_repr() override
     {
@@ -116,13 +132,18 @@ struct Division : Node<T>
                                      denom->shape, "in more than 1 dimension in ", this->name);
     }
 
-    void forward() override { binary_apply(*this, *num, *denom, Div<T>()); }
-
-    void backward(const Matrix<T>* gradIn) override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
+        binary_apply(*this, *num, *denom, Div<T>());
+    }
+
+    void backward(const Matrix<T>* gradIn, Context* ctx) override
+    {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradIn->shape);
         binary_apply(gradientOut, *gradIn, this->prev(1), Div<T>());
-        num->backward(&gradientOut);
+        num->backward(&gradientOut, ctx);
 
         // reusing gradientOut
         ternary_apply(gradientOut, *gradIn, this->prev(0), this->prev(1), DivDiff<T>());
@@ -134,7 +155,7 @@ struct Division : Node<T>
         else if (gradientOutDenom.shape[2] != gradIn->shape[2])
             reduce(gradientOutDenom, gradientOut);
 
-        denom->backward(&gradientOutDenom);
+        denom->backward(&gradientOutDenom, ctx);
     }
 
     virtual std::string dot_repr() override
@@ -155,13 +176,18 @@ struct Power : Node<T>
     {
     }
 
-    void forward() override { unary_apply(*this, this->prev(0), Pow<T>(power)); }
-
-    void backward(const Matrix<T>* gradientIn) override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
+        unary_apply(*this, this->prev(0), Pow<T>(power));
+    }
+
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
+    {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn shape: ", gradientIn->shape);
         binary_apply(gradientOut, this->prev(0), *gradientIn, PowDiff<T>(power));
-        this->prev_nodes[0]->backward(&gradientOut);
+        this->prev_nodes[0]->backward(&gradientOut, ctx);
     }
 
     virtual std::string dot_repr() override

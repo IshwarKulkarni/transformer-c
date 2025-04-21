@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef MATRIX_OPS_CPU_HPP
 #define MATRIX_OPS_CPU_HPP
 
@@ -104,6 +110,7 @@ void reduceCPU(Matrix<T>& result, const Matrix<T>& A, const Reduction& op = Redu
             T reduced = identity;
             for (uint32 i0 = 0; i0 < l0; i0++)
             {
+                if (!A.extents.template in_bounds<dim>(i0, i1, i2)) continue;
                 reduced = op(reduced, A.template index<dim>(i0, i1, i2));
             }
             result.template index<dim>(0, i1, i2) = pProcess(reduced);
@@ -200,4 +207,4 @@ float64 sumCPU(const Matrix<T>& A)
     return sum;
 }
 
-#endif // MATRIX_OPS_CPU_HPP
+#endif  // MATRIX_OPS_CPU_HPP

@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef NODES_UNPARAMETERIZED_HPP
 #define NODES_UNPARAMETERIZED_HPP
 
@@ -43,21 +49,23 @@ struct SoftmaxDim1 : Node<T>
     }
 
     // computes softmax along height of x => each output column sums to 1
-    void forward() override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
         transpose<FloatT, Exp<T>>(exp, this->prev(0), ExpOp);
         reduce(sumExps, exp);
         binary_apply(softmax, exp, sumExps, Div<T>());
         transpose(*this, softmax);
     }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape);
         transpose(gradientInT, *gradientIn);
         softmax_gradient(gradientOut, softmax, gradientInT);
-        this->prev_nodes[0]->backward(&gradientOut);
+        this->prev_nodes[0]->backward(&gradientOut, ctx);
     }
 
     virtual std::string dot_repr() override
@@ -89,20 +97,22 @@ struct SoftmaxDim0 : Node<T>
         LOG(BLUE, R_JUST(this->name, 18), prev->shape, " reduced on WIDTH [", prev->width(), "]");
     }
 
-    void forward() override
+    void forward(Context* ctx) override
     {
+        (void)ctx;
         unary_apply(exp, this->prev(0), expOp);
         reduce(sumExps, exp);
         binary_apply(*this, exp, sumExps, Div<T>());
     }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape);
         softmax_gradient(gradientOut, *this, *gradientIn);
         transpose(gradientOutT, gradientOut);
-        this->prev_nodes[0]->backward(&gradientOutT);
+        this->prev_nodes[0]->backward(&gradientOutT, ctx);
     }
 
     virtual std::string dot_repr() override
@@ -130,17 +140,17 @@ struct Product : Node<T>
                                      this->prev(0).shape, " and ", this->prev(1).shape);
     }
 
-    void forward() override { mmadd(*this, this->prev(0), this->prev(1), {}, pProcess); }
+    void forward(Context*) override { mmadd(*this, this->prev(0), this->prev(1), {}, pProcess); }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         transpose(aT, this->prev(0), Neg<T>());
         mmTadd(a_grad_in, *gradientIn, this->prev(1), {}, pProcess);
         mmadd(b_grad_in, aT, *gradientIn, {}, pProcessN);
-        this->prev_nodes[0]->backward(&a_grad_in);
-        this->prev_nodes[1]->backward(&b_grad_in);
+        this->prev_nodes[0]->backward(&a_grad_in, ctx);
+        this->prev_nodes[1]->backward(&b_grad_in, ctx);
     }
 
     virtual std::string dot_repr() override
@@ -178,23 +188,51 @@ struct ProductT : Node<T>
                                      this->prev(1).name, this->prev(1).shape);
     }
 
-    void forward() override { mmTadd(*this, this->prev(0), this->prev(1), {}, pProcess); }
+    void forward(Context*) override { mmTadd(*this, this->prev(0), this->prev(1), {}, pProcess); }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape,
                        " and prev1: ", this->prev(1).name, this->prev(1).shape);
         mmadd(a_grad_inN, *gradientIn, this->prev(1), {}, pProcess);
         transpose(gradInT, *gradientIn, Neg<T>());
         mmadd(b_grad_in, gradInT, this->prev(0), {}, pProcessN);
-        this->prev_nodes[0]->backward(&a_grad_inN);
-        this->prev_nodes[1]->backward(&b_grad_in);
+        this->prev_nodes[0]->backward(&a_grad_inN, ctx);
+        this->prev_nodes[1]->backward(&b_grad_in, ctx);
     }
 
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name + "\", style=filled, fillcolor=azure, shape=rect] ";
+    }
+};
+
+template <typename T = FloatT>
+struct Add : Node<T>
+{
+    Add(NodePtrVec<T> prevs, const std::string& name) : Node<T>(prevs[0]->shape, prevs, name, 2)
+    {
+        if (prevs[0]->shape != prevs[1]->shape)
+            throw_rte_with_backtrace("Matrix dimensions do not match for Plus between ",
+                                     prevs[0]->name, prevs[0]->shape, " and ", prevs[1]->name,
+                                     prevs[1]->shape);
+        LOG(BLUE, this->name, "\t", prevs[0]->shape, " -> ", this->shape);
+    }
+
+    void forward(Context*) override
+    {
+        binary_apply(*this, this->prev(0), this->prev(1), Plus<T>());
+    }
+
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
+    {
+        (void)ctx;
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
+        this->prev_nodes[0]->backward(gradientIn, ctx);
+        this->prev_nodes[1]->backward(gradientIn, ctx);
     }
 };
 
@@ -212,14 +250,15 @@ struct Transpose : Node<T>
         LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape);
     }
 
-    void forward() override { transpose(*this, this->prev(0)); }
+    void forward(Context* ctx) override { transpose(*this, this->prev(0)); }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with  gradientIn: ", gradientIn->name,
                        gradientIn->shape);
         transpose(gradientOut, *gradientIn);
-        this->prev_nodes[0]->backward(&gradientOut);
+        this->prev_nodes[0]->backward(&gradientOut, ctx);
     }
 };
 
@@ -227,7 +266,7 @@ template <typename T = FloatT, uint32 Dim = 0>
 struct Mean : Node<T>
 {
     Mean(NodePtr<T> prev, const std::string& name = "Average")
-        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1), divOp(DividedBy<T>(prev->shape[Dim]))
+        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1)
     {
         if (prev->shape[Dim] == 1)
             throw_rte_with_backtrace("Cannot reduce along dimension ", Dim, " for ", prev->name,
@@ -235,23 +274,33 @@ struct Mean : Node<T>
         LOG(BLUE, "Mean ", this->name, prev->shape, " -> ", this->shape);
     }
 
-    void forward() override { reduce<T, Dim>(*this, this->prev(0), Plus<T>(), T(0), divOp); }
+    void forward(Context*) override { reduce_mean_ext(*this, this->prev(0)); }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape);
         unary_apply(this->gradientOut, *gradientIn, divOp);
-        this->prev_nodes[0]->backward(&this->gradientOut);
+        this->prev_nodes[0]->backward(&this->gradientOut, ctx);
     }
     Matrix<T> gradientOut = Matrix<T>(this->shape, this->name + "_gradientOut");
-    DividedBy<T> divOp;
+    DivByExtent<T, Dim> divOp;
 
     virtual std::string dot_repr() override
     {
         return " [label=\"" + this->name +
                "\" shape=rect  xlabel=<<font color=\"green\" POINT-SIZE=\"10.0\">" + "Mean" +
                "</font>>]\n";
+    }
+};
+
+// Mean of all non-NaN values in the matrix
+template <typename T, uint32 Dim = 0>
+struct NanMean : Node<T>
+{
+    NanMean(NodePtr<T> prev, const std::string& name = "NanMean")
+        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1)
+    {
     }
 };
 
@@ -281,18 +330,19 @@ struct InputProxy : Node<T>
         gradientOut.set_val(T(0));
         this->set_data(in->get_data());
     }
-    void forward() override {}
-    void backward(const Matrix<T>* gradientIn) override
+    void forward(Context*) override {}
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape);
         binary_apply(gradientOut, *gradientIn, Plus<T>());
     }
-    void proxy_backward()
+    void proxy_backward(Context* ctx)
     {
         LOG_NODE_TRACE("Proxy backward for ", this->name, " with gradientOut: ", gradientOut.name,
                        gradientOut.shape);
-        in->backward(&gradientOut);
+        in->backward(&gradientOut, ctx);
         gradientOut.set_val(0.f);
     }
 
@@ -312,31 +362,32 @@ template <typename T = FloatT, uint32 Dim = WIDTH_IDX>
 struct Normalize : public Node<T>
 {
     NodePtr<T> in;
-    InputProxy<T> x = InputProxy<T>(in, "NormInput");
-    Mean<T> mu = Mean<T>(&x, "mu");
-    Power<T> mu_sq = Power<T>(&mu, 2, "mu^2");
+    InputProxy<T> x = InputProxy<T>(in, "nrm-proxy");
+    Mean<T> mu = Mean<T>(&x, "nrm-mu");
+    Power<T> mu_sq = Power<T>(&mu, 2, "nrm-mu^2");
 
-    Power<T> sq = Power<T>(&x, 2, "x^2");
-    Mean<T> sq_mu = Mean<T>(&sq, "x^2_mu");
+    Power<T> sq = Power<T>(&x, 2, "nrm-x^2");
+    Mean<T> sq_mu = Mean<T>(&sq, "nrm-x^2_mu");
 
-    Subtract<T> var = Subtract<T>({&sq_mu, &mu_sq}, "var");
-    Power<T> std = Power<T>(&var, 0.5, "std");
-    Subtract<T> norm_num_sub = Subtract<T>(NodePtrVec<T>{&x, &mu}, "x-mu");
-    Division<T> norm = Division<T>({&norm_num_sub, &std}, "Div");
+    Subtract<T> var = Subtract<T>({&sq_mu, &mu_sq}, "nrm-var");
+    Power<T> std = Power<T>(&var, 0.5, "nrm-std");
+    Subtract<T> norm_num_sub = Subtract<T>(NodePtrVec<T>{&x, &mu}, "nrm-x-mu");
+    Division<T> norm = Division<T>({&norm_num_sub, &std}, "nrm-Div");
 
-    Normalize(NodePtr<T> prev, const std::string& name = "LayerNormSplit")
+    Normalize(NodePtr<T> prev, const std::string& name = "Normalize")
         : Node<T>(prev->shape, {prev}, name, 1), in(prev)
     {
         LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape);
         this->set_data(norm.get_data());
     }
 
-    void forward() override { norm.compute(); }
+    void forward(Context* ctx) override { norm.compute(ctx); }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
-        norm.backward(gradientIn);
-        this->prev_nodes[0]->backward(&x.gradientOut);
+        (void)ctx;
+        norm.backward(gradientIn, ctx);
+        this->prev_nodes[0]->backward(&x.gradientOut, ctx);
         x.gradientOut.set_val(T(0));
     }
 
@@ -359,6 +410,9 @@ struct Normalize : public Node<T>
     }
 };
 
+typedef Normalize<FloatT, WIDTH_IDX> LayerNorm;
+typedef Normalize<FloatT, BATCH_IDX> BatchNorm;
+
 template <typename T = FloatT>
 struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce a wider matrix
 {
@@ -378,19 +432,22 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
             grads.push_back(shaped_like(*p));
             prevs_as_mats.push_back((Matrix<T>*)p);
         }
+
         grad_ptrs.resize(prevs.size());
+
         for (uint32 i = 0; i < grads.size(); ++i) grad_ptrs[i] = &grads[i];
     }
 
-    void forward() override { concat(*this, prevs_as_mats); }
+    void forward(Context*) override { concat(*this, prevs_as_mats); }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
+        (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape);
         split(grad_ptrs, *gradientIn);
         for (uint32 i = 0; i < this->prev_nodes.size(); ++i)
-            this->prev_nodes[i]->backward(&grads[i]);
+            this->prev_nodes[i]->backward(&grads[i], ctx);
     }
 
     void print_desc()
@@ -408,9 +465,12 @@ struct Input : Node<T>
     {
     }
     Input(Shape shape, const std::string& name) : Node<T>(shape, {}, name, 0) {}
-    void forward() override {}
+    void forward(Context*) override {}
 
-    void backward(const Matrix<T>*) override { LOG_NODE_TRACE("Backward for ", this->name); }
+    void backward(const Matrix<T>*, Context*) override
+    {
+        LOG_NODE_TRACE("Backward for ", this->name);
+    }
 
     // TODO this should move to NodeBase
     virtual std::string dot_repr() override
@@ -437,7 +497,7 @@ struct Dropout : Node<T>
             throw_rte_with_backtrace("Dropout probability should be in the range [0, 1): ", p);
     }
 
-    void forward() override
+    void forward(Context*) override
     {
         if (drop_probability > 0 and this->is_training)
             dropout(*this, *prev, mask, drop_probability);
@@ -445,18 +505,18 @@ struct Dropout : Node<T>
             this->copy(prev->begin());
     }
 
-    void backward(const Matrix<T>* gradientIn) override
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape);
         if (drop_probability > 0 and this->is_training)
         {
             dropout(gradientOut, *gradientIn, mask, -1);
-            prev->backward(&gradientOut);
+            prev->backward(&gradientOut, ctx);
         }
         else
         {
-            prev->backward(gradientIn);
+            prev->backward(gradientIn, ctx);
         }
     }
 
@@ -472,6 +532,75 @@ struct Dropout : Node<T>
     {
         LOG(BLUE, "Dropout with probability: ", drop_probability, " for ", this->name);
         if (drop_probability > 0) LOG(" mask: ", mask);
+    }
+};
+
+template <typename T>
+struct SinePositionalEmbedding : Node<T>
+{
+    Matrix<T> pos_emb;
+    const float64 base = 1000;
+    SinePositionalEmbedding(NodePtr<T> prev, const std::string& name = "SinePositionalEmbedding")
+        : Node<T>(prev->shape, {prev}, name, 1), pos_emb(prev->shape.set(BATCH_IDX, 1))
+    {
+        LOG(BLUE, "SinePositionalEmbedding with shape: ", this->shape);
+        for (uint32 y = 0; y < this->height(); ++y)
+        {
+            for (uint32 x = 0; x < this->width(); ++x)
+            {
+                if (x % 2 == 0)
+                {
+                    FloatT div = std::pow(base, x / this->width());
+                    pos_emb(y, x) = std::sin(y / div);
+                }
+                else
+                {
+                    FloatT div = std::pow(base, (x - 1) / this->width());
+                    pos_emb(y, x) = std::cos(y / div);
+                }
+            }
+        }
+    }
+    void forward(Context*) override { binary_apply(*this, pos_emb, this->prev(0), Plus<T>()); }
+
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
+    {
+        (void)ctx;
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
+        this->prev_nodes[0]->backward(gradientIn, ctx);
+    }
+};
+
+template <typename T>
+struct RotaryPositionEmbedding : Node<T>
+{
+    Matrix<T> sin_pos_emb;
+    Matrix<T> cos_pos_emb;
+    const uint32 base = 10000;
+
+    RotaryPositionEmbedding(NodePtr<T> prev, const std::string& name = "RotaryPositionEmbedding")
+        : Node<T>(prev->shape, {prev}, name, 1),
+          sin_pos_emb(prev->shape.set(BATCH_IDX, 1)),
+          cos_pos_emb(prev->shape.set(BATCH_IDX, 1)),
+          base(base)
+    {
+        LOG(BLUE, "RotaryPositionEmbedding with shape: ", this->shape);
+        for (uint32 y = 0; y < this->height(); ++y)
+        {
+            for (uint32 x = 0; x < this->width(); ++x)
+            {
+                FloatT theta = 1.f / std::pow(base, 2 * x / this->width());
+                sin_pos_emb(y, x) = std::sin(theta * y);
+                cos_pos_emb(y, x) = std::cos(theta * y);
+            }
+        }
+    }
+
+    void forward(Context* ctx) override
+    {
+        (void)ctx;
+        throw_rte_with_backtrace("RotaryPositionEmbedding is not implemented");
     }
 };
 
