@@ -72,6 +72,8 @@ struct SoftmaxDim1 : Node<T>
     {
         return " [label=\"" + this->name + "\", style=filled, fillcolor=LightSkyBlue, shape=rect] ";
     }
+
+    virtual std::string type() const override { return "SoftmaxDim1"; }
 };
 
 // computes softmax along Width of x => each output row sums to 1, equivalent to
@@ -94,7 +96,6 @@ struct SoftmaxDim0 : Node<T>
             throw_rte_with_backtrace("Dim[0] of previous node, ", prev->name, prev->shape,
                                      " is 1 softmaxDim0 is invalid");
         }
-        LOG(BLUE, R_JUST(this->name, 18), prev->shape, " reduced on WIDTH [", prev->width(), "]");
     }
 
     void forward(Context* ctx) override
@@ -119,6 +120,8 @@ struct SoftmaxDim0 : Node<T>
     {
         return " [label=\"" + this->name + "\", style=filled, fillcolor=LightSkyBlue, shape=rect] ";
     }
+
+    virtual std::string type() const override { return "SoftmaxDim0"; }
 };
 
 template <typename T, typename PostProcess>
@@ -137,7 +140,7 @@ struct Product : Node<T>
     {
         if (this->prev(0).width() != this->prev(1).height())
             throw_rte_with_backtrace("Matrix dimensions do not match for product between ",
-                                     this->prev(0).shape, " and ", this->prev(1).shape);
+                                     this->prev(0).shape, " &&", this->prev(1).shape);
     }
 
     void forward(Context*) override { mmadd(*this, this->prev(0), this->prev(1), {}, pProcess); }
@@ -145,7 +148,7 @@ struct Product : Node<T>
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
+                       gradientIn->shape, " &&prev0: ", this->prev(0).name, this->prev(0).shape);
         transpose(aT, this->prev(0), Neg<T>());
         mmTadd(a_grad_in, *gradientIn, this->prev(1), {}, pProcess);
         mmadd(b_grad_in, aT, *gradientIn, {}, pProcessN);
@@ -157,10 +160,12 @@ struct Product : Node<T>
     {
         return " [label=\"" + this->name + "\", style=filled, fillcolor=azure, shape=rect] ";
     }
+
+    virtual std::string type() const override { return "Product"; }
 };
 
 /* Implements a multiplication between
-    matrix and transpose of another: output = A * B^T
+    matrix &&transpose of another: output = A * B^T
 
  Here's an equivalent python code:
  def Product(a, b):
@@ -184,7 +189,7 @@ struct ProductT : Node<T>
     {
         if (this->prev(0).width() != this->prev(1).width())
             throw_rte_with_backtrace("Matrix dimensions do not match for ProductT between ",
-                                     this->prev(0).name, this->prev(0).shape, " and ",
+                                     this->prev(0).name, this->prev(0).shape, " &&",
                                      this->prev(1).name, this->prev(1).shape);
     }
 
@@ -194,8 +199,8 @@ struct ProductT : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape,
-                       " and prev1: ", this->prev(1).name, this->prev(1).shape);
+                       gradientIn->shape, " &&prev0: ", this->prev(0).name, this->prev(0).shape,
+                       " &&prev1: ", this->prev(1).name, this->prev(1).shape);
         mmadd(a_grad_inN, *gradientIn, this->prev(1), {}, pProcess);
         transpose(gradInT, *gradientIn, Neg<T>());
         mmadd(b_grad_in, gradInT, this->prev(0), {}, pProcessN);
@@ -207,6 +212,8 @@ struct ProductT : Node<T>
     {
         return " [label=\"" + this->name + "\", style=filled, fillcolor=azure, shape=rect] ";
     }
+
+    virtual std::string type() const override { return "ProductT"; }
 };
 
 template <typename T = FloatT>
@@ -216,9 +223,9 @@ struct Add : Node<T>
     {
         if (prevs[0]->shape != prevs[1]->shape)
             throw_rte_with_backtrace("Matrix dimensions do not match for Plus between ",
-                                     prevs[0]->name, prevs[0]->shape, " and ", prevs[1]->name,
+                                     prevs[0]->name, prevs[0]->shape, " &&", prevs[1]->name,
                                      prevs[1]->shape);
-        LOG(BLUE, this->name, "\t", prevs[0]->shape, " -> ", this->shape);
+        LOG_NODE_NAME(this->shape);
     }
 
     void forward(Context*) override
@@ -234,6 +241,15 @@ struct Add : Node<T>
         this->prev_nodes[0]->backward(gradientIn, ctx);
         this->prev_nodes[1]->backward(gradientIn, ctx);
     }
+
+    virtual std::string type() const override { return "Add"; }
+
+    virtual std::string dot_repr() override
+    {
+        std::string xlabel = " xlabel=<<font color=\"green\" POINT-SIZE=\"10.0\"> Add </font>>";
+        return " [label=\"" + this->name + "\", shape=rect, style=filled, fillcolor=lightblue" +
+               xlabel + "]";
+    }
 };
 
 template <typename T = FloatT>
@@ -245,7 +261,7 @@ struct Transpose : Node<T>
     {
         if (this->prev(0).shape.t() != this->shape)
             throw_rte_with_backtrace("Matrix dimensions do not match for Transpose between ",
-                                     prev->name, " and ", this->name);
+                                     prev->name, " &&", this->name);
 
         LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape);
     }
@@ -260,21 +276,63 @@ struct Transpose : Node<T>
         transpose(gradientOut, *gradientIn);
         this->prev_nodes[0]->backward(&gradientOut, ctx);
     }
+
+    virtual std::string type() const override { return "Transpose"; }
 };
 
 template <typename T = FloatT, uint32 Dim = 0>
-struct Mean : Node<T>
+struct MeanUnext : Node<T>
 {
-    Mean(NodePtr<T> prev, const std::string& name = "Average")
-        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1)
+    MeanUnext(NodePtr<T> prev, const std::string& name = "Average")
+        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1),
+          divOp(DividedBy<T>(prev->shape[Dim])),
+          gradientOut(prev->shape, name + "_gradientOut")
     {
         if (prev->shape[Dim] == 1)
             throw_rte_with_backtrace("Cannot reduce along dimension ", Dim, " for ", prev->name,
                                      prev->shape, " already 1");
-        LOG(BLUE, "Mean ", this->name, prev->shape, " -> ", this->shape);
+        LOG_NODE_NAME(prev->shape, R_JUST("->", 4), this->shape);
     }
 
-    void forward(Context*) override { reduce_mean_ext(*this, this->prev(0)); }
+    void forward(Context*) override
+    {
+        reduce<T, Dim>(*this, this->prev(0), Plus<T>(), T(0), divOp);
+    }
+
+    void backward(const Matrix<T>* gradientIn, Context* ctx) override
+    {
+        LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
+                       gradientIn->shape);
+        unary_apply(this->gradientOut, *gradientIn, divOp);
+        if (this->name == "mean{250}") LOG_SYNC(this->name, " Gradient out: ", this->gradientOut);
+        this->prev_nodes[0]->backward(&this->gradientOut, ctx);
+    }
+    DividedBy<T> divOp;
+    Matrix<T> gradientOut;
+
+    virtual std::string dot_repr() override
+    {
+        return " [label=\"" + this->name +
+               "\" shape=rect  xlabel=<<font color=\"green\" POINT-SIZE=\"10.0\">" + "Mean" +
+               "</font>>]\n";
+    }
+
+    virtual std::string type() const override { return "Mean-" + std::to_string(Dim); }
+};
+
+template <typename T = FloatT, uint32 Dim = 0>
+struct MeanExt : Node<T>
+{
+    MeanExt(NodePtr<T> prev, const std::string& name = "Average")
+        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1),
+          gradientOut(prev->shape, name + "_gradientOut")
+    {
+        if (prev->shape[Dim] == 1)
+            throw_rte_with_backtrace("Cannot reduce along dimension ", Dim, " for ", prev->name,
+                                     prev->shape, " already 1");
+    }
+
+    void forward(Context*) override { reduce_mean_ext<T, Dim>(*this, this->prev(0)); }
 
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
@@ -283,8 +341,6 @@ struct Mean : Node<T>
         unary_apply(this->gradientOut, *gradientIn, divOp);
         this->prev_nodes[0]->backward(&this->gradientOut, ctx);
     }
-    Matrix<T> gradientOut = Matrix<T>(this->shape, this->name + "_gradientOut");
-    DivByExtent<T, Dim> divOp;
 
     virtual std::string dot_repr() override
     {
@@ -292,17 +348,15 @@ struct Mean : Node<T>
                "\" shape=rect  xlabel=<<font color=\"green\" POINT-SIZE=\"10.0\">" + "Mean" +
                "</font>>]\n";
     }
+
+    virtual std::string type() const override { return "Mean-" + std::to_string(Dim); }
+
+    Matrix<T> gradientOut;
+    DivByExtent<T, Dim> divOp;
 };
 
-// Mean of all non-NaN values in the matrix
-template <typename T, uint32 Dim = 0>
-struct NanMean : Node<T>
-{
-    NanMean(NodePtr<T> prev, const std::string& name = "NanMean")
-        : Node<T>(prev->shape.set(Dim, 1), {prev}, name, 1)
-    {
-    }
-};
+template <typename T = FloatT, uint32 Dim = 0>
+using Mean = MeanExt<T, Dim>;
 
 // A proxy for an input node, used to pass input data to a node. But does not mark input
 // node as "prev", so that when backward is called, it does not backpropagate through to input node.
@@ -312,7 +366,7 @@ struct NanMean : Node<T>
 //  sa2q->sa1q->x, sa2q->sa1k->x, sa2v->sa1v->x
 //  sa2k->sa1q->x, sa2k->sa1k->x, sa2k->sa1v->x
 //  sa2v->sa1q->x, sa2v->sa1k->x, sa2v->sa1v->x
-//  Instead if we use InputProxy and make the graph Proxy(x)->SA1->Proxy(SA1)->SA2, then only 3
+//  Instead if we use InputProxy &&make the graph Proxy(x)->SA1->Proxy(SA1)->SA2, then only 3
 //  gradients will be back-propagated to xp:
 // 3 from SA2(q,k,v)->SA1(q,k,v)->Proxy(x). Now there will be 6 paths of length 2, instead of 9 of
 // length 2 This effect becomes even more pronounced in MultiHeadAttention, where the number of
@@ -330,7 +384,7 @@ struct InputProxy : Node<T>
         gradientOut.set_val(T(0));
         this->set_data(in->get_data());
     }
-    void forward(Context*) override {}
+    void forward(Context*) override { this->copy_extents(*in); }
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         (void)ctx;
@@ -343,7 +397,6 @@ struct InputProxy : Node<T>
         LOG_NODE_TRACE("Proxy backward for ", this->name, " with gradientOut: ", gradientOut.name,
                        gradientOut.shape);
         in->backward(&gradientOut, ctx);
-        gradientOut.set_val(0.f);
     }
 
     virtual std::string dot_repr() override
@@ -354,15 +407,17 @@ struct InputProxy : Node<T>
         ret << this->id << " -> " << in->id << " [style=dotted arrowhead=none]";
         return ret.str();
     }
+
+    virtual std::string type() const override { return "InputProxy"; }
 };
 
 // Normalization, Dim=WIDTH_IDX woult be similar to layer norm,
-// Dim=BATCH_IDX would be similar to  Batchorm with no momentum and no affine transform.
+// Dim=BATCH_IDX would be similar to  Batchorm with no momentum &&no affine transform.
 template <typename T = FloatT, uint32 Dim = WIDTH_IDX>
 struct Normalize : public Node<T>
 {
     NodePtr<T> in;
-    InputProxy<T> x = InputProxy<T>(in, "nrm-proxy");
+    InputProxy<T> x = InputProxy<T>(in, "nrm");
     Mean<T> mu = Mean<T>(&x, "nrm-mu");
     Power<T> mu_sq = Power<T>(&mu, 2, "nrm-mu^2");
 
@@ -377,22 +432,27 @@ struct Normalize : public Node<T>
     Normalize(NodePtr<T> prev, const std::string& name = "Normalize")
         : Node<T>(prev->shape, {prev}, name, 1), in(prev)
     {
-        LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape);
+        LOG_NODE_NAME(prev->shape, R_JUST("->", 4), this->shape);
         this->set_data(norm.get_data());
     }
 
-    void forward(Context* ctx) override { norm.compute(ctx); }
+    void forward(Context* ctx) override
+    {
+        x.in->compute(ctx);
+        x.copy_extents(*x.in);
+        norm.compute(ctx);
+        this->copy_extents(norm);
+    }
 
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         (void)ctx;
+        LOG_NODE_TRACE("", this->name, "gradientIn: ", gradientIn->name, gradientIn->shape);
         norm.backward(gradientIn, ctx);
         this->prev_nodes[0]->backward(&x.gradientOut, ctx);
-        x.gradientOut.set_val(T(0));
     }
 
     virtual NodePtr<T> get_terminal_node() override { return &norm; }
-
     virtual std::string dot_repr() override
     {
         const char* dims[3] = {"Layer", "Seq", "Batch"};
@@ -408,6 +468,8 @@ struct Normalize : public Node<T>
            << this->name << "\" style=filled fillcolor=gray shape=rect]\n";
         return ss.str();
     }
+
+    virtual std::string type() const override { return "Normalize"; }
 };
 
 typedef Normalize<FloatT, WIDTH_IDX> LayerNorm;
@@ -428,7 +490,7 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
         {
             if (p->height() != this->height())
                 throw_rte_with_backtrace("Matrix dimensions do not match for Concat0 between ",
-                                         p->name, p->shape, " and ", this->name, p->shape);
+                                         p->name, p->shape, " &&", this->name, p->shape);
             grads.push_back(shaped_like(*p));
             prevs_as_mats.push_back((Matrix<T>*)p);
         }
@@ -436,6 +498,8 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
         grad_ptrs.resize(prevs.size());
 
         for (uint32 i = 0; i < grads.size(); ++i) grad_ptrs[i] = &grads[i];
+        LOG_NODE_NAME(prevs[0]->shape, " x ", this->prev_nodes.size(), R_JUST("->", 4),
+                      this->shape);
     }
 
     void forward(Context*) override { concat(*this, prevs_as_mats); }
@@ -455,6 +519,8 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
         LOG(BLUE, "Concatenating ", this->prev_nodes.size(), " inputs in ", this->name,
             " each of shape ", this->prev_nodes[0]->shape_str);
     }
+
+    virtual std::string type() const override { return "Concat0"; }
 };
 
 template <typename T = FloatT>
@@ -477,6 +543,8 @@ struct Input : Node<T>
     {
         return " [label=\"" + this->name + "\", shape=cylinder]";
     }
+
+    virtual std::string type() const override { return "Input"; }
 };
 
 template <typename T>
@@ -493,13 +561,15 @@ struct Dropout : Node<T>
           drop_probability(p),
           prev(prev)
     {
-        if (p < 0 or p >= 1)
+        if (p < 0 || p >= 1)
             throw_rte_with_backtrace("Dropout probability should be in the range [0, 1): ", p);
+        LOG_NODE_NAME(this->shape, " Prob: ", p);
     }
 
     void forward(Context*) override
     {
-        if (drop_probability > 0 and this->is_training)
+        LOG_NODE_TRACE("Forward for ", this->name, " with probability: ", drop_probability);
+        if (drop_probability > 0 && this->is_training)
             dropout(*this, *prev, mask, drop_probability);
         else
             this->copy(prev->begin());
@@ -509,9 +579,10 @@ struct Dropout : Node<T>
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
                        gradientIn->shape);
-        if (drop_probability > 0 and this->is_training)
+        if (drop_probability > 0 && this->is_training)
         {
             dropout(gradientOut, *gradientIn, mask, -1);
+            gradientOut.copy_extents(*gradientIn);
             prev->backward(&gradientOut, ctx);
         }
         else
@@ -533,6 +604,8 @@ struct Dropout : Node<T>
         LOG(BLUE, "Dropout with probability: ", drop_probability, " for ", this->name);
         if (drop_probability > 0) LOG(" mask: ", mask);
     }
+
+    virtual std::string type() const override { return "Dropout"; }
 };
 
 template <typename T>
@@ -543,7 +616,7 @@ struct SinePositionalEmbedding : Node<T>
     SinePositionalEmbedding(NodePtr<T> prev, const std::string& name = "SinePositionalEmbedding")
         : Node<T>(prev->shape, {prev}, name, 1), pos_emb(prev->shape.set(BATCH_IDX, 1))
     {
-        LOG(BLUE, "SinePositionalEmbedding with shape: ", this->shape);
+        LOG_NODE_NAME(this->shape);
         for (uint32 y = 0; y < this->height(); ++y)
         {
             for (uint32 x = 0; x < this->width(); ++x)
@@ -570,6 +643,8 @@ struct SinePositionalEmbedding : Node<T>
                        gradientIn->shape);
         this->prev_nodes[0]->backward(gradientIn, ctx);
     }
+
+    virtual std::string type() const override { return "SinePosEmbn"; }
 };
 
 template <typename T>
@@ -602,6 +677,8 @@ struct RotaryPositionEmbedding : Node<T>
         (void)ctx;
         throw_rte_with_backtrace("RotaryPositionEmbedding is not implemented");
     }
+
+    virtual std::string type() const override { return "RotaryPositionEmbedding"; }
 };
 
 #endif  // NODES_UNPARAMETERIZED_HPP

@@ -6,21 +6,35 @@
 
 #include "emotion_data.hpp"
 #include <thread>
+#include "dataset.hpp"
 
-EmotionData::EmotionData(std::string emotion_csv, uint32 batch, const Word2Vec* word2vec,
-                         uint32 max_samples)
-    : word2vec(*word2vec),
-      batch(batch),
-      temp_features(batch * SEQ_LEN * EMBEDDING_DIM),
-      temp_target(batch * 1 * NUM_CLASSES)
+EmotionData::EmotionData(std::string emotion_csv, uint32 batch, const Word2VecBase* word2vec,
+                         Input<FloatT>* data, Input<FloatT>* target, DataMode mode,
+                         bool should_shuffle, uint32 max_samples)
+    : Dataset(mode, should_shuffle, data, target), word2vec(*word2vec), SEQ_LEN(data->height())
 {
+    if (!data || !target)
+    {
+        throw_rte_with_backtrace("Data || target node not set");
+    }
+
+    if (data->batch() != target->batch())
+    {
+        throw_rte_with_backtrace("Data &&target batch sizes do not match");
+    }
+
     std::ifstream emotion_file(emotion_csv);
     std::string line;
     uint32 emotion;
     emotion_file >> line;  // skip header
+    uint32 colmn_count = std::count(line.begin(), line.end(), ',') + 1;
+
+    LOG(GREEN, "Number of columns in the csv file: ", colmn_count);
+
     Timer timer("Reading " + emotion_csv);
     std::vector<std::string> words;
     uint32 num_sentences_too_long = 0;
+    std::vector<uint32> one_hot;
     while (emotion_file && sentences.size() < max_samples)
     {
         std::getline(emotion_file, line, ',');
@@ -29,18 +43,21 @@ EmotionData::EmotionData(std::string emotion_csv, uint32 batch, const Word2Vec* 
         num_sentences_too_long += split_line_to_words(line, words, SEQ_LEN);
         if (words.empty()) break;
         sentences.push_back(words);
-        class_onehot.push_back(emotion);
+        m_emotion_id.push_back(emotion);
     }
 
     index_swizzle.resize(sentences.size());
     std::iota(index_swizzle.begin(), index_swizzle.end(), 0);
-    shuffle();
+    if (m_shuffle)
+    {
+        shuffle();
+    }
 
-    features_node = std::make_unique<Input<>>(batch, SEQ_LEN, EMBEDDING_DIM, "features");
-    target_node = std::make_unique<Input<>>(batch, 1, NUM_CLASSES, "target");
+    set_num_batches(sentences.size() / batch);
 
-    LOG(GREEN, "Read ", sentences.size(), " from ", emotion_csv, " for ", num_batches(),
-        " batches in ", timer.stop(), "s. ", num_sentences_too_long, " sentences too long.");
+    LOG(GREEN, "Read ", sentences.size(), " sentences from ", emotion_csv, " for ", batches(),
+        " batches in ", timer.stop(), ". ", num_sentences_too_long,
+        " sentences too long for sequence length ", SEQ_LEN);
 }
 
 void EmotionData::shuffle()
@@ -48,7 +65,7 @@ void EmotionData::shuffle()
     std::shuffle(std::begin(index_swizzle), std::end(index_swizzle), rdm::gen());
 }
 
-// split the line by space, and insert them to `words` upto max of `max_len`, return if there were
+// split the line by space, &&insert them to `words` upto max of `max_len`, return if there were
 // more words than `max_len`
 bool EmotionData::split_line_to_words(std::string line, std::vector<std::string>& words,
                                       uint32 max_len)
@@ -65,45 +82,53 @@ bool EmotionData::split_line_to_words(std::string line, std::vector<std::string>
     return word_count > max_len;
 }
 
-uint32 EmotionData::num_batches(DataMode) const
-{
-    return sentences.size() / features_node->batch();
-}
-
-void EmotionData::load(DataMode, uint32 batch)
-{
-    if (batch != last_fetched) prefetch(batch);
-    features_node->copy(temp_features.data());
-    target_node->copy(temp_target.data());
-}
-
-void EmotionData::prefetch(uint32 fetch_index)
+void EmotionData::load(uint32 idx)
 {
     // std::lock_guard<std::mutex> lock(prefetching_mutex);
-    uint32 idx = fetch_index * features_node->batch();
-    idx %= index_swizzle.size();
-
-    std::fill(temp_features.begin(), temp_features.end(), 0.f);
-    std::fill(temp_target.begin(), temp_target.end(), 0.f);
-
-    Vec300 empty = {1};
-    for (uint32 s = 0; s < features_node->batch(); s++)
+    auto features = features_node();
+    auto target = target_node();
+    if (!features || !target)
     {
-        const auto& sentence = sentences[index_swizzle[idx + s]];
-        uint32 offset = s * EMBEDDING_DIM * SEQ_LEN;
+        throw_rte_with_backtrace("Data || target node not set");
+    }
+
+    uint32 batch_size = features->batch();
+
+    WORDVEC empty = {1};
+
+    m_temp_features.resize(batch_size * SEQ_LEN * EMBEDDING_DIM);
+    m_temp_target.resize(batch_size * NUM_CLASSES);
+    // set all values to nan
+    auto nan = std::numeric_limits<FloatT>::quiet_NaN();
+    std::fill(m_temp_features.begin(), m_temp_features.end(), nan);
+    std::fill(m_temp_target.begin(), m_temp_target.end(), 0);
+
+    for (uint32 b = 0; b < batch_size; b++)
+    {
+        uint32 data_idx = index_swizzle[(idx + b) % sentences.size()];
+        uint32 offset = b * SEQ_LEN * EMBEDDING_DIM;
+        const auto& sentence = sentences[data_idx];
         for (uint32 w = 0; w < sentence.size(); w++)
         {
             auto node = word2vec[sentence[w]];
             auto& src = node ? node->vec : empty;
-            std::copy(src.begin(), src.end(), temp_features.begin() + offset);
+            std::copy(src.begin(), src.end(), m_temp_features.begin() + offset);
             offset += EMBEDDING_DIM;
         }
-        temp_target[s * NUM_CLASSES + class_onehot[idx + s]] = 1.f;
+        uint32 emotion_id = m_emotion_id[data_idx];
+        m_temp_target[b * NUM_CLASSES + emotion_id] = 1;
+        features->set_extent<HEIGHT_IDX>(b, std::min<uint32>(sentence.size(), SEQ_LEN));
+        // set values after the sentence length to NaN
+        for (uint32 i = sentence.size() * EMBEDDING_DIM; i < features->numels(); i++)
+        {
+            m_temp_features[i] = std::numeric_limits<FloatT>::quiet_NaN();
+        }
     }
-    last_fetched = fetch_index;
-    if (total_loaded++ % num_batches() == 0)
+
+    features->copy(m_temp_features.data());
+    target->copy(m_temp_target.data());
+    if (total_loaded++ % batches() == 0)
     {
-        last_fetched = UINT32_MAX;
-        shuffle();
+        if (m_shuffle) shuffle();
     }
 }

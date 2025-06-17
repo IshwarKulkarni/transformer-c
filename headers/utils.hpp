@@ -8,7 +8,12 @@
 #define UTILS_HPP
 
 #include <cuda_runtime_api.h>
+#include <algorithm>
 #include <chrono>
+#include <map>
+#include <random>
+#include <regex>
+#include <vector>
 #include "errors.hpp"
 #include "logger.hpp"
 #include "types"
@@ -18,8 +23,7 @@
 inline void cudaErrCheck_(cudaError_t code, const char* file, uint32 line, bool abort = true)
 {
     if (code == cudaSuccess) return;
-    LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at ",
-        Log::Location{file, line});
+    LOG(BOLD, RED, "CUDA ERROR: ", code, ", `", cudaGetErrorString(code), "` at ", file, ":", line);
     if (abort) throw_rte_with_backtrace("CUDA ERROR")
 }
 
@@ -45,7 +49,7 @@ class Optional
         throw_rte_with_backtrace("Accessing unavaible Optional");
     }
 
-    inline __host__ __device__ T get_or(T val)
+    inline __host__ __device__ T value_or(T val)
     {
         if (valid) return value;
         return val;
@@ -76,20 +80,68 @@ class Optional
 
 inline std::string convertMemorySting(size_t raw_bytes)
 {
+    setlocale(LC_NUMERIC, "");
     double bytes = static_cast<double>(raw_bytes);
+    char buffer[128];
     if (bytes < 1024)
     {
-        return std::to_string(bytes) + "B";
+        snprintf(buffer, sizeof(buffer), "%'3.2f B", bytes);
     }
     else if (bytes < 1024 * 1024)
     {
-        return std::to_string(bytes / 1024) + "KB";
+        snprintf(buffer, sizeof(buffer), "%'3.2f KB", bytes / 1024);
     }
     else if (bytes < 1024 * 1024 * 1024)
     {
-        return std::to_string(bytes / (1024 * 1024)) + "MB";
+        snprintf(buffer, sizeof(buffer), "%'3.2f MB", bytes / (1024 * 1024));
     }
-    return std::to_string(bytes / (1024 * 1024 * 1024)) + "GB";
+    else
+    {
+        snprintf(buffer, sizeof(buffer), "%'3.2f GB", bytes / (1024 * 1024 * 1024));
+    }
+    return std::string(buffer);
+}
+
+inline float32 levenshteinDistance(const std::string& s1, const std::string& s2)
+{
+    const uint32 len1 = s1.size();
+    const uint32 len2 = s2.size();
+    std::vector<std::vector<uint32>> dp(len1 + 1, std::vector<uint32>(len2 + 1));
+
+    // Initialize first row &&column
+    for (uint32 i = 0; i <= len1; i++) dp[i][0] = i;
+    for (uint32 j = 0; j <= len2; j++) dp[0][j] = j;
+
+    // Fill dp table
+    for (uint32 i = 1; i <= len1; i++)
+    {
+        for (uint32 j = 1; j <= len2; j++)
+        {
+            if (s1[i - 1] == s2[j - 1])
+            {
+                dp[i][j] = dp[i - 1][j - 1];
+            }
+            else
+            {
+                dp[i][j] = 1 + std::min({dp[i - 1][j],        // deletion
+                                         dp[i][j - 1],        // insertion
+                                         dp[i - 1][j - 1]});  // substitution
+            }
+        }
+    }
+
+    // Return normalized distance between 0 &&1
+    return static_cast<float32>(dp[len1][len2]) / std::max(len1, len2);
+}
+
+template <typename Iter>
+std::pair<std::string, float32> get_closest_match(Iter beg, Iter end, const std::string& str)
+{
+    auto closest = *std::min_element(beg, end, [&](const auto& a, const auto& b) {
+        return levenshteinDistance(a, str) < levenshteinDistance(b, str);
+    });
+    float32 dist = levenshteinDistance(closest, str);
+    return std::make_pair(closest, dist);
 }
 
 inline std::string exec_cli(const char* cmd)
@@ -123,10 +175,15 @@ inline bool startswith(const std::string& str, const std::string& head)
 struct Timer
 {
     std::string name;
-    std::chrono::high_resolution_clock::time_point t1;
-    std::chrono::high_resolution_clock::time_point t2;
+    using clock = std::chrono::high_resolution_clock;
+    using time_point = clock::time_point;
+    using duration = std::chrono::duration<float64>;
+    static constexpr time_point epoch = time_point();
+    time_point t1{epoch};
+    time_point t2{epoch};
+    time_point checkpoint{epoch};
     bool stopped = false;
-    Timer(const std::string& name) : name(name), t1(std::chrono::high_resolution_clock::now()) {}
+    Timer(const std::string& name) : name(name), t1(clock::now()) {}
     ~Timer()
     {
         if (!stopped)
@@ -136,28 +193,33 @@ struct Timer
     }
     float64 get_duration() const
     {
-        auto now = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<float64> time_span =
-            std::chrono::duration_cast<std::chrono::duration<float64>>(now - t1);
+        auto now = clock::now();
+        duration time_span = std::chrono::duration_cast<duration>(now - t1);
         return time_span.count();
     }
-    float64 stop(bool log = false)
+    duration stop(bool log = false)
     {
-        t2 = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<float64> time_span =
-            std::chrono::duration_cast<std::chrono::duration<float64>>(t2 - t1);
+        t2 = clock::now();
+        duration time_span = std::chrono::duration_cast<duration>(t2 - t1);
         stopped = true;
-        auto span_count = time_span.count();
-        if (log) LOG(name, " took ", span_count, "s.");
-        return span_count;
+        if (log) LOG(name, " took ", time_span);
+        return time_span;
     }
 
-    float64 elapsed() const
+    duration elapsed(time_point since = time_point()) const
     {
-        auto now = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<float64> time_span =
-            std::chrono::duration_cast<std::chrono::duration<float64>>(now - t1);
-        return time_span.count();
+        if (since == time_point()) since = t1;
+        auto now = clock::now();
+        duration time_span = std::chrono::duration_cast<duration>(now - since);
+        return time_span;
+    }
+
+    // get time, &&checkpoint the time in m_checkpoints
+    duration check()
+    {
+        duration time = elapsed(checkpoint);
+        checkpoint = clock::now();
+        return time;
     }
 };
 

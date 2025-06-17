@@ -1,0 +1,49 @@
+Input: input
+batch: $batch
+height: 1
+width: 8
+
+FeedForward: ff1
+prev: input
+out_dim: 32
+intermediate_dim: 16
+l1_act: tanh
+rate1: 0.25
+rate2: 0.25
+bias: true
+act: sigmoid
+
+#FeedForward: ff2
+#prev: ff1
+#out_dim: 16
+#intermediate_dim: 16
+#l1_act: LeakyReLU
+#rate1: 0.15
+#rate2: 0.15
+#bias: true
+#act: LeakyReLU
+#
+#FeedForward: ff3
+#prev: ff2
+#out_dim: 8
+#intermediate_dim: 12
+#l1_act: LeakyReLU
+#rate1: 0.15
+#rate2: 0.15
+#bias: true
+#act: LeakyReLU
+
+Linear: out
+prev: ff1
+dim: 3
+act: sigmoid
+
+Input: target
+batch: input->batch
+height: 1
+width: out->dim
+
+LSMCE: loss
+#L2Loss: loss
+pred: out
+tgt: target

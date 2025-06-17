@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include "curand_kernel.h"
 #include "matrix_ops.hpp"
 #include "matrix_size_checks.hpp"
@@ -32,10 +38,15 @@ void transpose(Matrix<T>& res, const Matrix<T>& A, Op op)
             BOLD, RED, "Matrix dimensions do not match for transpose operation: ", A.shape, " -> ",
             res.shape);
 
-    if (A.width() == 1 and std::is_same<Op, Identity<T>>::value)
+    if (A.width() == 1 && std::is_same<Op, Identity<T>>::value)
     {
         if (res.id != A.id) res.copy(A.begin());
         return;
+    }
+    for (uint32 b = 0; b < A.batch(); b++)
+    {
+        auto [a_y, a_x] = A.get_extents(b);
+        res.set_extents(b, a_x, a_y);
     }
 
     uint32 max_dim = std::max(A.width(), A.height());
@@ -49,7 +60,7 @@ void transpose(Matrix<T>& res, const Matrix<T>& A, Op op)
     }
     else
     {
-        constexpr uint32 BLOCK_SIZE = 32;
+        constexpr uint32 BLOCK_SIZE = 24;
         dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
         auto gdim = iDivUp(max_dim, BLOCK_SIZE);
         dim3 gridDim(gdim, gdim, A.batch());
@@ -67,7 +78,7 @@ __global__ void concat_kernel(Matrix<T> res, const Matrix<const FloatT*> inputs,
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
     uint32 b = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (b >= in_shape.batch or y >= in_shape.height or x >= in_shape.width) return;
+    if (b >= in_shape.batch || y >= in_shape.height || x >= in_shape.width) return;
 
     uint32 offset = in_shape.offset(b, y, x);
 
@@ -149,7 +160,8 @@ __global__ void split_kernel(Matrix<T*> splits, const Matrix<T> merged, Shape sp
 template <typename T, uint32 Dim, typename Op>
 void split(std::vector<Matrix<T>*>& outputs, const Matrix<T>& input, Op op)
 {
-    LOG_MATRIX_OPS("split: ", input.shape, " -> ", outputs.size(), " x ", outputs[0]->shape);
+    LOG_MATRIX_OPS("split-", Dim, ": ", input.shape, " -> ", outputs.size(), " x ",
+                   outputs[0]->shape);
     uint32 n = outputs.size();
     if (n == 0) throw_rte_with_backtrace("Zero output matrices for split");
     if (n > split_mat_ptrs.height()) throw_rte_with_backtrace("Too many matrices to split");
@@ -174,7 +186,7 @@ void split(std::vector<Matrix<T>*>& outputs, const Matrix<T>& input, Op op)
         throw_rte_with_backtrace("Dimension incorrect for split");
     }
 
-    dim3 blockDim(24, 24, 1);
+    dim3 blockDim(8, 8, 1);
     dim3 gridDim = outputs[0]->grid(blockDim);
     split_kernel<T, Dim, Op>
         <<<gridDim, blockDim>>>(split_mat_ptrs, input, out_shape, outputs.size(), op);
@@ -182,8 +194,9 @@ void split(std::vector<Matrix<T>*>& outputs, const Matrix<T>& input, Op op)
 }
 
 static std::shared_ptr<curandState> dropout_states{};
-static constexpr uint32 Ks = 16;
-static constexpr uint32 DROPOUT_MAX_SIZE = Ks * 1024;
+static constexpr uint32 Ks = 8;
+static constexpr uint32 BLOCK_SIZE = 128;
+static constexpr uint32 DROPOUT_MAX_SIZE = Ks * BLOCK_SIZE;
 
 template <typename T>
 __global__ void dropout_kernel(Matrix<T> res, const Matrix<T> in, Matrix<float32> mask,
@@ -198,7 +211,7 @@ __global__ void dropout_kernel(Matrix<T> res, const Matrix<T> in, Matrix<float32
     uint32 offset = res.shape.offset(b, y, x);
 
     float32 mask_val = 0.f;
-    if (drop_prob > 0 and drop_prob < 1)  // valid dropout probability, generate
+    if (drop_prob > 0 && drop_prob < 1)  // valid dropout probability, generate
     {
         bool keep = (curand_uniform(&states[offset % DROPOUT_MAX_SIZE]) > drop_prob);
         mask_val = keep ? 1.f / (1 - drop_prob) : 0.f;
@@ -208,14 +221,15 @@ __global__ void dropout_kernel(Matrix<T> res, const Matrix<T> in, Matrix<float32
     {
         mask_val = mask.template broadcasting_fetch<0b111>(b, y, x);
     }
+
+    if (y >= res.get_extent<HEIGHT_IDX>(b) || x >= res.get_extent<WIDTH_IDX>(b)) return;
     res(b, y, x) = in.template broadcasting_fetch<0b111>(b, y, x) * mask_val;
 }
 
+// threadid is used as index for each thread
 __global__ void init_curand_states(curandState* states, uint32 size, uint32 seed)
 {
-    uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
-    uint32 idx = y * blockDim.x + x;
+    uint32 idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size)
     {
         curand_init(seed, idx, 0, &states[idx]);
@@ -236,17 +250,17 @@ void dropout(Matrix<T>& res, const Matrix<T>& in, Matrix<float32>& mask, float32
     {
         curandState* _states = nullptr;
         cudaErrCheck(cudaMallocManaged(&_states, DROPOUT_MAX_SIZE * sizeof(curandState)));
+        cudaErrCheck(cudaDeviceSynchronize());
         dropout_states =
             std::shared_ptr<curandState>(_states, [](curandState* ptr) { cudaFree(ptr); });
 
-        init_curand_states<<<1024, Ks>>>(_states, DROPOUT_MAX_SIZE,
-                                         static_cast<uint32>(time(NULL)));
+        init_curand_states<<<Ks, BLOCK_SIZE>>>(_states, DROPOUT_MAX_SIZE,
+                                               static_cast<uint32>(time(NULL)));
         cudaErrCheck(cudaDeviceSynchronize());
     }
-    if (broadcastable<0>(in, res) and broadcastable<1>(in, res) and broadcastable<1>(in, res) and
-        broadcastable<0>(mask, res) and broadcastable<2>(mask, res) and broadcastable<2>(mask, res))
-    // all good
-    {
+    if (broadcastable<0>(in, res) && broadcastable<1>(in, res) && broadcastable<1>(in, res) and
+        broadcastable<0>(mask, res) && broadcastable<2>(mask, res) && broadcastable<2>(mask, res))
+    {  // all good
     }
     else
     {
@@ -254,8 +268,10 @@ void dropout(Matrix<T>& res, const Matrix<T>& in, Matrix<float32>& mask, float32
                                  " with mask: ", mask.shape);
     }
 
-    dim3 block(24, 24);
+    res.copy_extents(in);
+    dim3 block(16, 16);
     dropout_kernel<T><<<res.grid(block), block>>>(res, in, mask, drop_prob, dropout_states.get());
+    // copy the extents of the input to the output
     cudaErrCheck(cudaGetLastError());
 }
 
@@ -267,12 +283,15 @@ __global__ void binary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, const Mat
     uint32 b = blockIdx.z;
 
     if (res.is_oob(b, y, x)) return;
+    if (y >= res.get_extent<HEIGHT_IDX>(b) || x >= res.get_extent<WIDTH_IDX>(b)) return;
 
     static constexpr uint32 ALL = BATCH_BIT | HEIGHT_BIT | WIDTH_BIT;
     auto a_val = A.template broadcasting_fetch<ALL>(b, y, x);
     auto b_val = B.template broadcasting_fetch<ALL>(b, y, x);
 
-    res(b, y, x) = op(a_val, b_val);
+    auto out = op(a_val, b_val);
+    NAN_INF_CHECK(out);
+    res(b, y, x) = out;
 }
 
 template <typename Tr, typename T, typename Tb, typename Op>
@@ -280,8 +299,35 @@ void binary_apply(Matrix<Tr>& res, const Matrix<T>& A, const Matrix<Tb>& B, Op o
 {
     LOG_MATRIX_OPS("binary_apply: ", A.shape, " op ", B.shape, " -> ", res.shape);
     check_broadcast_sizes<T>(res, A, B);
-    dim3 block(std::min(24u, res.width()), std::min(24u, res.height()));  // slightly inefficient
+    dim3 block(std::min(16u, res.width()), std::min(16u, res.height()));  // slightly inefficient
     auto grid = res.grid(block);
+
+    // res extents is set to min of A &&B extents if they are same shaped,
+    // if A || B is broadcasted, then res extent is set to extent of the larger one
+    // in the dimension that is broadcasted.
+
+    // Determine broadcasting flags
+    uint8 a_broadcasts_w = (res.width() != A.width()) && (A.width() == 1);
+    uint8 b_broadcasts_w = (res.width() != B.width()) && (B.width() == 1);
+    uint8 a_broadcasts_h = (res.height() != A.height()) && (A.height() == 1);
+    uint8 b_broadcasts_h = (res.height() != B.height()) && (B.height() == 1);
+
+    std::array<uint32, 4> x_exts = {0, 0, 0, 0};
+    std::array<uint32, 4> y_exts = {0, 0, 0, 0};
+    uint8 x_offset = (a_broadcasts_w << 1) | b_broadcasts_w;
+    uint8 y_offset = (a_broadcasts_h << 1) | b_broadcasts_h;
+
+    for (uint32 b = 0; b < res.batch(); b++)
+    {
+        auto [a_y, a_x] = A.get_extents(b >= A.batch() ? 0 : b);  // broadcasted batch
+        auto [b_y, b_x] = B.get_extents(b >= B.batch() ? 0 : b);
+
+        x_exts = {std::min(a_x, b_x), a_x, b_x, res.width()};
+        y_exts = {std::min(a_y, b_y), a_y, b_y, res.height()};
+
+        res.set_extents(b, y_exts[y_offset], x_exts[x_offset]);
+    }
+
     binary_apply_kernel<Tr, T, Tb, Op><<<grid, block>>>(res, A, B, op);
     cudaErrCheck(cudaGetLastError());
 }
@@ -301,8 +347,17 @@ __global__ void unary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, Op op)
     if (A.height() == 1) Axy[1] = 0;
     if (A.width() == 1) Axy[2] = 0;
 
+    if (y >= res.get_extent<HEIGHT_IDX>(b) || x >= res.get_extent<WIDTH_IDX>(b)) return;
+
     auto a_val = A(Axy[0], Axy[1], Axy[2]);
-    res(b, y, x) = op(a_val);
+    auto out = UnaryApply(op, a_val, &res, b, y, x);
+    if (std::isnan(out) || std::isinf(out))
+    {
+        printf("NAN || INF in unary_apply at %d, %d, %d: %f | in: %f at out loc: %d, %d, %d\n",
+               Axy[0], Axy[1], Axy[2], out, a_val, b, y, x);
+    }
+    NAN_INF_CHECK(out);
+    res(b, y, x) = out;
 }
 
 template <typename T, typename Tr, typename Op>
@@ -310,7 +365,24 @@ void unary_apply(Matrix<Tr>& res, const Matrix<T>& A, Op op)
 {
     LOG_MATRIX_OPS("unary_apply: ", A.shape, " -> ", res.shape);
     check_broadcast_sizes(res, A);
-    dim3 block(24, 24, 1);
+
+    uint8 a_broadcasts_w = (res.width() != A.width()) && (A.width() == 1);
+    uint8 a_broadcasts_h = (res.height() != A.height()) && (A.height() == 1);
+
+    for (uint32 b = 0; b < res.batch(); b++)
+    {
+        auto [a_y, a_x] = A.get_extents(b >= A.batch() ? 0 : b);
+
+        std::pair<uint32, uint32> extents = (a_broadcasts_w && a_broadcasts_h)
+                                                ? std::make_pair(res.height(), res.width())
+                                            : (a_broadcasts_w) ? std::make_pair(a_y, res.width())
+                                            : (a_broadcasts_h) ? std::make_pair(res.height(), a_x)
+                                                               : std::make_pair(a_y, a_x);
+
+        res.set_extents(b, extents.first, extents.second);
+    }
+
+    dim3 block(16, 16, 1);
     unary_apply_kernel<<<res.grid(block), block>>>(res, A, op);
     cudaErrCheck(cudaGetLastError());
 }
@@ -330,7 +402,11 @@ __global__ void ternary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, const Ma
     auto b_val = B.template broadcasting_fetch<ALL>(b, y, x);
     auto c_val = C.template broadcasting_fetch<ALL>(b, y, x);
 
-    res(b, y, x) = op(a_val, b_val, c_val);
+    if (y >= res.get_extent<HEIGHT_IDX>(b) || x >= res.get_extent<WIDTH_IDX>(b)) return;
+
+    auto out = op(a_val, b_val, c_val);
+    NAN_INF_CHECK(out);
+    res(b, y, x) = out;
 }
 
 template <typename T, typename Op>
@@ -340,180 +416,60 @@ void ternary_apply(Matrix<T>& res, const Matrix<T>& A, const Matrix<T>& B, const
     LOG_MATRIX_OPS("ternary_apply: ", A.shape, " op ", B.shape, " op ", C.shape, " -> ", res.shape);
     check_broadcast_sizes<T>(res, A, B, C);
     dim3 block(16, 16, 1);
+
+    for (uint32 b = 0; b < res.batch(); b++)
+    {
+        auto [a_y, a_x] = A.get_extents(b);
+        auto [b_y, b_x] = B.get_extents(b);
+        auto [c_y, c_x] = C.get_extents(b);
+        res.set_extents(b, std::max(a_y, std::max(b_y, c_y)), std::max(a_x, std::max(b_x, c_x)));
+    }
+
     ternary_apply_kernel<T, T, Op><<<res.grid(block), block>>>(res, A, B, C, op);
     cudaErrCheck(cudaGetLastError());
 }
 
-// TODO: This is getting out of hand, need to passin Op as pointer-to-base-class for unary, binary
-// and ternary ops
-template void transpose(Matrix<FloatT>& res, const Matrix<FloatT>& A, Identity<FloatT>);
+// clang-format off
+template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, LeakyRelu<FloatT> > >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, ActBackwardMul<FloatT, LeakyRelu<FloatT> >);
+template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, Relu<FloatT> > >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, ActBackwardMul<FloatT, Relu<FloatT> >);
+template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, Sigmoid<FloatT> > >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, ActBackwardMul<FloatT, Sigmoid<FloatT> >);
+template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, TanH<FloatT> > >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, ActBackwardMul<FloatT, TanH<FloatT>>);
+template void binary_apply<FloatT, FloatT, FloatT, AdamWeightUpdate<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, AdamWeightUpdate<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, Div<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Div<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, LSMCEBkwd<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, LSMCEBkwd<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, MomentUpdate<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, MomentUpdate<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, Mul<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Mul<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, NegLogLossBckwd<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, NegLogLossBckwd<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, NegLogLossFwd<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, NegLogLossFwd<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, Plus<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Plus<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, PowDiff<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, PowDiff<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, SecondMomentUpdate<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, SecondMomentUpdate<FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, Sub<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Sub<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, WeightUpdate<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, WeightUpdate<FloatT, FloatT>);
 
-template void transpose<FloatT, Exp<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&, Exp<FloatT>);
+template void concat<FloatT, 0u, Identity<FloatT> >(Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> > const&, Identity<FloatT>);
+template void concat<FloatT, 1u, Identity<FloatT> >(Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> > const&, Identity<FloatT>);
+template void concat<FloatT, 2u, Identity<FloatT> >(Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> > const&, Identity<FloatT>);
 
-template void transpose<FloatT, Neg<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&, Neg<FloatT>);
+template void dropout<FloatT>(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT>&, FloatT);
 
-template void concat<FloatT, 0, Identity<FloatT>>(
-    Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*>> const&,
-    Identity<FloatT>);
+template void split<FloatT, 0u, Identity<FloatT> >(std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> >&, Matrix<FloatT> const&, Identity<FloatT>);
+template void split<FloatT, 1u, Identity<FloatT> >(std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> >&, Matrix<FloatT> const&, Identity<FloatT>);
+template void split<FloatT, 2u, Identity<FloatT> >(std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> >&, Matrix<FloatT> const&, Identity<FloatT>);
 
-template void concat<FloatT, 1, Identity<FloatT>>(
-    Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*>> const&,
-    Identity<FloatT>);
+template void ternary_apply<FloatT, DivDiff<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Matrix<FloatT> const&, DivDiff<FloatT>);
 
-template void concat<FloatT, 2, Identity<FloatT>>(
-    Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*>> const&,
-    Identity<FloatT>);
+template void transpose<FloatT, Exp<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Exp<FloatT>);
+template void transpose<FloatT, Identity<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Identity<FloatT>);
+template void transpose<FloatT, Neg<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Neg<FloatT>);
+template void transpose<FloatT, Sigmoid<FloatT>::SigmoidB>(Matrix<FloatT>&, Matrix<FloatT> const&, Sigmoid<FloatT>::SigmoidB);
 
-template void split<FloatT, 0, Identity<FloatT>>(
-    std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*>>&, Matrix<FloatT> const&,
-    Identity<FloatT>);
-
-template void split<FloatT, 1, Identity<FloatT>>(
-    std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*>>&, Matrix<FloatT> const&,
-    Identity<FloatT>);
-
-template void split<FloatT, 2, Identity<FloatT>>(
-    std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*>>&, Matrix<FloatT> const&,
-    Identity<FloatT>);
-
-template void dropout<FloatT>(Matrix<FloatT>& res, const Matrix<FloatT>& in, Matrix<float32>& mask,
-                              float32 drop_prob);
-
-template void transpose<FloatT, TanH<FloatT>::TanhB>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                     TanH<FloatT>::TanhB);
-
-template void transpose<FloatT, Sigmoid<FloatT>::SigmoidB>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                           Sigmoid<FloatT>::SigmoidB);
-
-template void transpose<FloatT, Relu<FloatT>::ReluB>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                     Relu<FloatT>::ReluB);
-
-template void transpose<FloatT, LeakyRelu<FloatT>::LeakyReluB>(Matrix<FloatT>&,
-                                                               Matrix<FloatT> const&,
-                                                               LeakyRelu<FloatT>::LeakyReluB);
-
-template void binary_apply<FloatT, FloatT, FloatT, Plus<FloatT, FloatT>>(Matrix<FloatT>&,
-                                                                         Matrix<FloatT> const&,
-                                                                         Matrix<FloatT> const&,
-                                                                         Plus<FloatT, FloatT>);
-
-template void unary_apply<FloatT, FloatT, Neg<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                       Neg<FloatT>);
-
-template void
-binary_apply<FloatT, FloatT, FloatT, Composition<FloatT, Sub<FloatT, FloatT>, Square<FloatT>>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
-    Composition<FloatT, Sub<FloatT, FloatT>, Square<FloatT>>);
-
-template void unary_apply<FloatT, FloatT, DividedBy<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                             DividedBy<FloatT>);
-template void binary_apply<FloatT, FloatT, FloatT, MomentUpdate<FloatT>>(Matrix<FloatT>&,
-                                                                         Matrix<FloatT> const&,
-                                                                         Matrix<FloatT> const&,
-                                                                         MomentUpdate<FloatT>);
-template void binary_apply<FloatT, FloatT, FloatT, SecondMomentUpdate<FloatT>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, SecondMomentUpdate<FloatT>);
-template void binary_apply<FloatT, FloatT, FloatT, AdamWeightUpdate<FloatT>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, AdamWeightUpdate<FloatT>);
-template void binary_apply<FloatT, FloatT, FloatT, WeightUpdate<FloatT, FloatT>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, WeightUpdate<FloatT, FloatT>);
-
-template void unary_apply<FloatT, FloatT, Exp<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                       Exp<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, Div<FloatT, FloatT>>(Matrix<FloatT>&,
-                                                                        Matrix<FloatT> const&,
-                                                                        Matrix<FloatT> const&,
-                                                                        Div<FloatT, FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, NegLogLossFwd<FloatT, FloatT>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, NegLogLossFwd<FloatT, FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, NegLogLossBckwd<FloatT, FloatT>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, NegLogLossBckwd<FloatT, FloatT>);
-
-template void unary_apply<FloatT, FloatT, MultiplyBy<FloatT>>(Matrix<FloatT>&,
-                                                              Matrix<FloatT> const&,
-                                                              MultiplyBy<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, Sub<FloatT, FloatT>>(Matrix<FloatT>&,
-                                                                        Matrix<FloatT> const&,
-                                                                        Matrix<FloatT> const&,
-                                                                        Sub<FloatT, FloatT>);
-
-template void unary_apply<FloatT, FloatT, Square<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                          Square<FloatT>);
-
-template void unary_apply<FloatT, FloatT, TanH<FloatT>::TanhB>(Matrix<FloatT>&,
-                                                               Matrix<FloatT> const&,
-                                                               TanH<FloatT>::TanhB);
-template void unary_apply<FloatT, FloatT, Sigmoid<FloatT>::SigmoidB>(Matrix<FloatT>&,
-                                                                     Matrix<FloatT> const&,
-                                                                     Sigmoid<FloatT>::SigmoidB);
-template void unary_apply<FloatT, FloatT, Identity<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                            Identity<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, Mul<FloatT, FloatT>>(Matrix<FloatT>&,
-                                                                        Matrix<FloatT> const&,
-                                                                        Matrix<FloatT> const&,
-                                                                        Mul<FloatT, FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, Sigmoid<FloatT>>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
-    ActBackwardMul<FloatT, Sigmoid<FloatT>>);
-
-template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, TanH<FloatT>>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
-    ActBackwardMul<FloatT, TanH<FloatT>>);
-
-template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, IActivation<FloatT>>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
-    ActBackwardMul<FloatT, IActivation<FloatT>>);
-
-template void unary_apply<FloatT, FloatT, NLSToSoftmax<FloatT>>(Matrix<FloatT>&,
-                                                                Matrix<FloatT> const&,
-                                                                NLSToSoftmax<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, LSMCEBkwd<FloatT>>(Matrix<FloatT>&,
-                                                                      Matrix<FloatT> const&,
-                                                                      Matrix<FloatT> const&,
-                                                                      LSMCEBkwd<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, Relu<FloatT>>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
-    ActBackwardMul<FloatT, Relu<FloatT>>);
-
-template void unary_apply<FloatT, FloatT, Abs<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                       Abs<FloatT>);
-
-template void unary_apply<FloatT, FloatT, Sign<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                        Sign<FloatT>);
-
-template void ternary_apply<FloatT, Norm<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                  Matrix<FloatT> const&, Matrix<FloatT> const&,
-                                                  Norm<FloatT>);
-
-template void unary_apply<FloatT, FloatT, Pow<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                       Pow<FloatT>);
-
-template void ternary_apply<FloatT, DivDiff<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                     Matrix<FloatT> const&, Matrix<FloatT> const&,
-                                                     DivDiff<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, PowDiff<FloatT>>(Matrix<FloatT>&,
-                                                                    Matrix<FloatT> const&,
-                                                                    Matrix<FloatT> const&,
-                                                                    PowDiff<FloatT>);
-
-template void binary_apply<FloatT, FloatT, FloatT, ActBackwardMul<FloatT, LeakyRelu<FloatT>>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&,
-    ActBackwardMul<FloatT, LeakyRelu<FloatT>>);
-
-// template void unary_apply<FloatT, FloatT, Sqrt<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&,
-// Sqrt<FloatT>);
-
-// template void binary_apply<FloatT, FloatT, FloatT, SqrtDiff<FloatT> >(Matrix<FloatT>&,
-// Matrix<FloatT> const&, Matrix<FloatT> const&, SqrtDiff<FloatT>);
-
-// template void unary_apply<FloatT, FloatT, PowDiff<FloatT> >(Matrix<FloatT>&, Matrix<FloatT>
-// const&, PowDiff<FloatT>);
+template void unary_apply<FloatT, FloatT, DivByExtent<FloatT, 0u> >(Matrix<FloatT>&, Matrix<FloatT> const&, DivByExtent<FloatT, 0u>);
+template void unary_apply<FloatT, FloatT, DivByExtent<FloatT, 1u> >(Matrix<FloatT>&, Matrix<FloatT> const&, DivByExtent<FloatT, 1u>);
+template void unary_apply<FloatT, FloatT, DivByExtent<FloatT, 2u> >(Matrix<FloatT>&, Matrix<FloatT> const&, DivByExtent<FloatT, 2u>);
+template void unary_apply<FloatT, FloatT, DividedBy<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, DividedBy<FloatT>);
+template void unary_apply<FloatT, FloatT, Exp<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Exp<FloatT>);
+template void unary_apply<FloatT, FloatT, MultiplyBy<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, MultiplyBy<FloatT>);
+template void unary_apply<FloatT, FloatT, Neg<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Neg<FloatT>);
+template void unary_apply<FloatT, FloatT, Pow<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Pow<FloatT>);
+// clang-format on

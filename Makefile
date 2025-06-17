@@ -9,11 +9,14 @@ OBJDIR_EXE := $(BUILDDIR)/obj_exe
 ifeq ($(dbg),1)
 	OBJDIR = $(BUILDDIR)/dbg/obj
 	OBJDIR_EXE = $(BUILDDIR)/dbg/obj_exe
+	SUFFIX := _dbg
+else
+	SUFFIX :=
 endif
 
 # Find all .cpp files in root directory
 ROOT_CPP_FILES := $(wildcard *.cpp)
-ROOT_TARGETS := $(patsubst %.cpp,$(BUILDDIR)/%,$(ROOT_CPP_FILES))
+ROOT_TARGETS := $(patsubst %.cpp,$(BUILDDIR)/%$(SUFFIX),$(ROOT_CPP_FILES))
 ROOT_OBJECTS := $(patsubst %.cpp,$(OBJDIR_EXE)/%.o,$(ROOT_CPP_FILES))
 
 # Other variables
@@ -29,7 +32,7 @@ HOST_COMPILER := g++-11
 NVCC          := /usr/local/cuda-12.5/bin/nvcc -ccbin $(HOST_COMPILER)
 
 # Flags
-NVCCFLAGS     := -m64 --expt-relaxed-constexpr
+NVCCFLAGS     := -m64 --expt-relaxed-constexpr # -Xptxas=-v
 CCFLAGS       := --std=c++17 -fPIC -rdynamic -Wall -Wextra -Wsign-compare -I/usr/include/c++/11 -I/usr/include/x86_64-linux-gnu/c++/11
 LDFLAGS       :=
 
@@ -38,8 +41,7 @@ ifeq ($(dbg),1)
     NVCCFLAGS += -g -G
 	CCFLAGS += -g -O0 -DDEBUG
 else
-	NVCCFLAGS += -lineinfo
-# -DDISABLE_SIZE_CHECK
+	NVCCFLAGS += -lineinfo  # -DDISABLE_SIZE_CHECK
 	CCFLAGS += -O3 
 endif
 
@@ -80,6 +82,14 @@ HIGHEST_SM := $(lastword $(sort $(SMS)))
 
 build: $(ROOT_TARGETS)
 
+# Add alias for build/main to point to bin/main
+build/main: $(BUILDDIR)/main$(SUFFIX)
+	@echo "\033[1;32mBuild complete for $@ -> $< \033[0m"
+
+# Add alias for specific debug/release targets
+build/%: $(BUILDDIR)/%$(SUFFIX)
+	@echo "\033[1;32mBuild complete for $@ -> $< \033[0m"
+
 clean:
 	rm -fr temp/* *.csv *.info *.ppm *.dot
 
@@ -98,18 +108,23 @@ $(OBJDIR_EXE)/%.o: %.cpp
 	@mkdir -p $(OBJDIR_EXE);
 	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -c $< -o $@
 
-$(BUILDDIR)/%: $(OBJDIR_EXE)/%.o $(OBJECTSCU) $(OBJECTS)
+$(BUILDDIR)/%$(SUFFIX): $(OBJDIR_EXE)/%.o $(OBJECTSCU) $(OBJECTS)
 	@mkdir -p $(TARGETDIR);
 	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) $+ $(LIBRARIES) -o $@
 	@echo "\033[1;32mBuild complete for $@ \033[0m"
 
+
+
 # Run targets for each executable
-run_%: $(BUILDDIR)/%
+run_%: $(BUILDDIR)/%$(SUFFIX)
 	./$< $(var)
 
-valgrind: build
+
+# Only build debug, do not run
+# Run valgrind
+valgrind: build_dbg
 	valgrind --leak-check=full \
          --show-leak-kinds=all \
          --track-origins=yes \
          --gen-suppressions=all \
-         --suppressions=cuda_supp.sup ./$(BUILDDIR)/main
+         --suppressions=cuda_supp.sup ./$(BUILDDIR)/main$(SUFFIX)

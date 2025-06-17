@@ -4,6 +4,7 @@ SpacesBeforeTrailingComments: 2
 ---
 Language:        Cpp
 # BasedOnStyle:  Google
+AlignConsecutiveAssignments: true
 AccessModifierOffset: -3
 AlignAfterOpenBracket: Align
 AlignConsecutiveAssignments: false

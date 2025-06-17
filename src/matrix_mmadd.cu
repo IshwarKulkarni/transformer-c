@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include <cuda_device_runtime_api.h>
 #include <cuda_fp16.h>
 #include <type_traits>
@@ -32,10 +38,9 @@ __global__ void tiled_mmadd_shmem(Matrix<T> result, const Matrix<T> A, const Mat
     {
         auto x_a = k + threadIdx.y;
         auto y_b = k + threadIdx.x;
-        // auto aa = (x_a < A.width() && x < A.height()) ? A(b_a, x, x_a) : T(0);
-        // auto bb = (y_b < B.height() && y < B.width()) ? B(b_b, y_b, y) : T(0);
-        auto aa = A.extents.in(b_a, x, x_a) ? A(b_a, x, x_a) : T(0);
-        auto bb = B.extents.in(b_b, y_b, y) ? B(b_b, y_b, y) : T(0);
+
+        auto aa = A.in_extents(b_a, x, x_a) ? A(b_a, x, x_a) : T(0);
+        auto bb = B.in_extents(b_b, y_b, y) ? B(b_b, y_b, y) : T(0);
 
         As[threadIdx.x][threadIdx.y] = aa;
         Bs[threadIdx.x][threadIdx.y] = bb;
@@ -49,15 +54,18 @@ __global__ void tiled_mmadd_shmem(Matrix<T> result, const Matrix<T> A, const Mat
         __syncthreads();
     }
 
-    if (x < result.height() and y < result.width())
+    if (x < result.height() && y < result.width())
     {
         sum += (C.is_valid() ? C->template broadcasting_fetch<0b111>(b, x, y) : T(0));
-        result(b, x, y) = pprocess(sum);
+        auto out = pprocess(sum);
+        NAN_INF_CHECK(out);
+        result(b, x, y) = out;
     }
 }
 
 // A (b, h, w) @ B (b, w, 1) + <C(b, h,1)> -> result (b, h, 1)
-// Assuming that B is column vector, if h > 1024, multiple calls to this kernel
+// Extents are respected, elements outside extents are not accessed
+// each batch's element is set to
 template <typename T, uint32 BLOCK_X, typename PostProcess>
 __global__ void mat_vector_mul_kernel(Matrix<T> result, const Matrix<T> A, const Matrix<T> B,
                                       const Optional<Matrix<T>> C, uint32 offset = 0,
@@ -85,7 +93,7 @@ __global__ void mat_vector_mul_kernel(Matrix<T> result, const Matrix<T> A, const
     }
     __syncthreads();
     volatile T* vAs = (volatile T*)As;
-    if (x <= 32 and offset_x < A.width())
+    if (x <= 32 && offset_x < A.width())
     {
         if (BLOCK_X >= 64) vAs[x] += vAs[x + 32];
         if (BLOCK_X >= 32) vAs[x] += vAs[x + 16];
@@ -95,10 +103,12 @@ __global__ void mat_vector_mul_kernel(Matrix<T> result, const Matrix<T> A, const
         if (BLOCK_X >= 2) vAs[x] += vAs[x + 1];
     }
     __syncthreads();
-    if (x == 0 and blockIdx.x < A.height())
+    if (x == 0 && blockIdx.x < A.height())
     {
         if (C.is_valid()) r += (*C)(b, y, x);
-        result(b, y, 0) = pProcess(vAs[0] + r);
+        auto out = pProcess(vAs[0] + r);
+        NAN_INF_CHECK(out);
+        result(b, y, 0) = out;
     }
 }
 
@@ -106,9 +116,25 @@ template <typename T, typename PProcess>
 void mmadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Optional<Matrix<T>> C,
            PProcess pProcess)
 {
-    LOG_MATRIX_OPS("mmadd: ", A.shape, " @ ", B.shape, " + ", (C.is_valid() ? " + C" : ""), " -> ",
-                   result.shape);
+    if (C.is_valid())
+    {
+        LOG_MATRIX_OPS("A: ", A.name, " B: ", B.name, " C: ", C->name, " result: ", result.name);
+        LOG_MATRIX_OPS("mmadd: ", A.shape, " @ ", B.shape, " + ", C->shape, " -> ", result.shape);
+    }
+    else
+    {
+        LOG_MATRIX_OPS("A: ", A.name, " B: ", B.name, " result: ", result.name);
+        LOG_MATRIX_OPS("mmadd: ", A.shape, " @ ", B.shape, " -> ", result.shape);
+    }
     check_mmadd_sizes(result, A, B, C);
+
+    for (uint32 b = 0; b < result.batch(); b++)
+    {
+        auto b_a = A.batch() > 1 ? b : 0;  // broadcasted batch
+        auto b_b = B.batch() > 1 ? b : 0;  // broadcasted batch
+        result.set_extents(b, std::min(A.template get_extent<HEIGHT_IDX>(b_a), result.height()),
+                           std::min(B.template get_extent<WIDTH_IDX>(b_b), result.width()));
+    }
     if (A.height() <= 512)
     {
         constexpr uint32 TILE_SZ = 8;
@@ -136,36 +162,10 @@ void mmadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Opti
     cudaErrCheck(cudaGetLastError());
 }
 
-template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT>&, const Matrix<FloatT>&,
-                                                       const Matrix<FloatT>&,
-                                                       const Optional<Matrix<FloatT>>,
-                                                       Sigmoid<FloatT>::SigmoidF);
-template void mmadd<FloatT, Identity<FloatT>>(Matrix<FloatT>&, const Matrix<FloatT>&,
-                                              const Matrix<FloatT>&, const Optional<Matrix<FloatT>>,
-                                              Identity<FloatT>);
-
-template void mmadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT>&, const Matrix<FloatT>&,
-                                                 const Matrix<FloatT>&,
-                                                 const Optional<Matrix<FloatT>>,
-                                                 Relu<FloatT>::ReluF);
-
-template void mmadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT>&, const Matrix<FloatT>&,
-                                                 const Matrix<FloatT>&,
-                                                 const Optional<Matrix<FloatT>>,
-                                                 TanH<FloatT>::TanhF);
-
-template void mmadd<FloatT, DividedBy<FloatT>>(Matrix<FloatT>&, const Matrix<FloatT>&,
-                                               const Matrix<FloatT>&,
-                                               const Optional<Matrix<FloatT>>, DividedBy<FloatT>);
-
-template void mmadd<FloatT, Neg<FloatT>>(Matrix<FloatT>&, const Matrix<FloatT>&,
-                                         const Matrix<FloatT>&, const Optional<Matrix<FloatT>>,
-                                         Neg<FloatT>);
-
-template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, DividedBy<FloatT>>>(
-    Matrix<FloatT>&, const Matrix<FloatT>&, const Matrix<FloatT>&, const Optional<Matrix<FloatT>>,
-    Composition<FloatT, Neg<FloatT>, DividedBy<FloatT>>);
-
-template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>(
-    Matrix<FloatT>&, const Matrix<FloatT>&, const Matrix<FloatT>&, const Optional<Matrix<FloatT>>,
-    Composition<FloatT, Neg<FloatT>, Identity<FloatT>>);
+// clang-format off
+template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, DividedBy<FloatT> > >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, Composition<FloatT, Neg<FloatT>, DividedBy<FloatT> >);
+template void mmadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT> > >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, Composition<FloatT, Neg<FloatT>, Identity<FloatT> >);
+template void mmadd<FloatT, DividedBy<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, DividedBy<FloatT>);
+template void mmadd<FloatT, Identity<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, Identity<FloatT>);
+template void mmadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, Sigmoid<FloatT>::SigmoidF);
+// clang-format on

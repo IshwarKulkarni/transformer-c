@@ -10,7 +10,7 @@
 #include "nodes/node.hpp"
 #include "types"
 
-static constexpr uint32 det_seed = 42;
+static constexpr uint32 det_seed = 0x42;
 
 uint64 MatrixInitUitls::alloced_bytes = 0;
 uint64 MatrixInitUitls::freed_bytes = 0;
@@ -21,7 +21,7 @@ std::random_device rdm::rd;
 std::mt19937_64 rdm::det_gen(det_seed);
 std::seed_seq rdm::seed({rdm::rd()});
 std::mt19937_64 rdm::rdm_gen(seed);
-bool rdm::deterministic = true;
+bool rdm::deterministic = false;
 
 uint64 ParameterBase::param_count = 0;
 
@@ -135,7 +135,7 @@ void resample_matrix(const Matrix<T>& out, Matrix<T>& in)
 
 template void resample_matrix(const Matrix<float32>& out, Matrix<float32>& in);
 
-// Structure that holds 5 values and their corresponding colors
+// Structure that holds 5 values &&their corresponding colors
 // fill with values > 1 for invalid values
 // vals are sorted in ascending order
 // colors are in RGBA format
@@ -159,7 +159,7 @@ __global__ void heat_map_kernel(Matrix<uint32> color_image, cudaTextureObject_t 
     uint32 x = blockIdx.x * blockDim.x + threadIdx.x;
     uint32 y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x >= color_image.width() or y >= color_image.height()) return;
+    if (x >= color_image.width() || y >= color_image.height()) return;
 
     float32 in_x = static_cast<float32>(x) / (color_image.width() - 1);
     float32 in_y = static_cast<float32>(y) / (color_image.height() - 1);
@@ -175,7 +175,7 @@ __global__ void heat_map_kernel(Matrix<uint32> color_image, cudaTextureObject_t 
         AnchorInterpolater::Color c = {0};
         for (uint32 i = 0; i < 4; i++)
         {
-            if (val >= interp.vals[i] and val <= interp.vals[i + 1])
+            if (val >= interp.vals[i] && val <= interp.vals[i + 1])
             {
                 float64 t = (val - interp.vals[i]) / (interp.vals[i + 1] - interp.vals[i]);
                 c.r = static_cast<uint8>(interp.colors[i].r * (1 - t) + interp.colors[i + 1].r * t);
@@ -204,15 +204,15 @@ void gen_heat_map(Matrix<uint32>& color_image, const Matrix<float32>& mat_in,
          {.vals = {0, 0.25, 0.5, 0.75, 1},
           .colors = {0xe1d8e2ff, 0x6175baff, 0x2f1436ff, 0xb25652ff, 0xe1d8e1ff}}}};
 
-    if (mat_in.batch() > 1) throw std::runtime_error("Batch size must be 1");
+    if (mat_in.batch() > 1) throw_rte_with_backtrace("Batch size must be 1");
 
     if (interpolaters.find(name) == interpolaters.end())
-        throw std::runtime_error("Invalid colormap name: " + name);
+        throw_rte_with_backtrace("Invalid colormap name: ", name);
 
     dim3 blockDim(std::min<uint32>(mat_in.width(), 16), std::min<uint32>(mat_in.height(), 16), 1);
     dim3 gridDim = color_image.grid(blockDim);
 
-    LOG_MATRIX_OPS("Launching heat_map_kernel with gridDim: ", gridDim, " and blockDim: ", blockDim,
+    LOG_MATRIX_OPS("Launching heat_map_kernel with gridDim: ", gridDim, " &&blockDim: ", blockDim,
                    "color_image shape: ", color_image.shape);
     auto [texObj, data] = create_texture_object(mat_in, 0);
     heat_map_kernel<<<gridDim, blockDim>>>(color_image, texObj, -.8, 2, interpolaters[name]);

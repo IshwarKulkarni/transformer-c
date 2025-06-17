@@ -36,7 +36,7 @@ struct remove_member_pointer<R (C::*)(Args...) const>
     static constexpr size_t arity = sizeof...(Args);
 };
 
-// class to detect if passed functor class has operator() with 1 or 2 arguments
+// class to detect if passed functor class has operator() with 1 || 2 arguments
 template <typename T>
 struct FunctorArity
 {
@@ -45,19 +45,23 @@ struct FunctorArity
 
 template <typename T,
           typename Op>  // Misnomer, applies a functor to a value based on the functor's arity;
-__host__ __device__ inline T UnaryApply(Op op, T val, uint32 b, uint32 y, uint32 x)
+__host__ __device__ inline T UnaryApply(Op op, T val, const Matrix<T>* in_mat, uint32 b, uint32 y,
+                                        uint32 x)
 {
-    static_assert(FunctorArity<Op>::value == 1 or FunctorArity<Op>::value == 4,
-                  "UnaryApply only supports functors with 1 or 4 arguments");
     if constexpr (FunctorArity<Op>::value == 1)
     {
         return op(val);
     }
-    else if constexpr (FunctorArity<Op>::value == 4)
+    else if constexpr (FunctorArity<Op>::value == 5)
     {
-        return op(val, b, y, x);
+        return op(val, in_mat, b, y, x);
     }
-};
+    else
+    {
+        static_assert(FunctorArity<Op>::value == 1 || FunctorArity<Op>::value == 4,
+                      "UnaryApply only supports functors with 1 || 4 arguments");
+    }
+}
 
 //////////////////////////////////////////////////////////////////////////////////////
 // Unary functors
@@ -139,11 +143,11 @@ struct DividedBy
 template <typename T, uint32 Dim>
 struct DivByExtent
 {
-    Extents2d* extents = nullptr;
-    __host__ __device__ inline T operator()(T a, uint32 b, uint32, uint32) const
+    __host__ __device__ inline T operator()(T out, const Matrix<T>* in_mat, uint32 b, uint32,
+                                            uint32) const
     {
-        auto ext = (*extents)(b, Dim);
-        return a / ext;
+        static_assert(Dim <= BATCH_IDX, "Invalid dimension");
+        return out / in_mat->get_extent<Dim>(b);
     }
     static constexpr char const* name = "DivByExtent";
 };
@@ -280,8 +284,8 @@ struct ActBackwardMul
 template <typename T>
 struct LSMCEBkwd
 {
-    // dL/dxi = exp(-nls) - t :  where, t is target and nls = negLogSoftmax
-    // and  -nls = [xi - log(Sum(e^xj))],
+    // dL/dxi = exp(-nls) - t :  where, t is target &&nls = negLogSoftmax
+    // && -nls = [xi - log(Sum(e^xj))],
     // exp(-nls) =  e^xi/(Sum(e^xj))
     T factor = 1;
     __host__ __device__ inline T operator()(T t, T nls) const { return (exp(-nls) - t) / factor; }
@@ -290,8 +294,8 @@ struct LSMCEBkwd
 template <typename T>
 struct NLSToSoftmax
 {
-    // dL/dxi = exp(-nls) - t :  where, t is targeta and nls = negLogSoftmax
-    // and  -nls = [xi - log(Sum(e^xj))],
+    // dL/dxi = exp(-nls) - t :  where, t is targeta &&nls = negLogSoftmax
+    // && -nls = [xi - log(Sum(e^xj))],
     // exp(-nls) =  e^xi/(Sum(e^xj))
     __host__ __device__ inline T operator()(T nls) const { return exp(-nls); }
 };
@@ -393,7 +397,7 @@ struct Min
 };
 
 //////////////////////////////////////////////////////////////////////////////////////
-// Activations (have a forward and backward Unary functors)
+// Activations (have a forward &&backward Unary functors)
 //////////////////////////////////////////////////////////////////////////////////////
 template <typename T>
 struct Sigmoid
@@ -486,15 +490,15 @@ enum class ActivationEnum
 
 inline ActivationEnum get_activation_enum(const std::string& act)
 {
-    if (act == "sigmoid" or act == "Sigmoid")
+    if (act == "sigmoid" || act == "Sigmoid")
         return ActivationEnum::Sigmoid;
-    else if (act == "relu" or act == "ReLU")
+    else if (act == "relu" || act == "ReLU")
         return ActivationEnum::Relu;
-    else if (act == "leakyrelu" or act == "LeakyReLU")
+    else if (act == "leakyrelu" || act == "LeakyReLU")
         return ActivationEnum::LeakyRelu;
-    else if (act == "tanh" or act == "TanH")
+    else if (act == "tanh" || act == "TanH")
         return ActivationEnum::TanH;
-    else if (act == "identity" or act == "Identity" or act == "IActivation")
+    else if (act == "identity" || act == "Identity" || act == "IActivation")
         return ActivationEnum::IActivation;
 
     throw_rte_with_backtrace("Unknown activation function: " + act);

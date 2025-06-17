@@ -59,8 +59,8 @@ void mvadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B,
 
 // Matrix multiply add, result = A * B + C (if C is not null)
 // C is broadcasted to the same shape as result
-// A and B are broadcasted to the same shape as result
-// If A and B have extents, such that for some batch index AxM * NxB are valid, and M != N,
+// A &&B are broadcasted to the same shape as result
+// If A &&B have extents, such that for some batch index AxM * NxB are valid, &&M != N,
 // then result has values as if mutliplication was done with Axp * pxB where p = min(M, N)
 template <typename T, typename PProcess = Identity<T>>
 void mmadd(Matrix<T> &result, const Matrix<T> &A, const Matrix<T> &B,
@@ -99,9 +99,10 @@ void split(std::vector<Matrix<T> *> &outputs, const Matrix<T> &res, Op op = Op()
 
 // ```
 //    if  0<p<=1
-//      res[x,y] = (mask[x, y] = (rand() < drop_prob)) ? 0 : res[x, y];
+//      // generate a random mask, where each element is 1/p with probability p || 0 with
+//      probability 1-p
 //    else:
-//      res[x,y] = A[x,y] * mask[x,y]
+//      // apply existing mask.
 // ```
 template <typename T>
 void dropout(Matrix<T> &res, const Matrix<T> &in, Matrix<float32> &mask, float32 drop_prob);
@@ -119,8 +120,8 @@ void reduce_mean(Matrix<T> &result, const Matrix<T> &A)
 template <typename T, uint32 dim = 0>
 void reduce_mean_ext(Matrix<T> &result, const Matrix<T> &A)
 {
+    LOG_MATRIX_OPS("reduce_mean_ext: ", A.shape, " dim: ", dim);
     DivByExtent<T, dim> divOp;
-    divOp.extents = &A.extents;
     reduce<T, dim>(result, A, Plus<T>(), T(0), divOp);
 }
 
@@ -133,6 +134,12 @@ template <typename T, typename Tb, typename Op>
 void binary_apply(Matrix<T> &A, const Matrix<Tb> &B, Op op = Op())
 {
     binary_apply<T, T, Tb, Op>(A, A, B, op);
+    for (uint32 b = 0; b < A.batch(); b++)
+    {
+        auto [h, w] = A.get_extents(b);
+        auto [h_b, w_b] = B.get_extents(b);
+        A.set_extents(b, std::max(h, h_b), std::max(w, w_b));
+    }
 }
 
 // inplace unary apply A = op(A)
@@ -164,7 +171,7 @@ inline void reduce_multiple(Matrix<T> &A, RedOp reduction = RedOp(), T identity 
     if (DimBits & WIDTH_BIT) reduce<T, WIDTH_IDX, RedOp>(A, reduction, identity);
 }
 
-// inplace reduce to scalar by reducing along batch, height and width in that order (as necessary).
+// inplace reduce to scalar by reducing along batch, height &&width in that order (as necessary).
 // Post process is applied to the final result.
 template <typename T, typename RedOp = Plus<T>, typename PostProcess = Identity<T>>
 inline void reduce_to_scalar(Matrix<T> &A, RedOp reduction = RedOp(), T identity = RedOp::Identity,
@@ -188,7 +195,7 @@ inline void mean_batch(Matrix<T> &result, const Matrix<T> &A)
 // Matrix initializations
 //////////////////////////////////////////////////////////////////////////////////////
 
-// clears L2 cache by allocating and writing to `size` bytes of memory
+// clears L2 cache by allocating &&writing to `size` bytes of memory
 void clear_l2_cache(uint32 size = 256 * 1024 * 1024);
 
 struct rdm
@@ -244,6 +251,15 @@ inline void normal_init(Matrix<typename std::enable_if<is_floating_point<T>::val
 }
 
 template <typename T = FloatT>
+inline void uniform_init(Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> &out,
+                         T min = 0, T max = 1)
+{
+    std::uniform_real_distribution<T> dist(min, max);
+    gen(out, dist);
+}
+
+template <typename T = FloatT>  // init from b=argv[offset + 1], h=argv[offset + 2], w=argv[offset +
+                                // 3]
 Matrix<T> init_argv(const char **argv, uint32 argc_offset = 2);
 
 template <typename T = FloatT>
@@ -289,18 +305,18 @@ void arange(Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type
 
 template <typename T>
 void arange_extents(Matrix<typename std::enable_if<is_floating_point<T>::value, T>::type> &A,
-                    T invalid_val, bool decimal_bacth = true)
+                    T invalid_val, bool decimal_batch = true)
 {
-    uint32 v = 0;
+    uint32 v = 1;
     for (uint32 b = 0; b < A.batch(); b++)
     {
-        v = (decimal_bacth ? 0 : v);
+        v = (decimal_batch ? 0 : v);
         for (uint32 y = 0; y < A.height(); y++)
         {
             for (uint32 x = 0; x < A.width(); x++)
             {
-                if (A.extents.in(b, y, x))
-                    A(b, y, x) = T(v++) + (decimal_bacth ? T(0.1) * b : b);
+                if (A.in_extents(b, y, x))
+                    A(b, y, x) = T(v++) + (decimal_batch ? T(0.1) * b : b);
                 else
                     A(b, y, x) = invalid_val;
             }
@@ -356,7 +372,7 @@ std::ifstream &operator>>(std::ifstream &file, Matrix<T> &mat)
     char c;
     file >> c;
     file >> b >> h >> w;
-    if (c != '#' or file.bad())
+    if (c != '#' || file.bad())
     {
         throw_rte_with_backtrace("Invalid file format, expected # b h w");
     }
@@ -369,13 +385,13 @@ std::ifstream &operator>>(std::ifstream &file, Matrix<T> &mat)
     using readT = typename AccumT<T>::type;
     std::vector<readT> vec;
     vec.reserve(shape.numels);
-    for (size_t i = 0; i < shape.numels and file; i++)
+    for (size_t i = 0; i < shape.numels && file; i++)
     {
         readT e;
         file >> e;
         vec.push_back(e);
     }
-    if ((!file.eof() and file.bad()) or vec.size() != shape.numels)
+    if ((!file.eof() && file.bad()) || vec.size() != shape.numels)
         throw_rte_with_backtrace(shape.numels, " elements not read");
 
     if (shape.batch == 1)
@@ -474,7 +490,7 @@ T bilinear_sample(const Matrix<T> &m, uint32 b, float64 y, float64 x);
 
 typedef Matrix<FloatT> Matrixf;
 // return 0 if out of bounds, return grid point value if on grid within "eps" distance
-// https://www.paulinternet.nl/?page=bicubic, should probably use the faster implem here, or jsut
+// https://www.paulinternet.nl/?page=bicubic, should probably use the faster implem here, || jsut
 // use textures;
 template <typename T>
 T sample(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 eps = 1e-8);
@@ -485,7 +501,7 @@ T gradient_x(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 d = 1e-
              float64 eps = 1e-8)
 {
     auto mid = sample(m, b, y, x, eps);
-    if (x < 0 or x >= 1) return mid;
+    if (x < 0 || x >= 1) return mid;
     if (std::abs(x) < eps)  // −3f(x)+4f(x+∆x)−f(x+2∆x)/2∆x, forwards difference
         return (-3 * mid + 4 * sample(m, b, y, x + d, eps) - sample(m, y, x + 2 * d, eps)) /
                (2 * d);
@@ -504,7 +520,7 @@ T gradient_y(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 d = 1e-
              float64 eps = 1e-8)
 {
     auto mid = sample(m, b, y, x, eps);
-    if (y < 0 or y >= 1) return mid;
+    if (y < 0 || y >= 1) return mid;
     if (std::abs(y) < eps)  // −3f(x)+4f(x+∆x)−f(x+2∆x)/2∆x, forwards difference
         return (-3 * mid + 4 * sample(m, b, y + d, x, eps) - sample(m, y + 2 * d, x, eps)) /
                (2 * d);

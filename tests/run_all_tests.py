@@ -1,5 +1,11 @@
 #!/usr/bin/python3
 
+'''
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+'''
+
 from pathlib import Path
 import os
 import sys

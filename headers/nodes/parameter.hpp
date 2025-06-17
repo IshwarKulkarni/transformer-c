@@ -7,6 +7,7 @@
 #ifndef PARAMETER_HPP
 #define PARAMETER_HPP
 
+#include "context.hpp"
 #include "matrix.cuh"
 #include "matrix_ops.hpp"
 
@@ -24,26 +25,27 @@ struct ParameterBase
     uint32 get_update_count() const { return update_count; }
     uint32 get_accum_count() const { return accum_count; }
 
- protected:
     uint64 accum_count = 0;
     uint64 update_count = 0;
 
+ protected:
  private:
     static uint64 param_count;
     static std::vector<ParameterBase*> all_params;
 };
 
-template <typename TW, typename TG = TW>  // weight and gradient
+template <typename TW, typename TG = TW>  // weight &&gradient
 struct Parameter : Matrix<TW>, public ParameterBase
 {
     const float64 beta1 = 0.9;
-    const float64 beta2 = 0.999;
+    const float64 beta2 = 0.99;
 
     float64 beta1Decayed = 1.0;
     float64 beta2Decayed = 1.0;
 
     Matrix<TG> m = Matrix<TG>(this->shape, "moment");
     Matrix<TG> v = Matrix<TG>(this->shape, "second_moment");
+    Matrix<TG> mag = Matrix<TG>(this->shape, "magnitude");  // temp array for magnitudes
 
     Parameter(Shape s, std::string name = "Param")
         : Matrix<TW>(xavier_uniform_init<TW>(s.set(2, 1), name)), ParameterBase(s)
@@ -56,18 +58,26 @@ struct Parameter : Matrix<TW>, public ParameterBase
         LOG_MATRIX_CREATE(" Param", this->name, " : ", this->shape);
     }
 
-    // accumulate the mean of the gradient
-    void accumulate_grad(const Matrix<TG>& gradDelta)
+    // accumulate the mean of the gradDelta, gradients += gradDelta / batch
+    void accumulate_grad(const Matrix<TG>& gradDelta, Context*)
     {
-        LOG_NODE_TRACE("Accumulating gradients for ", BLUE, this->name, RESET,
-                       " with grad delta shape: ", gradDelta.shape);
+        if (gradDelta.shape.set(BATCH_IDX, 1) != updatedGradients.shape)
+        {
+            throw_rte_with_backtrace("Shape mismatch for ", this->name, " expected ",
+                                     updatedGradients.shape, " but got ", gradDelta.shape);
+        }
         if (gradDelta.batch() > 1)
         {
             reduce<TG, BATCH_IDX>(updatedGradients, gradDelta);
             binary_apply(gradients, updatedGradients, Plus<TG>());
         }
         else
+        {
             binary_apply(gradients, gradDelta, Plus<TG>());
+        }
+        LOG_PARAM_UPDATE("Update ", update_count, " Accum ", accum_count, " for ", BLUE, this->name,
+                         RESET, " with grad delta shape: ", gradDelta.shape,
+                         " &&gradMagnitude: ", RED, grad_magnitude() / this->numels(), RESET);
         accum_count++;
     }
 
@@ -89,16 +99,16 @@ struct Parameter : Matrix<TW>, public ParameterBase
         */
         if (accum_count == 0)
         {
-            LOG_NODE_TRACE(YELLOW, "No gradients accumulated for ", this->name);
+            LOG_PARAM_UPDATE(YELLOW, "No gradients accumulated for ", this->name);
             return;
         }
 
-        LOG_NODE_TRACE("Updating weights for ", YELLOW, this->name, RESET, " with ", accum_count,
-                       " accum'd grads for update# ", update_count);
+        LOG_PARAM_UPDATE("Updating weights for ", YELLOW, this->name, RESET, " with ", accum_count,
+                         " accum'd grads for update# ", update_count, " mag: ", param_magnitude(),
+                         " grad mag: ", grad_magnitude(), " lr: ", lr);
         if (accum_count > 1)
         {
             unary_apply(gradients, DividedBy<TG>(accum_count));
-            accum_count = 0;
         }
 
         binary_apply(m, gradients, MomentUpdate<TW>(beta1));
@@ -117,35 +127,43 @@ struct Parameter : Matrix<TW>, public ParameterBase
     void udate_SGD(float32 lr)
     {
         unary_apply(updatedGradients, gradients, DividedBy<FloatT>(accum_count));
-        binary_apply(updatedWeights, *this, updatedGradients, WeightUpdate<TW>(lr / accum_count));
-        assign(*(Matrix<TW>*)(this), updatedWeights);
-        fill(gradients, (TG*)nullptr);
-        accum_count = 0;
+        binary_apply(*this, *this, updatedGradients, WeightUpdate<TW>(lr / accum_count));
+        // assign(*(Matrix<TW>*)(this), updatedWeights);
+        gradients.reset();
+        updatedGradients.reset();
     }
 
     /* @brief Update the weights using the gradients accumulated so far
      * @param lr: learning rate
      */
-    void update(float32 lr)
+    void update(float32 lr, Context*)
     {
         // udate_SGD(lr);
         update_adam(lr);
+        accum_count = 0;
         update_count++;
     }
 
-    float64 param_magnitude() const
+    float64 param_magnitude2() const
     {
         cudaErrCheck(cudaDeviceSynchronize());
         return sqrt(sum_squaredCPU(*this) / this->numels());
     }
 
-    float64 grad_magnitude() const
+    float64 grad_magnitude2() const
     {
         cudaErrCheck(cudaDeviceSynchronize());
-        return sqrt(sum_squaredCPU(gradients) / gradients.numels());
+        auto mag = sqrt(sum_squaredCPU(updatedGradients) / updatedGradients.numels());
+        if (std::isnan(mag) || std::isinf(mag))
+        {
+            throw_rte_with_backtrace("Gradient magnitude is NaN for ", *this);
+        }
+        return mag;
     }
 
     const Matrix<TG>& grads() const { return gradients; }
+
+    const Matrix<TG>& prev_grads() const { return updatedGradients; }
 
     void set_is_training(bool is_training) { this->is_training = is_training; }
 
@@ -175,8 +193,8 @@ struct Parameter : Matrix<TW>, public ParameterBase
         Shape s(size_type[0], size_type[1], size_type[2]);
         if (size_type[3] != get_type_identifier<TW>() || size_type[4] != get_type_identifier<TG>())
             throw_rte_with_backtrace("Type mismatch for ", this->name, " expected ",
-                                     get_type_identifier<TW>(), " and ", get_type_identifier<TG>(),
-                                     " but got ", size_type[3], " and ", size_type[4]);
+                                     get_type_identifier<TW>(), " &&", get_type_identifier<TG>(),
+                                     " but got ", size_type[3], " &&", size_type[4]);
         if (s != this->shape)
             throw_rte_with_backtrace("Shape mismatch for ", this->name, " expected ", this->shape,
                                      " but got ", s);
@@ -200,5 +218,17 @@ struct Parameter : Matrix<TW>, public ParameterBase
     Matrix<TG> updatedGradients = Matrix<TG>(this->shape, this->name + "updated_grads");
     Matrix<TW> updatedWeights = Matrix<TW>(this->shape, this->name + "updated");
 };
+
+inline void print_param_mags()
+{
+    for (auto param : ParameterBase::get_all_params())
+    {
+        auto p = dynamic_cast<Parameter<FloatT>*>(param);
+        auto param_mag = p->param_magnitude2();
+        if (param_mag != 0)
+            LOG("Magnitude: ", GREEN, param_mag, RESET, "\tGrad Mag: ", RED, p->grad_magnitude2(),
+                RESET, "\tfor ", p->name, "\t", p->shape);
+    }
+}
 
 #endif  // PARAMETER_HPP

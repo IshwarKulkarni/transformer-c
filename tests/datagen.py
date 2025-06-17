@@ -46,6 +46,20 @@ def save_tensor_to_csv(tensor, filename, append=False):
     return filename
 
 
+def read_csv_to_tensor(filename): # read a file written by save_tensor_to_csv
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+    if not lines[0].startswith('#'):
+        raise ValueError("File does not start with #")
+    header = lines[0].split('#')[1].strip()
+    b, h, w = [int(x) for x in header.split()]
+    vals = []
+    for line in lines:
+        if not line.startswith('#'):
+            vals.append([float(x) for x in line.split()])
+    return torch.tensor(vals).view(b, h, w)
+
+
 def write_sample_reduce_data(height, width, op):
 
     print(f"Writing sample data for reduce operation: {height}x{width} @ {op}")

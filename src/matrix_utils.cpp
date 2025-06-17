@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include "matrix.cuh"
 #include "matrix_ops.hpp"
 #include "nodes/node.hpp"
@@ -57,7 +63,7 @@ Matrix<float32> read_binary(const std::string &file = "")
 
     char header[3];
     in.read(header, 3);
-    if (header[0] != '#' or header[1] != 'F' or header[2] != '4')
+    if (header[0] != '#' || header[1] != 'F' || header[2] != '4')
     {
         throw_rte_with_backtrace("Invalid file format");
     }
@@ -78,7 +84,7 @@ Matrix<float32> read_binary(const std::string &file = "")
 template <typename T>  // bilinear interpolation, like texture mode border
 T bilinear_sample(const Matrix<T> &m, uint32 b, float64 y, float64 x)
 {
-    if (x < 0 or x >= 1 or y < 0 or y >= 1) return 0;
+    if (x < 0 || x >= 1 || y < 0 || y >= 1) return 0;
     uint32 y0 = static_cast<uint32>(y * (m.height() - 1));
     uint32 x0 = static_cast<uint32>(x * (m.width() - 1));
     uint32 y1 = y0 + 1;
@@ -112,7 +118,7 @@ T sample(const Matrix<T> &m, uint32 b, float64 y, float64 x, float64 eps)
     int32 y1 = static_cast<int32>(y);
     int32 x1 = static_cast<int32>(x);
 
-    if (std::abs(y - y1) < eps and std::abs(x - x1) < eps and uint32(x1) < m.width() and
+    if (std::abs(y - y1) < eps && std::abs(x - x1) < eps && uint32(x1) < m.width() and
         uint32(y1) < m.height())
     {
         return m(b, y1, x1);

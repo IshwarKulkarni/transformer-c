@@ -15,6 +15,9 @@
 #include "parameter.hpp"
 #include "types"
 
+#define LOG_NODE_NAME(...) \
+    LOG(BLUE, L_JUST(this->type() + ":", 16), L_JUST(this->name, 24), __VA_ARGS__)
+
 template <typename T>
 struct Node;
 
@@ -30,13 +33,7 @@ using NodePtrVec = std::vector<NodePtr<T>>;
 template <typename T = FloatT>  // should be NodePtrInitList
 using NodePtrList = std::initializer_list<const NodePtr<T>>;
 
-struct Context
-{
-    uint32 depth = 0;
-    uint32 epoch = 0;
-    uint32 forward_pass_count = 0;
-    uint32 backward_pass_count = 0;
-};
+struct NodeBase;
 
 struct NodeBase
 {
@@ -44,11 +41,12 @@ struct NodeBase
     {
         (void)(shape);  // no warn if LOG_NODE_TRACE is disabled
         (void)(name);   // no warn if LOG_NODE_TRACE is disabled
-        LOG_NODE_TRACE("Creating Node ", name, " with shape: ", shape);
         all_nodes.push_back(this);
     }
 
     virtual ~NodeBase() = default;
+
+    virtual std::string type() const { return "NodeBase"; }
 
     static std::vector<NodeBase*> all_nodes;
 };
@@ -73,25 +71,39 @@ struct Node : public Matrix<T>, NodeBase
     // call compute on all previous nodes to populate their outputs, then call forward
     virtual void compute(Context* ctx)
     {
-        LOG_NODE_TRACE("Computing inputs for `", this->name, "` : ", ctx->depth);
-        for (auto& p : prev_nodes) p->compute(ctx);
+        LOG_NODE_TRACE(
+            "", forward_count, ": Computing inputs for `", this->name, "`",
+            (ctx->get_forward_pass_count() == forward_count ? ". Already computed skipping" : ""));
+        if (ctx->get_forward_pass_count() == forward_count) return;  // already computed
+        for (auto& p : prev_nodes)
+        {
+            p->compute(ctx);
+        }
+        forward_count++;
         this->forward(ctx);
     }
 
     virtual void forward(
         Context* ctx) = 0;  // Assumes that all `prev_nodes` are completed forward pass.
     virtual void backward(const Matrix<T>* e, Context* ctx) = 0;
-    virtual void update_weights(FloatT lr)
+    virtual void update_weights(FloatT lr, Context* ctx)
     {
-        for (auto& n : prev_nodes) n->update_weights(lr);
-        for (auto& p : params) p->update(lr);
-        if (auto terminal = this->get_terminal_node()) terminal->update_weights(lr);
+        for (auto& p : params) p->update(lr, ctx);
     }
 
     std::vector<Parameter<T, T>*> params;
     NodePtrVec<T> prev_nodes{};
 
-    Matrix<T>& prev(uint32 i) { return *((Matrix<T>*)(prev_nodes[i])); }
+    uint64 forward_count = 0;
+    uint64 backward_count = 0;
+
+    Matrix<T>& prev(uint32 i)
+    {
+        if (i >= prev_nodes.size())
+            throw_rte_with_backtrace("Index out of bounds for prev_nodes: ", i,
+                                     " with size: ", prev_nodes.size(), " for node: ", this->name);
+        return *((Matrix<T>*)(prev_nodes[i]));
+    }
 
     virtual uint32 param_count()
     {
@@ -109,6 +121,7 @@ struct Node : public Matrix<T>, NodeBase
         for (auto& p : prev_nodes) p->set_is_training(is_training);
     }
 
+    // terminal node is the node that produces the output (should not be `this`)
     virtual NodePtr<T> get_terminal_node() { return nullptr; }
     virtual std::string dot_repr() { return " [label=\"" + this->name + "\" shape=rect]\n"; }
 
@@ -119,12 +132,14 @@ struct Node : public Matrix<T>, NodeBase
     // some nodes can have input proxies that are not "prev_nodes", but inputs
     // are read via `set_data()` like functions.
     virtual std::vector<NodePtr<T>> get_dependencies() const { return prev_nodes; }
+
+    virtual std::string type() const { return "Node"; }
 };
 
 template <typename Ta, typename Tb = Ta>
 std::ostream& operator<<(std::ostream& os, const Parameter<Ta, Tb>& p)
 {
-    os << p.name << " Weights: " << *(Matrix<Ta>*)(&p) << " With Grads: " << p.grads() << std::endl;
+    os << *(Matrix<Ta>*)(&p) << " With Grads: " << p.grads() << std::endl;
     return os;
 }
 

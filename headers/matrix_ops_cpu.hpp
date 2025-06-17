@@ -67,7 +67,7 @@ void mmTaddCPU(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B,
 template <typename T, typename PostProcess = Identity<T>>
 void transposeCPU(Matrix<T>& res, const Matrix<T>& A, PostProcess unary = PostProcess())
 {
-    if (res.shape.t() != A.shape or A.batch() != res.batch())
+    if (res.shape.t() != A.shape || A.batch() != res.batch())
         throw_rte_with_backtrace("Shapes don't match for transpose:", A.shape, "->", res.shape);
     for (uint32 b = 0; b < res.batch(); b++)
     {
@@ -110,7 +110,7 @@ void reduceCPU(Matrix<T>& result, const Matrix<T>& A, const Reduction& op = Redu
             T reduced = identity;
             for (uint32 i0 = 0; i0 < l0; i0++)
             {
-                if (!A.extents.template in_bounds<dim>(i0, i1, i2)) continue;
+                if (!A.template in_extents<dim>(i0, i1, i2)) continue;
                 reduced = op(reduced, A.template index<dim>(i0, i1, i2));
             }
             result.template index<dim>(0, i1, i2) = pProcess(reduced);
@@ -128,8 +128,8 @@ template <typename T, typename Tb = T, typename Tr = T, typename Reduction>
 inline void binary_applyCPU(Matrix<Tr>& res, const Matrix<T>& A, const Matrix<Tb>& B,
                             const Reduction& op)
 {
-    // a and b's dimensions should match result dimensions either on height or
-    // width or have numels
+    // a &&b's dimensions should match result dimensions either on height or
+    // width || have numels
     // 1
     if ((A.height() != res.height() && A.width() != res.width() && A.numels() != 1) ||
         (B.height() != res.height() && B.width() != res.width() && B.numels() != 1))

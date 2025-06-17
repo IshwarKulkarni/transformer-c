@@ -55,9 +55,9 @@ class Logger
  public:
     void inline tee(const std::string& filename)
     {
-        if (!file.is_open())
+        if (!m_tee_file.is_open())
         {
-            file.open(filename);
+            m_tee_file.open(filename);
         }
     }
 
@@ -81,7 +81,7 @@ class Logger
         const char* prev_slash = arg1.file;
         const char* end = arg1.file + len - 1;
         if (len > max_len)  //  clip from slash that keeps the length below max_len;
-            for (int i = 0; i < max_len and end != arg1.file; i++, end--)
+            for (int i = 0; i < max_len && end != arg1.file; i++, end--)
                 if (*end == '/') prev_slash = end + 1;
         if (file[0] == '/') file = file.substr(1);
         snprintf(file_loc, sizeof(file_loc), " %*.*s:%-4d ", max_len, max_len, prev_slash,
@@ -95,10 +95,23 @@ class Logger
         return this->log_v((strm << arg1), args...);
     }
 
+    void flush()
+    {
+        if (m_tee_file.is_open())
+        {
+            m_tee_file.flush();
+        }
+    }
+
     template <typename... Args>
     inline void log(const Args&... args)
     {
         std::cout << get_time_str() << RESET << " ";
+        if (m_tee_file.is_open())
+        {
+            m_tee_file << get_time_str() << RESET << " ";
+            this->log_v(m_tee_file, args...) << RESET << std::endl;
+        }
         this->log_v(std::cout, args...) << RESET << std::endl;
     }
 
@@ -125,7 +138,7 @@ class Logger
     ~Logger() = default;
 
  private:
-    std::ofstream file;
+    std::ofstream m_tee_file;
     std::set<std::string> disabled_files;
     Logger() = default;
 };
@@ -136,6 +149,66 @@ inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
 {
     return strm << "(" << dim.x << ", " << dim.y << ", " << dim.z << ")";
 }
+
+// Claude generated:
+inline std::ostream& operator<<(std::ostream& strm, const std::chrono::duration<double>& duration)
+{
+    double seconds = duration.count();
+    auto prec = strm.precision();
+    auto flags = strm.flags();
+
+    auto return_strm = [&]() -> std::ostream& {
+        strm.precision(prec);
+        strm.flags(flags);
+        return strm;
+    };
+
+    // Handle microseconds (under 1ms)
+    if (seconds < 0.001)
+    {
+        strm << std::fixed << std::setprecision(1) << (seconds * 1000000) << "us";
+        return return_strm();
+    }
+
+    // Handle milliseconds (under 1s)
+    if (seconds < 1.0)
+    {
+        strm << std::fixed << std::setprecision(2) << (seconds * 1000) << "ms";
+        return return_strm();
+    }
+
+    // Handle seconds (under 2 mins)
+    if (seconds < 120)
+    {
+        strm << std::fixed << std::setprecision(2) << seconds << "s";
+        return return_strm();
+    }
+
+    // Handle minutes (under 1 hour)
+    if (seconds < 3600)
+    {
+        int mins = static_cast<int>(seconds) / 60;
+        double secs = seconds - (mins * 60);
+        strm << mins << "m:" << std::fixed << std::setprecision(1) << secs << "s";
+        return return_strm();
+    }
+
+    // Handle hours
+    int hours = static_cast<int>(seconds) / 3600;
+    int mins = (static_cast<int>(seconds) % 3600) / 60;
+    double secs = seconds - (hours * 3600) - (mins * 60);
+
+    strm << std::setfill('0') << std::setw(2) << hours << ":" << std::setfill('0') << std::setw(2)
+         << mins << ":" << std::fixed << std::setprecision(1) << secs << "s";
+    return return_strm();
+}
+
+#ifdef LOG_NODE_CREATION_ON
+#define LOG_NODE_CREATION(...) \
+    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " NODE CREATION: ", __VA_ARGS__)
+#else
+#define LOG_NODE_CREATION(...)
+#endif
 
 #ifdef LOG_ALLOC_ON
 #define LOG_ALLOC(...) \
@@ -154,28 +227,36 @@ inline std::ostream& operator<<(std::ostream& strm, const dim3& dim)
 #define LOG_NODE_TRACE(...)
 #endif
 
+#ifdef LOG_PARAM_UPDATE_ON
+#define LOG_PARAM_UPDATE(...) \
+    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " PARAM UPDATE #, " __VA_ARGS__)
+#else
+#define LOG_PARAM_UPDATE(...)
+#endif
+
 #ifdef LOG_MATRIX_OPS_ON
 #define LOG_MATRIX_OPS(...) \
-    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " OP: ", __VA_ARGS__)
+    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " OP #, ", __VA_ARGS__)
 #else
 #define LOG_MATRIX_OPS(...)
 #endif
 
 #ifdef LOG_MATRIX_CREATE_ON
 #define LOG_MATRIX_CREATE(...) \
-    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, "Created: ", __VA_ARGS__)
+    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, "Created #, ", __VA_ARGS__)
 #else
 #define LOG_MATRIX_CREATE(...)
 #endif
 
 #ifdef LOG_KERNEL_SIZE_ON
 #define LOG_KERNEL_SIZE(...) \
-    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " Kernel Size: ", __VA_ARGS__)
+    Log::Logger::get().log(Log::Location{__FILE__, __LINE__}, " Kernel Size #, ", __VA_ARGS__)
 #else
 #define LOG_KERNEL_SIZE(...)
 #endif
 
 #define R_JUST(x, n) std::setw(n), std::setfill(' '), std::right, x, " "
+#define L_JUST(x, n) std::setw(n), std::setfill(' '), std::left, x, " "
 #define DISABLE_LOG_FOR_FILE Log::Logger::get().disable(__FILE__);
 #define ENABLE_LOG_FOR_FILE Log::Logger::get().enable(__FILE__);
 #define LOG_NOLOC(...) Log::Logger::get().log(__VA_ARGS__)

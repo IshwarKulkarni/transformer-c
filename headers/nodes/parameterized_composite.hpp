@@ -1,19 +1,26 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #ifndef PARAMETERIZED_COMPOSITE_HPP
 #define PARAMETERIZED_COMPOSITE_HPP
 
 #include <memory>
 #include <string>
+#include "matrix.cuh"
 #include "node.hpp"
 #include "nodes/parameterized.hpp"
 /*
-File contains parameterized composite nodes, which are nodes that contain other attention and linear
+File contains parameterized composite nodes, which are nodes that contain other attention &&linear
 nodes.
 */
 
 /*
 MultiHeadAttention:
 Input is a std::vector of 3 matrices, each of size `S x Ei`, where S is the sequence length.
-With `n_heads`, each head projects querys and keys to `S x q_size`
+With `n_heads`, each head projects querys &&keys to `S x q_size`
 to generate attention and, values are projected to `S x v_size` to generate each output,
 that are concatenated to `S x n_heads * v_size`, which are then linearly transformed to
 `S x out_size`.
@@ -26,14 +33,13 @@ struct MultiHeadAttention : Node<T>
     std::unique_ptr<Concat0<T>> concat;
     std::vector<std::unique_ptr<Att>> heads;
 
-    // Oinp.prev and Oinp.name are ignored
+    // Oinp.prev &&Oinp.name are ignored
     MultiHeadAttention(uint32 num_heads, LinearInput<T> Qinp, LinearInput<T> Kinp,
-                       LinearInput<T> Vinp, LinearInput<T> Oinp, std::string name = "MHA")
+                       LinearInput<T> Vinp,
+                       LinearInput<T> Oinp,  // Oinp.prev &&Oinp.name are ignored
+                       std::string name = "MHA")
         : Node<T>({Qinp.prev->batch(), Qinp.prev->height(), Oinp.out_size}, {}, name, 0)
     {
-        LOG(BLUE, "MultiHeadAttention: ", this->name, " with input Qinp: ", Qinp.prev->name);
-        LOG(BLUE, Qinp.prev->shape, " Kinp: ", Kinp.prev->name, Kinp.prev->shape,
-            " Vinp: ", Vinp.prev->name, Vinp.prev->shape, " Out Shape: ", this->shape);
         if (num_heads == 1)
         {
             throw_rte_with_backtrace("num_heads 1 , use Attention instead");
@@ -42,18 +48,26 @@ struct MultiHeadAttention : Node<T>
         NodePtrVec<T> head_ptrs;
         for (uint32 i = 0; i < num_heads; ++i)
         {
-            heads.emplace_back(
-                std::make_unique<Att>(Qinp, Kinp, Vinp, name + "_Head_" + std::to_string(i)));
+            std::string head_str = "_h" + std::to_string(i);
+            heads.emplace_back(std::make_unique<Att>(
+                Qinp.set_name(Qinp.name + head_str), Kinp.set_name(Kinp.name + head_str),
+                Vinp.set_name(Vinp.name + head_str), name + head_str));
             head_ptrs.push_back(heads.back().get());
         }
         concat = std::make_unique<Concat0<T>>(head_ptrs, name + "_Concat");
         Oinp.prev = concat.get();
-        Oinp.name = name + "_Linear";
+        Oinp.name = name + "_Out";
         linear = std::make_unique<Linear<T>>(Oinp);
+
+        LOG_NODE_NAME(Qinp.prev->shape, R_JUST("->", 4), linear->shape);
         this->set_data(linear->get_data());
     }
 
-    void forward(Context* ctx) override { linear->compute(ctx); }
+    void forward(Context* ctx) override
+    {
+        linear->compute(ctx);
+        this->copy_extents(*linear);
+    }
 
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
@@ -107,34 +121,35 @@ struct MultiHeadAttention : Node<T>
         linear->load_weights(is);
     }
 
-    virtual std::vector<NodePtr<T>> get_dependencies() const override
-    {
-        return heads[0]->get_dependencies();
-    }
+    virtual NodePtrVec<T> get_dependencies() const override { return heads[0]->get_dependencies(); }
 
     Att* get_head(uint32 i) { return heads[i].get(); }
 
     virtual uint32 param_count() override
     {
-        return std::accumulate(
-                   heads.begin(), heads.end(), 0,
-                   [](uint32 sum, const auto& head) { return sum + head->param_count(); }) +
-               linear->param_count();
+        auto head_count =
+            std::accumulate(heads.begin(), heads.end(), 0,
+                            [](uint32 sum, const auto& head) { return sum + head->param_count(); });
+        auto linear_count = linear->param_count();
+        return head_count + linear_count;
     }
 
     NodePtr<T> get_terminal_node() override { return linear.get(); }
+
+    virtual std::string type() const override { return "MultiHeadAttn"; }
 };
 
 template <typename T = FloatT>
 struct MultiHeadSelfAttention : MultiHeadAttention<T>
 {
     std::unique_ptr<LinearProxy<T>> x;
-    MultiHeadSelfAttention(uint32 num_heads, LinearInput<T> Linp, LinearInput<T> Oinp,
+    MultiHeadSelfAttention(uint32 num_heads, LinearInput<T> Linp,
+                           LinearInput<T> Oinp,  // Oinp.prev &&Oinp.name are ignored
                            std::string name = "MHSA")
-        : MultiHeadAttention<T>(num_heads, Linp, Linp, Linp, Oinp, name)
+        : MultiHeadAttention<T>(num_heads, Linp.set_name(Linp.name + "_Q"),
+                                Linp.set_name(Linp.name + "_K"), Linp.set_name(Linp.name + "_V"),
+                                Oinp.set_name(name + "_O"), name)
     {
-        LOG(BLUE, "MultiHeadAttention: ", this->name, " with input Linp: ", Linp.prev->name);
-
         if (auto proxy = LinearProxy<T>::get_proxy(Linp))
         {
             x = std::unique_ptr<LinearProxy<T>>(proxy);
@@ -149,6 +164,12 @@ struct MultiHeadSelfAttention : MultiHeadAttention<T>
             LOG(YELLOW, "High branching in gradient paths starting from ", this->name);
     }
 
+    void forward(Context* ctx) override
+    {
+        if (x) x->in->compute(ctx);
+        MultiHeadAttention<T>::forward(ctx);
+    }
+
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
@@ -156,6 +177,14 @@ struct MultiHeadSelfAttention : MultiHeadAttention<T>
         MultiHeadAttention<T>::backward(gradientIn, ctx);
         if (x) x->proxy_backward(ctx);
     }
+
+    virtual NodePtrVec<T> get_dependencies() const override
+    {
+        if (x) return {x->in};
+        return MultiHeadAttention<T>::get_dependencies();
+    }
+
+    virtual std::string type() const override { return "MultiHeadSelfAttention"; }
 };
 
 template <typename T = FloatT>
@@ -197,82 +226,108 @@ struct MultiHeadCrossAttention : MultiHeadAttention<T>
         out.push_back(x.get());
         return out;
     }
+
+    virtual std::string type() const override { return "MultiHeadCrossAttention"; }
 };
 
-// FeedForward block: Linear -> Dropout -> Linear -> Dropout -> LayerNorm
+/* FeedForward block:
+    Four versions:
+       V0: Prev-> Linear1 -> Dropout1 -> Linear2 -> Dropout2 -> LayerNorm
+       V1: Prev-> Linear1 -> Dropout1 -> Residual -> Linear2 -> Dropout2 -> LayerNorm
+              \___________________________/
+       V2: Prev-> Linear1 -> Dropout1 -> Residual1 -> Linear2 -> Dropout2 -> Residual2 -> LayerNorm
+                                                 \___________________________/
+       V3: Prev-> Linear1 -> Dropout1 -> Residual1 -> Linear2 -> Dropout2 -> Residual2 -> LayerNorm
+              \___________________________/     \___________________________/
+
+    V0: No residual connections, V1: Residual across Linear1, V2: Residual Linear2, V3: Residual
+   across both
+
+    if PWidth == IWidth &&IWidth == OWidth, then V3
+    else if PWidth != IWidth &&IWidth == OWidth, then V2
+    else if PWidth == IWidth &&IWidth != OWidth, then V1
+    else V0
+*/
 template <typename T = FloatT>
 struct FeedForward : Node<T>
 {
-    Linear<T> linear1;
-    Dropout<T> dropout1;
-    std::unique_ptr<Add<T>> residual1;
-    Linear<T> linear2;
-    Dropout<T> dropout2;
-    std::unique_ptr<Add<T>> residual2;
-    Normalize<T, WIDTH_IDX> layer_norm;
-
-    // inp.out_size is the output size of this block, intermediate_dim is the hidden size of the
-    // linear layer Does not use residual connections
-    FeedForward(const LinearInput<T>& inp, uint32 intermediate_dim, float32 dropout_rate1,
-                float32 dropout_rate2, std::string name)
-        : Node<T>(inp.prev->shape.set(WIDTH_IDX, inp.out_size), {}, name, 0),
-          linear1(intermediate_dim, inp.prev, inp.useBias, inp.act_name, name + "_L1"),
-          dropout1(dropout_rate1, &linear1, name + "_D1"),
-          linear2(inp.out_size, &dropout1, inp.useBias, "identity", name + "_L2"),
-          dropout2(dropout_rate2, &linear2, name + "_D2"),
-          layer_norm(&dropout2, name + "_norm")
+    FeedForward(LinearInput<T> l_inp1,  // ::out_size is ignored, intermediate_dim is out_size of
+                                        // Linear1, name is ignoredst
+                FloatT dropout1_rate, uint32 intermediate_dim,
+                LinearInput<T> l_inp2,  // ::prev is ignored, prev is either residual1 || dropout1,
+                                        // name is ignored
+                FloatT dropout2_rate, std::string name = "FeedForward")
+        : Node<T>(l_inp1.prev->shape.set(WIDTH_IDX, l_inp2.out_size), {}, name, 0)
     {
-        LOG(BLUE, "FeedForward: ", this->name, " with input: ", inp.prev->name, inp.prev->shape,
-            " no residual connections");
-        this->set_data(linear2.get_data());
-    }
+        uint32 prev_width = l_inp1.prev->width();
+        uint32 out_width = l_inp2.out_size;
+        l_inp1.out_size = intermediate_dim;
 
-    // residual version, intermediate_dim is same as inp.out_size
-    FeedForward(const LinearInput<T>& inp, float32 dropout_rate1, float32 dropout_rate2,
-                std::string name)
-        : Node<T>(inp.prev->shape.set(WIDTH_IDX, inp.out_size), {}, name, 0),
-          linear1(inp.out_size, inp.prev, inp.useBias, inp.act_name, name + "_L1"),
-          dropout1(dropout_rate1, &linear1, name + "_D1"),
-          residual1(new Add<T>({inp.prev, &dropout1}, name + "_residual1")),
-          linear2(inp.out_size, residual1.get(), inp.useBias, "identity", name + "_L2"),
-          dropout2(dropout_rate2, &linear2, name + "_D2"),
-          residual2(new Add<T>(NodePtrVec<T>{residual1.get(), &dropout2}, name + "_residual2")),
-          layer_norm(residual2.get(), name + "_norm")
-    {
-        LOG(BLUE, "FeedForward residual: ", this->name, " with input: ", inp.prev->name,
-            inp.prev->shape);
-        this->set_data(linear2.get_data());
+        linear1 = std::make_unique<Linear<T>>(l_inp1);
+        dropout1 = std::make_unique<Dropout<T>>(dropout1_rate, linear1.get(), name + "_Dropout1");
+
+        l_inp2.prev = dropout1.get();
+        if (prev_width == intermediate_dim)
+        {
+            residual1 = std::make_unique<Add<T>>(NodePtrVec<T>{l_inp1.prev, dropout1.get()},
+                                                 name + "_Residual1");
+            l_inp2.prev = residual1.get();
+        }
+
+        linear2 = std::make_unique<Linear<T>>(l_inp2);
+        dropout2 = std::make_unique<Dropout<T>>(dropout2_rate, linear2.get(), name + "_Dropout2");
+        NodePtr<T> prev = dropout2.get();
+        if (intermediate_dim == out_width)
+        {
+            residual2 = std::make_unique<Add<T>>(NodePtrVec<T>{l_inp2.prev, dropout2.get()},
+                                                 name + "_Residual2");
+            prev = residual2.get();
+        }
+        layer_norm = std::make_unique<Normalize<T, WIDTH_IDX>>(prev, name + "_LayerNorm");
+        this->set_data(layer_norm->get_data());
+        LOG_NODE_NAME(l_inp1.prev->shape, R_JUST("->", 4), linear2->shape);
     }
 
     void forward(Context* ctx) override
     {
         LOG_NODE_TRACE("FeedForward::forward for ", this->name);
-        layer_norm.compute(ctx);
+        layer_norm->compute(ctx);
+        this->copy_extents(*layer_norm);
     }
 
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("FeedForward::backward for ", this->name);
-        layer_norm.backward(gradientIn, ctx);
+        layer_norm->backward(gradientIn, ctx);
     }
 
-    virtual std::vector<NodePtr<T>> get_dependencies() const override { return linear1.prev_nodes; }
+    virtual std::vector<NodePtr<T>> get_dependencies() const override
+    {
+        return linear1->prev_nodes;
+    }
 
-    virtual NodePtr<T> get_terminal_node() override { return &layer_norm; }
+    virtual NodePtr<T> get_terminal_node() override { return layer_norm.get(); }
 
-    virtual uint32 param_count() override { return linear1.param_count() + linear2.param_count(); }
+    virtual uint32 param_count() override
+    {
+        return linear1->param_count() + linear2->param_count();
+    }
 
     virtual std::string dot_repr() override
     {
         std::stringstream ss;
-        uint32 learnable_count = linear1.param_count() + linear2.param_count();
+        uint32 learnable_count = linear1->param_count() + linear2->param_count();
         ss << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "["
            << num_to_si(learnable_count, true) << "]\"\n";
         // add internal nodes
-        NodePtrVec<T> nodes = {&linear1, &dropout1, &linear2, &dropout2, &layer_norm};
+        NodePtrVec<T> nodes = {linear1.get(), dropout1.get(), linear2.get(), dropout2.get(),
+                               layer_norm.get()};
         if (residual1) nodes.push_back(residual1.get());
         if (residual2) nodes.push_back(residual2.get());
-        for (auto& n : nodes) ss << '\t' << n->id << ' ';
+        for (auto& n : nodes)
+        {
+            if (n) ss << '\t' << n->id << ' ';
+        }
         ss << "{rank = max; " << this->id << ";}\n";
         ss << "\n\t" << this->id << "}\n";
         if (residual1) ss << residual1->dot_repr() << '\n';
@@ -281,6 +336,29 @@ struct FeedForward : Node<T>
            << "]\", shape=box3d,  style=filled, fillcolor=azure ]\n";
         return ss.str();
     }
+
+    virtual std::string type() const override { return "FeedForward"; }
+
+    void save_weights(std::ostream& os) const override
+    {
+        linear1->save_weights(os);
+        linear2->save_weights(os);
+    }
+
+    void load_weights(std::istream& is) override
+    {
+        linear1->load_weights(is);
+        linear2->load_weights(is);
+    }
+
+ private:
+    std::unique_ptr<Linear<T>> linear1;
+    std::unique_ptr<Dropout<T>> dropout1;
+    std::unique_ptr<Add<T>> residual1;
+    std::unique_ptr<Linear<T>> linear2;
+    std::unique_ptr<Dropout<T>> dropout2;
+    std::unique_ptr<Add<T>> residual2;
+    std::unique_ptr<Normalize<T, WIDTH_IDX>> layer_norm;
 };
 
 template <typename T = FloatT>
@@ -313,6 +391,7 @@ struct SAEncoder : Node<T>
     {
         LOG_NODE_TRACE("SAEncoder::forward for ", this->name);
         layer_norm.compute(ctx);
+        this->copy_extents(layer_norm);
     }
 
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
@@ -330,6 +409,24 @@ struct SAEncoder : Node<T>
         ss << "subgraph cluster_" << this->id << "{\n    label = \"" << this->name << "["
            << num_to_si(learnable_count, true) << "]\"\n";
         return ss.str();
+    }
+
+    virtual std::string type() const override { return "SAEncoder"; }
+
+    void save_weights(std::ostream& os) const override
+    {
+        mhsa.save_weights(os);
+        ff_in.save_weights(os);
+        ff_out.save_weights(os);
+        layer_norm.save_weights(os);
+    }
+
+    void load_weights(std::istream& is) override
+    {
+        mhsa.load_weights(is);
+        ff_in.load_weights(is);
+        ff_out.load_weights(is);
+        layer_norm.load_weights(is);
     }
 };
 

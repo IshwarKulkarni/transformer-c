@@ -13,7 +13,7 @@
 
 using Node = WordVecNode;
 
-std::ostream& operator<<(std::ostream& os, const Vec300& arr)
+std::ostream& operator<<(std::ostream& os, const WORDVEC& arr)
 {
     for (uint32 i = 0; i < WORD2VEC_DIM; i++)
     {
@@ -22,7 +22,7 @@ std::ostream& operator<<(std::ostream& os, const Vec300& arr)
     return os;
 }
 
-std::istream& operator>>(std::istream& is, Vec300& arr)
+std::istream& operator>>(std::istream& is, WORDVEC& arr)
 {
     for (uint32 i = 0; i < WORD2VEC_DIM; i++)
     {
@@ -34,16 +34,16 @@ std::istream& operator>>(std::istream& is, Vec300& arr)
 std::ostream& operator<<(std::ostream& os, const WordVecNode& node)
 {
     char line[256] = {0};
-    bool left = node.parent and node.parent->left and node.parent->left->id == node.id;
+    bool left = node.parent && node.parent->left && node.parent->left->id == node.id;
     snprintf(line, 256, "%18s [%8d/%3d %c] ", node.word.c_str(), node.id, node.depth,
              left ? 'L' : 'R');
     os << line;
     return os;
 }
 
-FloatT add_noise(Vec300& vec, FloatT mean, FloatT std)
+FloatT add_noise(WORDVEC& vec, FloatT mean, FloatT std)
 {
-    Vec300 orig = vec;
+    WORDVEC orig = vec;
     auto& gen = rdm::gen();
     std::normal_distribution<FloatT> d(mean, std);
     for (uint32 i = 0; i < WORD2VEC_DIM; i++) vec[i] += d(gen);
@@ -51,9 +51,9 @@ FloatT add_noise(Vec300& vec, FloatT mean, FloatT std)
     return l2_dist2(orig, vec);
 }
 
-FloatT add_noise_normal(Vec300& vec, FloatT mean, FloatT std)
+FloatT add_noise_normal(WORDVEC& vec, FloatT mean, FloatT std)
 {
-    Vec300 orig = vec;
+    WORDVEC orig = vec;
     add_noise(vec, mean, std);
     FloatT norm = 0;
     for (uint32 i = 0; i < WORD2VEC_DIM; i++) norm += vec[i] * vec[i];
@@ -62,7 +62,7 @@ FloatT add_noise_normal(Vec300& vec, FloatT mean, FloatT std)
     return cos_sim(orig, vec);
 }
 
-std::array<std::pair<float32, bool>, WORD2VEC_DIM> diff(const Vec300& a, const Vec300& b,
+std::array<std::pair<float32, bool>, WORD2VEC_DIM> diff(const WORDVEC& a, const WORDVEC& b,
                                                         float32 eps, uint32* count)
 {
     std::array<std::pair<float32, bool>, WORD2VEC_DIM> diffs;
@@ -131,7 +131,7 @@ static bool read_binary(const std::string& filename, std::vector<WordVecPair>& w
     wordVecPairs.reserve(n_words);
 
     std::vector<char> word_str(max_word_len);
-    Vec300 vec;
+    WORDVEC vec;
     for (uint32 i = 0; i < n_words; i++)
     {
         word_str.clear();
@@ -143,7 +143,7 @@ static bool read_binary(const std::string& filename, std::vector<WordVecPair>& w
 }
 
 static bool read_text(const std::string& filename, std::vector<WordVecPair>& wordVecPairs,
-                      uint32 max_dict_size)
+                      uint32 max_dict_size, bool has_headers = true)
 {
     if (endswith(filename, ".bin") && !read_binary(filename, wordVecPairs))
     {
@@ -157,23 +157,26 @@ static bool read_text(const std::string& filename, std::vector<WordVecPair>& wor
     }
     Timer timer("Reading Text");
     std::ifstream file(filename, std::ios::binary);
-    uint32 n_words, vec_size;
-    file >> n_words >> vec_size;
-    if (vec_size != WORD2VEC_DIM)
+    uint32 n_words = -1;
+    if (has_headers)
     {
-        LOG(RED, "Vector size mismatch: ", vec_size, " != ", WORD2VEC_DIM);
-        throw_rte_with_backtrace("Vector size mismatch");
+        uint32 vec_size = -1;
+        file >> n_words >> vec_size;
+        if (vec_size != WORD2VEC_DIM)
+        {
+            throw_rte_with_backtrace("Vector size mismatch: ", vec_size, " != ", WORD2VEC_DIM);
+        }
+        if (n_words > max_dict_size)
+        {
+            LOG(YELLOW, "Truncating dictionary from ", n_words, " to ", max_dict_size);
+            n_words = max_dict_size;
+        }
+        wordVecPairs.reserve(n_words);
     }
-    if (n_words > max_dict_size)
-    {
-        LOG(YELLOW, "Truncating dictionary from ", n_words, " to ", max_dict_size);
-        n_words = max_dict_size;
-    }
-    wordVecPairs.reserve(n_words);
     for (uint32 i = 0; i < n_words && file; ++i)
     {
         std::string word;
-        Vec300 vec;
+        WORDVEC vec;
         file >> word >> vec;
         wordVecPairs.push_back(WordVecPair(word, vec));
         if (i % 1000 == 0) progress_bar(i, n_words);
@@ -182,24 +185,53 @@ static bool read_text(const std::string& filename, std::vector<WordVecPair>& wor
     return true;
 }
 
+Word2VecBase::Word2VecBase(const std::string& filename, uint32 max_dict_size)
+{
+    std::vector<WordVecPair> wordVecPairs;
+    try
+    {
+        read_text(filename, wordVecPairs, max_dict_size, true);
+    }
+    catch (const std::exception& e)
+    {
+        LOG(RED, "Could not read headers of word2vec file, estimates will be wrong", e.what());
+        read_text(filename, wordVecPairs, max_dict_size, false);
+    }
+
+    m_nodes.reserve(wordVecPairs.size() + 1);
+    for (const auto& pair : wordVecPairs)
+    {
+        m_nodes.push_back(new WordVecNode(pair, 0));
+        m_word2Node[pair.first] = m_nodes.back();
+    }
+}
+
 Word2Vec::Word2Vec(const std::string& filename, uint32 max_dict_size)
 {
     std::vector<WordVecPair> wordVecPairs;
-    read_text(filename, wordVecPairs, max_dict_size);
+    try
+    {
+        read_text(filename, wordVecPairs, max_dict_size, true);
+    }
+    catch (const std::exception& e)
+    {
+        LOG(RED, "Could not read headers of word2vec file, estimates will be wrong", e.what());
+        read_text(filename, wordVecPairs, max_dict_size, false);
+    }
 
     Timer timer("Tree Building ");
 
-    nodes.reserve(wordVecPairs.size() + 1);
-    root = build(wordVecPairs.begin(), wordVecPairs.end(), 0);
-    for (const auto* node : nodes)
+    m_nodes.reserve(wordVecPairs.size() + 1);
+    m_root = build(wordVecPairs.begin(), wordVecPairs.end(), 0);
+    for (const auto* node : m_nodes)
     {
-        word2Node[node->word] = node;
+        m_word2Node[node->word] = node;
     }
 
-    std::sort(nodes.begin(), nodes.end(),
+    std::sort(m_nodes.begin(), m_nodes.end(),
               [](const WordVecNode* a, const WordVecNode* b) { return a->id < b->id; });
 
-    LOG(GREEN, "Tree with ", nodes.size(), " nodes built in ", timer.stop(), "s.");
+    LOG(GREEN, "Tree with ", m_nodes.size(), " nodes built in ", timer.stop(), "s.");
 }
 
 void dfs(const WordVecNode* start_node, NodeVector& out)  // infix traversal
@@ -257,16 +289,16 @@ WordVecNode* Word2Vec::build(WordVecPairIter begin, WordVecPairIter end, int dep
     if (node->left) node->left->parent = node;
     if (node->right) node->right->parent = node;
     node->parent = depth == 0 ? node : node->parent;
-    nodes.push_back(node);
+    m_nodes.push_back(node);
     return node;
 }
 
-void Word2Vec::nearest(const Vec300& vec, const WordVecNode* node, NodeDist2& best, FloatT thresh,
+void Word2Vec::nearest(const WORDVEC& vec, const WordVecNode* node, NodeDist2& best, FloatT thresh,
                        uint32* count, uint32 count_threshold, uint32 maxDepthForExact)
 {
     if (!node) return;
     nearest_count++;
-    if (count and *count > count_threshold) return;
+    if (count && *count > count_threshold) return;
     uint32 axis = get_axis(node->depth);
     if (best.second < thresh) return;
     FloatT dist2 =
@@ -276,29 +308,29 @@ void Word2Vec::nearest(const Vec300& vec, const WordVecNode* node, NodeDist2& be
         best = {node, dist2};
     }
     auto *pursure = node->right, *other = node->left;
-    if (node->left and vec[axis] < node->vec[axis]) std::swap(pursure, other);
+    if (node->left && vec[axis] < node->vec[axis]) std::swap(pursure, other);
     nearest(vec, pursure, best, thresh, count, count_threshold, maxDepthForExact);
-    if (best.second < thresh or !other) return;
+    if (best.second < thresh || !other) return;
 
     FloatT aa_dist = (node->vec[axis] - vec[axis]) * (node->vec[axis] - vec[axis]);
     if (aa_dist < best.second)
     {
-        if (count and (*count)++ > count_threshold) return;
+        if (count && (*count)++ > count_threshold) return;
         nearest(vec, other, best, thresh, count, count_threshold, maxDepthForExact);
     }
 }
 
-const WordVecNode* Word2Vec::operator()(const Vec300& vec, SearchOption option)
+const WordVecNode* Word2Vec::operator()(const WORDVEC& vec, SearchOption option)
 {
-    NodeDist2 best{root, 3};  // embeddings are normalized so largest possible distance is 2
+    NodeDist2 best{m_root, 3};  // embeddings are normalized so largest possible distance is 2
     uint32 count = 0;
     switch (option)
     {
         case SearchOption::FAST:
-            nearest(vec, this->root, best, 1e-2, &count, 25'000, 5);
+            nearest(vec, this->m_root, best, 1e-2, &count, 25'000, 5);
             break;
         case SearchOption::ACCURATE:
-            nearest(vec, this->root, best, 1e-2, &count, 60'000, 10);
+            nearest(vec, this->m_root, best, 1e-2, &count, 60'000, 10);
             if (best.first->cos_sim(vec) < 0.3)
             {
                 nearest(vec, best.first->parent, best, 1e-3, &count, 120'000, 10);
@@ -311,10 +343,10 @@ const WordVecNode* Word2Vec::operator()(const Vec300& vec, SearchOption option)
         case SearchOption::EXACT:
             for (uint32 i = 0; i < size(); ++i)
             {
-                auto dist2 = nodes[i]->dist2(vec);
+                auto dist2 = m_nodes[i]->dist2(vec);
                 if (dist2 < best.second)
                 {
-                    best = {nodes[i], dist2};
+                    best = {m_nodes[i], dist2};
                 }
             }
             break;

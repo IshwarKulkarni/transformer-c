@@ -25,8 +25,8 @@ struct Loss2Node : Node<T>  // 2 input loss node
         if (this->prev(0).shape != this->prev(1).shape)
             throw_rte_with_backtrace(
                 "LossNode inputs must have the same shape input 0 (predictions): ",
-                predictions->name, predictions->shape.str(),
-                " and input 1 (target): ", target->name, target->shape.str());
+                predictions->name, predictions->shape.str(), " &&input 1 (target): ", target->name,
+                target->shape.str());
 
         if (target == nullptr)
         {
@@ -39,7 +39,7 @@ struct Loss2Node : Node<T>  // 2 input loss node
         (void)ctx;
         if (null)
             throw_rte_with_backtrace(
-                "LossNode backward should not be called with a null argument or call the backward "
+                "LossNode backward should not be called with a null argument || call the backward "
                 "with no arguments");
     }
 
@@ -49,6 +49,8 @@ struct Loss2Node : Node<T>  // 2 input loss node
     {
         return " [label=\"" + this->name + "\", shape=diamond]";
     }
+
+    virtual std::string type() const override { return "Loss2Node"; }
 
     void reduce_and_copy(Matrix<T>& in)
     {
@@ -80,6 +82,7 @@ struct L2Loss : Loss2Node<T>
           gradientOut(inputs[0]->shape, name + "_gradientOut"),
           times2ByNumels(FloatT(2.) / (diff.numels()))
     {
+        LOG_NODE_NAME(this->prev(0).shape, R_JUST("->", 4), this->shape);
     }
 
     void forward(Context* ctx) override
@@ -97,6 +100,8 @@ struct L2Loss : Loss2Node<T>
         unary_apply(gradientOut, diff, times2ByNumels);
         this->predictions->backward(&gradientOut, ctx);
     }
+
+    virtual std::string type() const override { return "L2Loss"; }
 };
 
 template <typename T = FloatT>
@@ -114,6 +119,7 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
           gradientOut(inputs[0]->shape, name + "_gradientOut"),
           timesNByNumels(FloatT(1.) / (diff.numels()))
     {
+        LOG_NODE_NAME(this->prev(0).shape, R_JUST("->", 4), this->shape);
     }
 
     void forward(Context* ctx) override
@@ -131,6 +137,8 @@ struct L1Loss : Loss2Node<T>  // L1 loss computes (Y^ - Y)^2 , first input is ta
         unary_apply(gradientOut, diff, Sign<T>{FloatT(1) / diff.numels()});
         this->predictions->backward(&gradientOut, ctx);
     }
+
+    virtual std::string type() const override { return "L1Loss"; }
 };
 
 template <typename T = FloatT>
@@ -148,6 +156,7 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
         {
             throw_rte_with_backtrace("NLLLoss: first argument should be a Softmax Node");
         }
+        LOG_NODE_NAME(this->prev(0).shape, R_JUST("->", 4), this->shape);
     }
 
     void forward(Context* ctx) override
@@ -166,11 +175,13 @@ struct NLLLoss : Loss2Node<T>  // first input is Y, second is target
         binary_apply(gradientOut, this->prev(1), this->prev(0), functor);
         this->predictions->backward(&gradientOut, ctx);
     }
+
+    virtual std::string type() const override { return "NLLLoss"; }
 };
 
-// Apply log-softmax to incoming row-vectors and then apply cross entropy loss against target
+// Apply log-softmax to incoming row-vectors &&then apply cross entropy loss against target
 // This is equivalent to torch.nn.CrossEntropy (except this always applies the softmax in dim=-1,
-// ie. WIDTH_IDX) but takes any probability distribution target and doesn't check that target rows
+// ie. WIDTH_IDX) but takes any probability distribution target &&doesn't check that target rows
 // are normal, doesn't take class indices as inputs either.
 template <typename T = FloatT>
 struct LogSoftmaxCELoss : Loss2Node<T>
@@ -194,12 +205,12 @@ struct LogSoftmaxCELoss : Loss2Node<T>
           logSumExps(prevSize.set(WIDTH_IDX, 1), name + "_logSumExps"),
           negLogSoftmax(prevSize, name + "_negLogSoftmax"),
           tgtNegLogSmProd(prevSize, name + "_tgtNegLogSmProd"),
-          tgtLogSmProdSum(prevSize.set(WIDTH_IDX, 1), name + "_tgtLogSmProd1d"),
+          tgtLogSmProdSum(prevSize.set(WIDTH_IDX, 1), name + "_tgtLogSmProd"),
           tgtLogSmProdSum1D(tgtLogSmProdSum.shape.set(HEIGHT_IDX, 1), name + "_tgtLogSmProd1d"),
           gradientOut(prevSize, name + "_gradientOut"),
           softmax(prevSize, name + "_softmax")
     {
-        LOG(BLUE, this->name, " ", prevs[0]->shape);
+        LOG_NODE_NAME(this->prev(0).shape, R_JUST("->", 4), this->shape);
     }
 
     void forward(Context* ctx) override
@@ -215,7 +226,7 @@ struct LogSoftmaxCELoss : Loss2Node<T>
         binary_apply(tgtNegLogSmProd, *this->target, negLogSoftmax, Mul<T>());
         // tgtLogSmProd1d = sum ( -t * (xi - log(Sum(e^xj))) ), computed for each instance
         reduce(tgtLogSmProdSum, tgtNegLogSmProd, Plus<T>(), T(0),
-               DividedBy<T>(tgtNegLogSmProd.height()));
+               DividedBy<T>(tgtNegLogSmProd.width()));
 
         // loss = mean ( -t * (xi - log(Sum(e^xj))) )
 
@@ -229,9 +240,9 @@ struct LogSoftmaxCELoss : Loss2Node<T>
 
         if (temp->batch() > 1)
         {
-            reduce<T, BATCH_IDX>(*temp, *temp, Plus<T>(), T(0), DividedBy<T>(temp->batch()));
+            reduce<T, BATCH_IDX>(*this, *temp, Plus<T>(), T(0), DividedBy<T>(temp->batch()));
         }
-        this->copy(temp->begin());
+        // this->copy(temp->begin());
     }
 
     void backward(Context* ctx) override
@@ -246,10 +257,60 @@ struct LogSoftmaxCELoss : Loss2Node<T>
 
     void debug_print()
     {
-        LOG("\nDescription of ", this->name, "input:\n", *this->predictions, '\n', exps, '\n',
+        LOG("\nDescription of ", this->name, "\ninput:\n", *this->predictions, '\n', exps, '\n',
             logSumExps, '\n', negLogSoftmax, '\n', tgtNegLogSmProd, '\n', tgtLogSmProdSum, '\n',
-            gradient);
+            tgtLogSmProdSum1D, '\n', gradientOut);
     }
+
+    void print(std::ostream& out)
+    {
+        auto get_max_offset = [](const Matrix<FloatT>& m, uint32 b, uint32 h) {
+            // get the offset of the max value of w elements at offset (b, h, 0)
+            FloatT* ptr = m.get_data().get() + m.shape.offset(b, h, 0);
+            FloatT max_val = ptr[0];
+            uint32 max_offset = 0;
+            for (uint32 w = 1; w < m.width(); w++)
+            {
+                if (ptr[w] > max_val)
+                {
+                    max_val = ptr[w];
+                    max_offset = w;
+                }
+            }
+            return max_offset;
+        };
+
+        auto in_flag = out.flags();
+        out.setf(std::ios::fixed, std::ios::floatfield);
+        out.precision(6);
+        const Matrix<FloatT>& pred = *this->predictions;
+        const Matrix<FloatT>& tgts = *this->target;
+        const Matrix<FloatT>& loss = tgtNegLogSmProd;
+
+        out << "Predictions:\t\t\tTarget:\t\t\tLoss:\n";
+        uint32 num_matches = 0;
+        for (uint32 b = 0; b < pred.batch(); b++)
+        {
+            for (uint32 h = 0; h < pred.height(); h++)
+            {
+                bool match = (get_max_offset(pred, b, h) == get_max_offset(tgts, b, h));
+                num_matches += match;
+                out << "(" << b << "," << h << "):\t";
+                for (uint32 w = 0; w < pred.width(); w++) out << pred(b, h, w) << " ";
+                out << "|\t";
+                for (uint32 w = 0; w < tgts.width(); w++) out << tgts(b, h, w) << " ";
+                out << "|\t";
+                for (uint32 w = 0; w < loss.width(); w++) out << loss(b, h, w) << " ";
+                out << (match ? "  ✓" : "  ✗") << "\n";
+            }
+
+            out << (pred.height() == 1 ? "" : "\n");
+        }
+        out << "Number of matches: " << num_matches << "\n";
+        out.flags(in_flag);
+    }
+
+    virtual std::string type() const override { return "LogSoftmaxCELoss"; }
 };
 
 #endif  // NODES_LOSS_HPP

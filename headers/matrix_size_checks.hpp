@@ -17,7 +17,7 @@
 template <uint32 dim>
 inline bool broadcastable(const Shape &A, const Shape &Res)
 {
-    return A[dim] == Res[dim] or A[dim] == 1;
+    return A[dim] == Res[dim] || A[dim] == 1;
 }
 
 template <uint32 dim, typename T>
@@ -34,8 +34,8 @@ inline bool broadcastable(const Optional<Matrix<T>> &A, const Matrix<T> &Res)
 
 inline bool mmABRes(const Shape &A, const Shape &B, const Shape &Res)
 {
-    return A.width == B.height and A.height == Res.height and B.width == Res.width and
-           broadcastable<2>(A, Res) and broadcastable<2>(B, Res);
+    return A.width == B.height && A.height == Res.height && B.width == Res.width and
+           broadcastable<2>(A, Res) && broadcastable<2>(B, Res);
 }
 
 #ifndef DISABLE_SIZE_CHECK
@@ -44,29 +44,31 @@ template <typename Tr, typename T, typename Tb, typename Tc>
 void check_mmadd_sizes(Matrix<Tr> &result, const Matrix<T> &A, const Matrix<Tb> &B,
                        const Optional<Matrix<Tc>> C)
 {
-    if (mmABRes(A.shape, B.shape, result.shape) and broadcastable<2>(C, result)) return;
+    if (mmABRes(A.shape, B.shape, result.shape) && broadcastable<2>(C, result)) return;
 
-    if (C.is_valid() and C->shape != result.shape)
+    if (C.is_valid() && C->shape != result.shape)
     {
-        throw_rte_with_backtrace(RED, "Dimension mismatch in mmadd: A: ", A.shape,
-                                 " * B: ", B.shape, " -> ", result.shape, " & C: ", C->shape);
+        throw_rte_with_backtrace(RED, "Dimension mismatch in mmadd: A: ", A.name, " ", A.shape,
+                                 " * B: ", B.name, " ", B.shape, " -> ", result.name, " ",
+                                 result.shape, " & C: ", C->name, " ", C->shape);
     }
-    throw_rte_with_backtrace(RED, "Dimension mismatch in mmadd: A: ", A.shape, " * B: ", B.shape,
-                             " -> ", result.shape);
+    throw_rte_with_backtrace(RED, "Dimension mismatch in mmadd: A: ", A.name, " ", A.shape,
+                             " * B: ", B.name, " ", B.shape, " -> ", result.name, " ",
+                             result.shape);
 }
 
-// check if A and B are compatible for mmTadd operation in height and width dimension,
-// and if C is valid, check if it is compatible with result,
-// and if batch dimensions match or are broadcastable
+// check if A &&B are compatible for mmTadd operation in height &&width dimension,
+// &&if C is valid, check if it is compatible with result,
+// &&if batch dimensions match || are broadcastable
 template <typename Tr, typename T, typename Tb, typename Tc>
 void check_mmTadd_sizes(Matrix<Tr> &result, const Matrix<T> &A, const Matrix<Tb> &B,
                         const Optional<Matrix<Tc>> C)
 {
-    if (mmABRes(A.shape, B.shape.t(), result.shape) and broadcastable<2>(C, result) and
-        broadcastable<1>(C, result) and broadcastable<0>(C, result))
+    if (mmABRes(A.shape, B.shape.t(), result.shape) && broadcastable<2>(C, result) and
+        broadcastable<1>(C, result) && broadcastable<0>(C, result))
         return;
 
-    if (C.is_valid() and C->shape != result.shape)
+    if (C.is_valid() && C->shape != result.shape)
     {
         throw_rte_with_backtrace(RED, "Dimension mismatch in mmTadd: A: ", A.shape,
                                  " * B: ", B.shape, " -> ", result.shape, " & C: ", C->shape);
@@ -79,9 +81,9 @@ template <typename T>  // used in ternary_apply
 void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B,
                            const Matrix<T> &C)
 {
-    if (broadcastable<0>(A, res) and broadcastable<1>(B, res) and broadcastable<1>(A, res) and
-        broadcastable<0>(B, res) and broadcastable<2>(A, res) and broadcastable<2>(B, res) and
-        broadcastable<0>(C, res) and broadcastable<2>(C, res) and broadcastable<2>(C, res))
+    if (broadcastable<0>(A, res) && broadcastable<1>(B, res) && broadcastable<1>(A, res) and
+        broadcastable<0>(B, res) && broadcastable<2>(A, res) && broadcastable<2>(B, res) and
+        broadcastable<0>(C, res) && broadcastable<2>(C, res) && broadcastable<2>(C, res))
         return;
 
     throw_rte_with_backtrace(RED, "Dimension mismatch in binary_apply: A: ", A.shape,
@@ -91,8 +93,8 @@ void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matri
 template <typename T>  // used in binary_apply
 void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matrix<T> &B)
 {
-    if (broadcastable<0>(A, res) and broadcastable<1>(B, res) and broadcastable<1>(A, res) and
-        broadcastable<0>(B, res) and broadcastable<2>(A, res) and broadcastable<2>(B, res))
+    if (broadcastable<0>(A, res) && broadcastable<1>(A, res) && broadcastable<2>(A, res) and
+        broadcastable<0>(B, res) && broadcastable<1>(B, res) && broadcastable<2>(B, res))
         return;
 
     throw_rte_with_backtrace(RED, "Dimension mismatch in binary_apply: A: ", A.shape,
@@ -102,7 +104,7 @@ void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A, const Matri
 template <typename T>  // used in binary_apply
 void check_broadcast_sizes(const Matrix<T> &res, const Matrix<T> &A)
 {
-    if (broadcastable<0>(A, res) and broadcastable<1>(A, res) and broadcastable<2>(A, res)) return;
+    if (broadcastable<0>(A, res) && broadcastable<1>(A, res) && broadcastable<2>(A, res)) return;
 
     throw_rte_with_backtrace(RED, "Dimension mismatch in unary_apply: A: ", A.shape, " -> ",
                              res.shape);
@@ -112,7 +114,7 @@ template <typename T>
 inline void check_softmax_grad_sizes(const Matrix<T> &s_grad_out, const Matrix<T> &s_out,
                                      const Matrix<T> &grad_in)
 {
-    if (s_grad_out.batch() != s_out.batch() or s_grad_out.batch() != grad_in.batch())
+    if (s_grad_out.batch() != s_out.batch() || s_grad_out.batch() != grad_in.batch())
     {
         throw_rte_with_backtrace(
             "Batch dimensions do not match for softmax gradient, s_grad_out: ", s_grad_out.shape,
@@ -120,8 +122,8 @@ inline void check_softmax_grad_sizes(const Matrix<T> &s_grad_out, const Matrix<T
     }
 
     auto size_or_tx_match = [&s_grad_out](uint32 h, uint32 w) {
-        if (h == s_grad_out.height() and w == s_grad_out.width()) return true;
-        return (w == s_grad_out.height() and h == s_grad_out.width());
+        if (h == s_grad_out.height() && w == s_grad_out.width()) return true;
+        return (w == s_grad_out.height() && h == s_grad_out.width());
     };
     if (!size_or_tx_match(s_out.height(), s_out.width()) or
         !size_or_tx_match(grad_in.height(), grad_in.width()))
@@ -138,7 +140,7 @@ void check_reduction_sizes(const Matrix<T> &result, const Matrix<T> &A)
     if (result.id == A.id) return;  // in-place reduction
     for (uint32 i = 0; i < 3; i++)
     {
-        if ((i == dim and result.shape[i] != 1) or (i != dim and result.shape[i] != A.shape[i]))
+        if ((i == dim && result.shape[i] != 1) || (i != dim && result.shape[i] != A.shape[i]))
         {
             throw_rte_with_backtrace(RED, "Dimension mismatch for reduction in dim ", dim,
                                      " with A: ", A.shape, " & Result: ", result.shape);

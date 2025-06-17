@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include "nodes/loss.hpp"
 #include "nodes/parameterized.hpp"
 
@@ -68,7 +74,7 @@ void time_linear_node()
 
     uint32 max_iters = 3;
     uint32 iters = 0;
-    Context ctx;
+    Context& ctx = Context::get();
     float64 time = flushing_exec(max_iters, "Linear Node", [&]() {
         normal_init(x, 1, 2 * iters);
         loss.compute(&ctx);
@@ -96,7 +102,7 @@ void run_mm_timing(const MatrixT& A, const MatrixT& B)
     uint32 bytes = AB.shape.bytes<FloatT>();
 
     std::string name =
-        "MMADD of \t" RED + A.shape.str() + RESET + " and " + RED + B.shape.str() + RESET;
+        "MMADD of \t" RED + A.shape.str() + RESET + " && " + RED + B.shape.str() + RESET;
     flushing_exec(10, name, [&]() {
         mmadd<FloatT>(AB, A, B);
         return bytes;
@@ -104,7 +110,7 @@ void run_mm_timing(const MatrixT& A, const MatrixT& B)
 
     Matrix<FloatT> Bt(B.shape.t());
     Matrix<FloatT> ABt({A.batch(), A.height(), Bt.height()});
-    name = "MMTADD of \t" RED + A.shape.str() + RESET + " and " + RED + Bt.shape.str() + RESET;
+    name = "MMTADD of \t" RED + A.shape.str() + RESET + " && " + RED + Bt.shape.str() + RESET;
     flushing_exec(10, name, [&]() {
         mmTadd<FloatT>(ABt, A, Bt);
         return bytes;
@@ -162,7 +168,7 @@ int time_attention()
     L2Loss<> loss({&A, &target}, "L2Error");
 
     uint32 bytes = A.numels() * sizeof(FloatT);
-    Context ctx;
+    Context& ctx = Context::get();
     flushing_exec(3, "Attention", [&]() {
         loss.compute(&ctx);
         loss.backward(&ctx);
@@ -204,7 +210,7 @@ int main(int argc, const char** argv)
         throw_rte_with_backtrace("Invalid usage");
     }
 
-    if (argv[1] == std::string("time_mult") or argv[1] == std::string("time_mult_2"))
+    if (argv[1] == std::string("time_mult") || argv[1] == std::string("time_mult_2"))
     {
         auto A = init_argv(argv);
         uint32 k = (argc > 4) ? strtoul(argv[4], nullptr, 10) : A.width();

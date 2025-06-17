@@ -9,51 +9,16 @@
 #include <istream>
 #include <regex>
 #include <sstream>
+#include "logger.hpp"
 #include "nodes/loss.hpp"
 #include "nodes/node.hpp"
+#include "string_utils.hpp"
 #include "utils.hpp"
-
-std::string strip_whitespace(const std::string& str)
-{
-    return std::regex_replace(str, std::regex("^\\s+|\\s+$"), "");
-}
-
-std::string strip_comments(const std::string& str)
-{
-    auto comment_pos = str.find("#");
-    if (comment_pos != std::string::npos) return str.substr(0, comment_pos);
-    return str;
-}
-
-// get a line from the stream, return the original line, the stripped line, the line number, and
-// whether it is a comment stripped line is the line with whitespace removed and comments removed
-std::tuple<std::string, std::string, uint32> get_line_(std::istream& is)
-{
-    static uint32 line_number = 0;
-    std::string orig;
-    std::getline(is, orig);
-    line_number++;
-    auto line = strip_whitespace(orig);
-    line = strip_comments(line);
-    return std::make_tuple(orig, line, line_number);
-}
-
-// parse a line of the form "key: value", expect no starting or trailing whitespace, and no comments
-static Optional<std::pair<std::string, std::string>> parse_key_value_pair(std::string line)
-{
-    if (line.empty()) return {};
-
-    auto colon_pos = line.find(':');
-    if (colon_pos == std::string::npos) return {};
-
-    std::string key = line.substr(0, colon_pos);
-    std::string value = line.substr(colon_pos + 1);
-    // strip whitespace from key and value
-    key = strip_whitespace(key);
-    value = strip_whitespace(value);
-    if (value.empty()) return {};
-    return std::make_pair(key, value);
-}
+/*
+    This file contains functions and methods related to parsing the network description file.
+    Loading and saving the network to a file, writing DOT Viz file etc. The "graph" related
+    methods are in header file.
+*/
 
 inline bool is_alpha_numeric(char c) { return std::isalnum(c) || c == '_'; }
 
@@ -101,34 +66,50 @@ StringPairVec::iterator match_key_substr(const std::string& key, StringPairVec& 
 // key_vals[i].first for some i, if so, set key_vals[i].second to the value, if no such key_vals[i]
 // is found, throw an error if an empty line is encountered before all key values are set, throw an
 // error end of block is an empty line.
+// is: input stream
+// node_name: name of the node
+// key_vals: map to fill  values into, where key is the defined parameter name
+// rewind: if true, reset the stream to the position it was at before the call (so multiple
+// read_params can be called on the same block);
 void NetworkGraph::read_params(std::istream& is, const std::string& node_name,
-                               StringStringMap& key_vals)
+                               StringStringMap& key_vals, bool rewind)
 {
-    StringPairVec key_value_pairs;  // all key value pairs in block
+    auto pos = is.tellg();
 
-    while (is)
-    {
-        auto [orig, line, line_number] = get_line_(is);
-        if (line.empty()) break;
-        if (line[0] == '#') continue;
-        auto key_value_pair = parse_key_value_pair(line);
-        if (!key_value_pair)
-            throw_rte_with_backtrace("Invalid line:\n----\n", orig, "\n----\n for node`", node_name,
-                                     "` not a key-value pair; near line ", line_number);
-        key_value_pairs.push_back(*key_value_pair);
-    }
+    auto key_value_pairs = get_key_value_pairs(is, node_name);
 
     for (const auto& [key, value] : key_value_pairs)
     {
-        if (key.empty())
-            throw_rte_with_backtrace("Parameter `", key, "` in node `", node_name,
-                                     "` is not defined");
         auto it = key_vals.find(key);
-        if (it == key_vals.end())
-            throw_rte_with_backtrace("Parameter `", key, "` in node `", node_name, "` unknown");
-        it->second = value;
+        if (it != key_vals.end())
+        {
+            it->second = value;
+            m_indirect_literals[node_name + "->" + key] = value;
+        }
+    }
+    if (rewind) is.seekg(pos);
+}
+
+StringStringMap NetworkGraph::get_key_value_pairs(std::istream& is, const std::string& node_name)
+{
+    StringStringMap key_value_pairs;  // all key value pairs in block
+    while (is)
+    {
+        auto [orig, line, is_comment] = get_line_(is, "#");
+        if (line.empty() && !is_comment) break;  // end of block
+        if (is_comment) continue;                // comment
+        auto key_value_pair = parse_key_value_pair(line, ":");
+        if (!key_value_pair)
+            throw_rte_with_backtrace("Invalid line:\n----\n", orig, "\n----\n for node`", node_name,
+                                     "` not a key-value pair; near line:\n\t ", YELLOW, orig);
+        key_value_pairs[key_value_pair->first] = key_value_pair->second;
+    }
+    // add to m_indirect_literals
+    for (auto& [key, value] : key_value_pairs)
+    {
         m_indirect_literals[node_name + "->" + key] = value;
     }
+    return key_value_pairs;
 }
 
 NetworkGraph::NetworkGraph(std::string filename)
@@ -138,10 +119,13 @@ NetworkGraph::NetworkGraph(std::string filename)
         std::ifstream network_desc_file(filename);
         load_from_desc_stream(network_desc_file);
     }
+    if (m_nodes.empty())
+        throw_rte_with_backtrace("No nodes created in network description file `", filename, "`");
 }
 
 void NetworkGraph::load_from_desc_stream(std::istream& in_stream)
 {
+    if (!in_stream) throw_rte_with_backtrace("File cannot be opened");
     m_network_desc_string =
         std::string(std::istreambuf_iterator<char>(in_stream), std::istreambuf_iterator<char>());
     parse_network_desc();
@@ -154,7 +138,7 @@ bool NetworkGraph::attempt_load_weight_file(std::string filename)
 
     uint32 header[5];
     file_in.read(reinterpret_cast<char*>(header), sizeof(header));
-    if (header[0] != MAGIC_NUMBER or header[3] != 0)
+    if (header[0] != MAGIC_NUMBER || header[3] != 0)
     {
         return false;
     }
@@ -198,30 +182,37 @@ void NetworkGraph::parse_network_desc()
 {
     initialize_node_creators();
     std::stringstream is(m_network_desc_string);
+
+    // clear all internal data &&reset the graph
+    if (!m_nodes.empty())
+    {
+        LOG(RED, "Clearing network graph");
+        clear();
+    }
     while (is)
     {
-        auto [orig, line, line_number] = get_line_(is);
-        if (line.empty() or line[0] == '#') continue;
+        auto [orig, line, is_comment] = get_line_(is, "#");
+        if (line.empty() || is_comment) continue;
         if (line == TEXT_DELIM) break;
 
         // check if the line is a key_value_pair
-        if (auto key_value_pair = parse_key_value_pair(line))
+        if (auto key_value_pair = parse_key_value_pair(line, ":"))
         {
             auto [key, value] = *key_value_pair;
             if (NodeCreatorMap::has(key))
             {
                 if (m_nodes.count(value))
                     throw_rte_with_backtrace("Node with name `", value,
-                                             "` is being redefined on line ", line_number);
-
+                                             "` is being redefined on line:\n\t ", YELLOW, orig);
                 try
                 {
                     auto* node = NodeCreatorMap::get(key)(is, value, *this);
                     m_nodes[value] = node;
+                    m_nodes_sorted.push_back(std::make_pair(node, value));
                 }
                 catch (const std::exception& e)
                 {
-                    LOG(RED, "\nParsing error on line ", line_number, ":\n", orig);
+                    LOG(RED, "Parsing error on line:\n\t", YELLOW, orig, RESET);
                     throw_rte_with_backtrace("Error creating node ", value);
                 }
             }
@@ -236,17 +227,12 @@ void NetworkGraph::parse_network_desc()
         }
     }
 
-    for (const auto& [name, node] : m_nodes)
-    {
-        bool is_not_loss = dynamic_cast<Loss2Node<FloatT>*>(node) == nullptr;
-        if (m_used_nodes.count(node) == 0 and is_not_loss)
-            throw_rte_with_backtrace("Node `", name, "` is not used");
-    }
-
     for (const auto& [name, value] : m_literals)
     {
         if (m_used_literals.count(name) == 0) LOG(YELLOW, "Literal `", name, "` is not used");
     }
+
+    this->m_root_node = get_root_node();
 }
 
 void NetworkGraph::save_network(const std::string& filename) const
@@ -263,7 +249,7 @@ void NetworkGraph::save_network(const std::string& filename) const
     file_out.write(text.str().c_str(), text_length);
 
     std::vector<std::string> node_names;
-    for (auto& [name, node] : m_nodes) node_names.push_back(name);
+    for (auto& [name, _] : m_nodes) node_names.push_back(name);
     std::sort(node_names.begin(), node_names.end());
 
     for (auto& name : node_names)
@@ -301,6 +287,12 @@ void NetworkGraph::write_dotviz(std::string filename, const NodePtr<FloatT> node
         {
             strings_reps.insert(make_edge(p, n, 3.f));
             nodes.push_back(p);
+            auto deps = p->get_dependencies();
+            for (auto* d : deps)
+            {
+                strings_reps.insert(make_edge(d, p, 3.f));
+                nodes.push_back(d);
+            }
         }
 
         auto* terminal = n->get_terminal_node();
@@ -320,4 +312,88 @@ void NetworkGraph::write_dotviz(std::string filename, const NodePtr<FloatT> node
               std::ostream_iterator<std::string>(os, "\n"));
 
     os << '}' << std::endl;
+}
+
+NodePtr<FloatT> NetworkGraph::get_root_node() const
+{
+    if (this->m_root_node)
+    {
+        return this->m_root_node;
+    }
+
+    if (m_nodes.empty())
+    {
+        throw_rte_with_backtrace("No nodes defined in the network");
+    }
+
+    if (m_nodes.size() == 1)
+    {
+        return m_nodes.begin()->second;
+    }
+
+    std::vector<Edge> forward_edges;
+
+    for (const auto& [name, node] : m_nodes)
+    {
+        for (const auto& prev_node : node->get_dependencies())
+        {
+            forward_edges.push_back({prev_node, node});
+        }
+    }
+
+    std::set<NodePtr<FloatT>> all_nodes;
+    for (const auto& [name, node] : m_nodes) all_nodes.insert(node);
+
+    for (const auto& edge : forward_edges) all_nodes.erase(edge.first);
+
+    if (all_nodes.empty()) throw_rte_with_backtrace("There's Loop in the network");
+
+    if (all_nodes.size() > 1)
+    {
+        for (const auto& node : all_nodes)
+        {
+            LOG(YELLOW, node->name);
+        }
+        throw_rte_with_backtrace("There's more than one root node in the network");
+    }
+
+    return *all_nodes.begin();
+}
+
+void NetworkGraph::print_nodes()
+{
+    uint32 total_param_count = 0;
+    char buffer[36];
+    setlocale(LC_NUMERIC, "");
+    for (const auto& [node, key] : m_nodes_sorted)
+    {
+        uint32 id = node->id;
+        snprintf(buffer, sizeof(buffer), "%5d", id);
+        std::string id_str = std::string(buffer);
+
+        snprintf(buffer, 21, "%20s", key.c_str());
+        std::string key_str = std::string(buffer);
+
+        snprintf(buffer, sizeof(buffer), "%-30s", node->type().c_str());
+        std::string type_str = std::string(buffer);
+
+        uint32 param_count = node->param_count();
+        snprintf(buffer, sizeof(buffer), " |%'10d", param_count);
+        std::string param_count_str =
+            param_count ? std::string(buffer) : std::string(" |") + std::string(10, ' ');
+
+        LOG(RED, id_str, param_count_str, key_str, ": ", type_str);
+        total_param_count += param_count;
+    }
+    snprintf(buffer, sizeof(buffer), "Total |%'11d", total_param_count);
+    LOG(RED, buffer);
+}
+
+void NetworkGraph::print_node_values()
+{
+    cudaErrCheck(cudaDeviceSynchronize());
+    for (const auto& [node, key] : m_nodes_sorted)
+    {
+        LOG(key, ":\n", *node);
+    }
 }

@@ -1,3 +1,9 @@
+/*
+ * Author: Ishwar Kulkarni
+ * This file is distributed under the MIT license.
+ * See: https://mit-license.org
+ */
+
 #include <type_traits>
 #include "matrix.cuh"
 #include "matrix_ops.hpp"
@@ -27,11 +33,14 @@ __global__ void tiled_mmTadd_shmem(Matrix<T> result, const Matrix<T> A, const Ma
 #pragma unroll
     for (uint32 k = 0; k < k_max; k += TILE_SIZE_X)
     {
-        uint32 a_x = k + threadIdx.y;
-        uint32 b_x = k + threadIdx.x;
+        uint32 x_a = k + threadIdx.y;
+        uint32 x_b = k + threadIdx.x;
 
-        As[threadIdx.x][threadIdx.y] = a_x < A.width() && y < A.height() ? A(b_a, y, a_x) : T(0);
-        Bs[threadIdx.x][threadIdx.y] = b_x < B.width() && x < B.height() ? B(b_b, x, b_x) : T(0);
+        auto aa = A.in_extents(b_a, y, x_a) ? A(b_a, y, x_a) : T(0);
+        auto bb = B.in_extents(b_b, x, x_b) ? B(b_b, x, x_b) : T(0);
+
+        As[threadIdx.x][threadIdx.y] = aa;
+        Bs[threadIdx.x][threadIdx.y] = bb;
 
         __syncthreads();
 #pragma unroll
@@ -45,7 +54,9 @@ __global__ void tiled_mmTadd_shmem(Matrix<T> result, const Matrix<T> A, const Ma
     if (x < result.width() && y < result.height())
     {
         sum += (C.is_valid() ? C->template broadcasting_fetch<0b111>(b, y, x) : T(0));
-        result(b, y, x) = pprocess(sum);
+        auto out = pprocess(sum);
+        NAN_INF_CHECK(out);
+        result(b, y, x) = out;
     }
 }
 
@@ -56,20 +67,27 @@ __global__ void mmTadd_kernel(Matrix<T> result, const Matrix<T> A, const Matrix<
     uint32 y = threadIdx.x;
     uint32 x = threadIdx.y;
     uint32 b = threadIdx.z + blockIdx.x * blockDim.z;
+    uint32 b_a = A.batch() > 1 ? b : 0;
+    uint32 b_b = B.batch() > 1 ? b : 0;
 
     if (result.is_oob(b, y, x)) return;
 
     T sum = 0;
+    uint32 a_ext = A.template get_extent<WIDTH_IDX>(b_a);
+    uint32 b_ext = B.template get_extent<HEIGHT_IDX>(b_b);
 #pragma unroll
-    for (uint32 k = 0; k < A.width(); k++)
+    for (uint32 k = 0; k < a_ext; k++)
     {
-        sum += A.template broadcasting_fetch<BATCH_BIT>(b, y, k) *
-               B.template broadcasting_fetch<BATCH_BIT>(b, x, k);
+        auto aa = A.in_extents(b_a, y, k) ? A(b_a, y, k) : T(0);
+        auto bb = B.in_extents(b_b, x, k) ? B(b_b, x, k) : T(0);
+        sum += aa * bb;
     }
 
     static constexpr uint32 bits = BATCH_BIT | WIDTH_BIT | HEIGHT_BIT;
     sum += (C.is_valid() ? C->template broadcasting_fetch<bits>(b, y, x) : T(0));
-    result(b, y, x) = pProcess(sum);
+    auto out = pProcess(sum);
+    NAN_INF_CHECK(out);
+    result(b, y, x) = out;
 }
 
 template <typename T, typename PProcess>
@@ -79,6 +97,15 @@ void mmTadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Opt
     LOG_MATRIX_OPS("mmTadd: ", A.shape, " @ ", B.shape, "^T", (C.is_valid() ? " + C" : " "), " -> ",
                    result.shape);
     check_mmTadd_sizes(result, A, B, C);
+
+    for (uint32 b = 0; b < result.batch(); b++)
+    {
+        auto a_ext =
+            A.template get_extent<HEIGHT_IDX>(b >= A.batch() ? 0 : b);  // broadcasted batch
+        auto b_ext =
+            B.template get_extent<HEIGHT_IDX>(b >= B.batch() ? 0 : b);  // broadcasted batch
+        result.set_extents(b, a_ext, b_ext);
+    }
 
     if (result.numels() <= 256)
     {
@@ -132,38 +159,11 @@ void mmTadd(Matrix<T>& result, const Matrix<T>& A, const Matrix<T>& B, const Opt
     cudaErrCheck(cudaGetLastError());
 }
 
-template void mmTadd<FloatT, Identity<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                               Matrix<FloatT> const&,
-                                               const Optional<Matrix<FloatT>> C, Identity<FloatT>);
-
-template void mmTadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                        Matrix<FloatT> const&,
-                                                        const Optional<Matrix<FloatT>>,
-                                                        Sigmoid<FloatT>::SigmoidF);
-
-template void mmTadd<FloatT, DividedBy<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                Matrix<FloatT> const&,
-                                                const Optional<Matrix<FloatT>>, DividedBy<FloatT>);
-
-template void mmTadd<FloatT, Composition<FloatT, Neg<FloatT>, Identity<FloatT>>>(
-    Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, const Optional<Matrix<FloatT>>,
-    Composition<FloatT, Neg<FloatT>, Identity<FloatT>>);
-
-template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                  Matrix<FloatT> const&,
-                                                  const Optional<Matrix<FloatT>>,
-                                                  TanH<FloatT>::TanhF);
-
-template void mmTadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                  Matrix<FloatT> const&,
-                                                  const Optional<Matrix<FloatT>>,
-                                                  Relu<FloatT>::ReluF);
-
-template void mmTadd<FloatT, LeakyRelu<FloatT>::LeakyReluF>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                                            Matrix<FloatT> const&,
-                                                            const Optional<Matrix<FloatT>>,
-                                                            LeakyRelu<FloatT>::LeakyReluF);
-
-template void mmTadd<FloatT, Square<FloatT>>(Matrix<FloatT>&, Matrix<FloatT> const&,
-                                             Matrix<FloatT> const&, Optional<Matrix<FloatT>>,
-                                             Square<FloatT>);
+// clang-format off
+template void mmTadd<FloatT, DividedBy<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, DividedBy<FloatT>);
+template void mmTadd<FloatT, Identity<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, Identity<FloatT>);
+template void mmTadd<FloatT, LeakyRelu<FloatT>::LeakyReluF>(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, LeakyRelu<FloatT>::LeakyReluF);
+template void mmTadd<FloatT, Relu<FloatT>::ReluF>(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, Relu<FloatT>::ReluF);
+template void mmTadd<FloatT, Sigmoid<FloatT>::SigmoidF>(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, Sigmoid<FloatT>::SigmoidF);
+template void mmTadd<FloatT, TanH<FloatT>::TanhF>(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Optional<Matrix<FloatT> >, TanH<FloatT>::TanhF);
+// clang-format on

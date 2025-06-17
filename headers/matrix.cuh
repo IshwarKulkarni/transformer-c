@@ -89,7 +89,7 @@ struct Shape
         return b * height * width + y * width + x;
     }
 
-    template <uint32 Dim>
+    template <uint32 Dim>  //
     inline __host__ __device__ uint64 offset_in_dim(uint32 i, uint32 i1, uint32 i2) const
     {
         auto [b, y, x] = get_indices<Dim>(i, i1, i2);
@@ -99,11 +99,11 @@ struct Shape
     template <unsigned int bits>
     inline __host__ __device__ uint64 broadcasting_offset(uint32 b, uint32 y, uint32 x) const
     {
-        static_assert(bits <= 0b111, "dim bits must in [0b00, 0b111]");
+        static_assert(bits <= 0b111, "dim bits must in [0b000, 0b111]");
         // clang-format off
-        if (bits & WIDTH_BIT and width == 1)   x = 0;
-        if (bits & HEIGHT_BIT and height == 1) y = 0;
-        if (bits & BATCH_BIT and batch == 1)   b = 0;
+        if (bits & WIDTH_BIT &&width == 1)   x = 0;
+        if (bits & HEIGHT_BIT &&height == 1) y = 0;
+        if (bits & BATCH_BIT &&batch == 1)   b = 0;
         // clang-format on
 
         return offset(b, y, x);
@@ -139,7 +139,7 @@ typedef struct MatrixInitUitls
     static uint32 peek_id() { return id; }
     static uint64 get_alloced_bytes() { return alloced_bytes; }
 
-    template <typename T>
+    template <typename T>  // alloc for matrix data
     static T* allocManaged(const Shape& shape, uint32 id)
     {
         T* ptr = nullptr;
@@ -148,17 +148,34 @@ typedef struct MatrixInitUitls
         (void)id;
         cudaErrCheck(cudaMallocManaged((void**)&ptr, shape.bytes<T>()));
         alloced_bytes += shape.numels * sizeof(T);
-        id_to_alloced_bytes[id] = shape.numels * sizeof(T);
+        if (auto it = id_to_alloced_bytes.find(id); it != id_to_alloced_bytes.end())
+        {
+            it->second += shape.numels * sizeof(T);
+        }
+        else
+        {
+            id_to_alloced_bytes[id] = shape.numels * sizeof(T);
+        }
         return ptr;
     }
 
-    static uint32* allocManagedExtent(uint32 length, uint32 id)
+    template <typename T>  // alloc for everything else
+    static T* allocManaged(uint32 length, uint32 id)
     {
-        uint32* ptr = nullptr;
-        LOG_ALLOC("Allocating extent for matrix ", id, " len: ", length);
+        T* ptr = nullptr;
+        LOG_ALLOC("Allocating memory for matrix ", id, " len: ", length);
         (void)id;
-        cudaErrCheck(cudaMallocManaged((void**)&ptr, length * sizeof(uint32)));
-        alloced_bytes += length * sizeof(uint32);
+        cudaErrCheck(cudaMallocManaged((void**)&ptr, length * sizeof(T)));
+        alloced_bytes += length * sizeof(T);
+
+        if (auto it = id_to_alloced_bytes.find(id); it != id_to_alloced_bytes.end())
+        {
+            it->second += length * sizeof(T);
+        }
+        else
+        {
+            id_to_alloced_bytes[id] = length * sizeof(T);
+        }
         return ptr;
     }
 
@@ -179,12 +196,19 @@ typedef struct MatrixInitUitls
         freed_bytes += id_to_alloced_bytes[id];
     }
 
+    static void print_stats()
+    {
+        LOG(YELLOW, "MatrixInitUitls: ", alloced_bytes, " bytes allocated, ", freed_bytes,
+            " bytes freed");
+    }
+
  private:
     MatrixInitUitls() = delete;
     static uint32 id;
     static uint64 alloced_bytes;
     static uint64 freed_bytes;
     static std::map<uint32, uint64> id_to_alloced_bytes;
+
 } MatrixInitUitls;
 
 struct MatrixBase
@@ -194,129 +218,19 @@ struct MatrixBase
     static std::vector<const MatrixBase*> all_matrices;
 };
 
-// This class embodies "valid extents" for a batched 2d matrix.
-// A Matrix is expected to have a valid element at (b, y, x) if
-// y < y_extent[b] and x < x_extent[b], for a batch b.
-// I.e. valid values span from (b, 0, 0) to (b, y_extent[b], x_extent[b]).
-// Can also set x_extent[b] and y_extent[b] to 0 to make the batch invalid.
-struct Extents2d
-{
-    const uint32 matrixid;
-    const Shape shape;
-
-    // all rows and cols are valid
-    Extents2d(uint32 matrixid, const Shape& shape) : matrixid(matrixid), shape(shape)
-    {
-        // set all row values to shape.height and all col values to shape.width
-        for (uint32 i = 0; i < shape.batch; i++) set(i, shape.height, shape.width);
-    }
-
-    template <uint32 Dim>
-    inline __host__ __device__ uint32 set(uint32 batch, uint32 val)
-    {
-        if constexpr (Dim == WIDTH_IDX)
-            set(batch, shape.height, val);
-        else if constexpr (Dim == HEIGHT_IDX)
-            set(batch, val, shape.width);
-        throw_rte_with_backtrace("Invalid dimension: ", Dim);
-    }
-
-    void set(uint32 batch, uint32 y, uint32 x)
-    {
-        if (batch >= shape.batch)
-        {
-            throw_rte_with_backtrace("Invalid batch: ", batch, " for matrix ", matrixid);
-        }
-
-        if (y > shape.height)
-        {
-            throw_rte_with_backtrace("Invalid row y extent: ", y, " for batch ", batch,
-                                     " and matrix ", matrixid);
-        }
-        if (x > shape.width)
-        {
-            throw_rte_with_backtrace("Invalid col x extent: ", x, " for batch ", batch,
-                                     " and matrix ", matrixid);
-        }
-        y_extent[batch] = y;
-        x_extent[batch] = x;
-    }
-
-    __host__ __device__ uint32 operator()(uint32 batch, uint32 dim) const
-    {
-        if (dim == WIDTH_IDX) return x_extent[batch];
-        if (dim == HEIGHT_IDX) return y_extent[batch];
-        if (dim == BATCH_IDX) return shape.batch;  // for completeness, not used
-        throw_rte_with_backtrace("Invalid dimension: ", dim);
-        return 0;
-    }
-
-    __host__ __device__ std::tuple<uint32, uint32> operator()(uint32 batch) const
-    {
-        return std::make_tuple(y_extent[batch], x_extent[batch]);
-    }
-
-    template <uint32 Dim>  // same logic as Shape::offset_in_dim
-    __host__ __device__ bool in_bounds(uint32 i, uint32 i1, uint32 i2) const
-    {
-        auto [b, y, x] = get_indices<Dim>(i, i1, i2);
-        return in(b, y, x);
-    }
-
-    __host__ __device__ bool in(uint32 batch, uint32 y, uint32 x) const
-    {
-        return batch < shape.batch && y < y_extent[batch] && x < x_extent[batch];
-    }
-
-    __host__ __device__ uint32 width(uint32 batch) const { return x_extent[batch]; }
-
-    __host__ __device__ uint32 height(uint32 batch) const { return y_extent[batch]; }
-
-    bool all_valid() const
-    {
-        // all x_extent_ptr are width and all y_extent_ptr are height
-        for (uint32 i = 0; i < shape.batch; i++)
-        {
-            if (x_extent[i] != shape.width || y_extent[i] != shape.height) return false;
-        }
-        return true;
-    }
-
- private:
-    Extents2d() = delete;
-    std::shared_ptr<uint32[]> extent = std::shared_ptr<uint32[]>(
-        MatrixInitUitls::allocManagedExtent(shape.batch * 2, matrixid), [this](uint32* ptr) {
-            MatrixInitUitls::free(ptr, shape.batch, matrixid);
-            y_extent = nullptr;
-            x_extent = nullptr;
-        });
-
-    uint32* x_extent = extent.get();
-    uint32* y_extent = extent.get() + shape.batch;
-};
-
-inline std::ostream& operator<<(std::ostream& os, const Extents2d& extents)
-{
-    for (uint32 i = 0; i < extents.shape.batch; i++)
-    {
-        os << i << ": [" << extents(i, HEIGHT_IDX) << ", " << extents(i, WIDTH_IDX) << "]\t";
-    }
-    return os;
-}
-
 /*
 Matrix class for 3d tensors (batch, height, width) with managed memory allocation
 and automatic deallocation on destruction. The data is stored in a shared pointer
 that is returned by the get() method. Matrices cannot be copied, only moved.
-Allows for creation with `shape`, and vector of matrices to concatenate along the batch dimension.
+Allows for creation with `shape`, &&vector of matrices to concatenate along the batch dimension.
 
-Data is stored in row-major order, i.e. 0th dimension is width, 1st is height, and 2nd is batch
-and increment of pointer from get() or begin() is along the width dimension.
+Data is stored in row-major order, i.e. 0th dimension is width, 1st is height, &&2nd is batch
+and increment of pointer from get() || begin() is along the width dimension.
 
 Access is done with
     3-element () operator: batchIdx, heightIdx, widthIdx
     1-element [] operator: linear offset
-    or index method: index<0>(i, m, n) is equivalent to operator()(m, n, i), i is width dim index
+    || index method: index<0>(i, m, n) is equivalent to operator()(m, n, i), i is width dim index
                      index<1>(i, m, n) is equivalent to operator()(m, i, n), i is height dim index
                      index<2>(i, m, n) is equivalent to operator()(i, m, n), i is batch dim index
 */
@@ -326,7 +240,6 @@ struct Matrix
     const uint32 id = MatrixInitUitls::get_id();
     const std::string name;
     const Shape shape;
-    Extents2d extents = Extents2d(id, shape);
 
     typedef std::shared_ptr<T[]> CudaPtr;
 
@@ -337,6 +250,13 @@ struct Matrix
     {
         LOG_MATRIX_CREATE(this->name, " : ", this->shape, " size: ", this->shape.numels,
                           " bytes: ", this->shape.bytes<T>());
+        for (uint32 b = 0; b < shape.batch; b++)
+        {
+            extent<HEIGHT_IDX>(b) = shape.height;
+            extent<WIDTH_IDX>(b) = shape.width;
+            extent<BATCH_IDX>(b) = shape.batch;
+        }
+        set_val(std::numeric_limits<T>::quiet_NaN());
     }
 
     inline uint32 sum_batches(std::vector<const Matrix<T>*> mats)
@@ -355,7 +275,7 @@ struct Matrix
         for (auto m : mats)
         {
             if (m->shape.shape2d() != shape.shape2d())
-                throw_rte_with_backtrace("All matrices must have the same height and width");
+                throw_rte_with_backtrace("All matrices must have the same height &&width");
             offset += memcpy(m->begin(), offset, m->shape.numels);
         }
     }
@@ -401,7 +321,7 @@ struct Matrix
     }
 
     // return element at b, y, x , by zeroing out any dimendion that is 1.
-    // and having corresponding dim set in `bits`, e.g. 0b001 for width, 0b010 for height, 0b100 for
+    // &&having corresponding dim set in `bits`, e.g. 0b001 for width, 0b010 for height, 0b100 for
     // batch. Error out if the corresponding dimension is not 1.
     template <unsigned int bits>
     inline __device__ __host__ const T& broadcasting_fetch(uint32 b, uint32 y, uint32 x) const
@@ -415,7 +335,7 @@ struct Matrix
         return rawData[shape.template broadcasting_offset<bits>(b, y, x)];
     }
 
-    // return element at index i in dimension dim, using i1 and i2 as the other indices
+    // return element at index i in dimension dim, using i1 &&i2 as the other indices
     // in order of batch, height, width. e.g. index<1>(5, 1, 2) is equivalent to operator()(1, 5, 2)
     template <unsigned int Dim>
     inline __device__ __host__ T& index(uint32 i, uint32 i1, uint32 i2)
@@ -427,6 +347,69 @@ struct Matrix
     inline __device__ __host__ const T& index(uint32 i, uint32 i1, uint32 i2) const
     {
         return rawData[shape.template offset_in_dim<Dim>(i, i1, i2)];
+    }
+
+    template <uint32 Dim>
+    inline __device__ __host__ void set_extent(uint32 b, uint32 val)
+    {
+        static_assert(Dim < BATCH_IDX, "Invalid dimension for set_extents");
+        if (b >= batch()) throw_rte_with_backtrace("Batch OOB: ", b, " >= ", batch());
+        if (val > shape[Dim])
+            throw_rte_with_backtrace("Extent OOB: ", val, " > ", shape[Dim], " for ", this->name,
+                                     this->shape);
+        extent<Dim>(b) = val;
+    }
+
+    template <uint32 Dim = BATCH_IDX>  // is Dim == BATCH_IDX, then (i, i1, i2) same as (b, y, x)
+    inline __device__ __host__ void set_extents(uint32 i, uint32 i1, uint32 i2)
+    {
+        static_assert(Dim <= BATCH_IDX, "Invalid dimension for set_extents");
+        auto [b, y, x] = get_indices<Dim>(i, i1, i2);
+        set_extent<WIDTH_IDX>(b, x);
+        set_extent<HEIGHT_IDX>(b, y);
+    }
+
+    // return y &&x extents for batch b
+    inline __device__ __host__ std::pair<uint32, uint32> get_extents(uint32 b) const
+    {
+        return std::make_pair(extent<HEIGHT_IDX>(b), extent<WIDTH_IDX>(b));
+    }
+
+    template <uint32 Dim>
+    inline __device__ __host__ uint32 get_extent(uint32 b) const
+    {
+        return extent<Dim>(b);
+    }
+
+    template <uint32 Dim>
+    inline __device__ __host__ bool in_extent(uint32 b, uint32 i) const
+    {
+        return i < extent<Dim>(b);
+    }
+
+    template <uint32 Dim = BATCH_IDX>  // default Dim => interpret (i, i1, i2) as (b, y, x)
+    inline __device__ __host__ bool in_extents(uint32 i, uint32 i1, uint32 i2) const
+    {
+        auto [b, y, x] = get_indices<Dim>(i, i1, i2);
+        return in_extent<HEIGHT_IDX>(b, y) && in_extent<WIDTH_IDX>(b, x);
+    }
+
+    inline __device__ __host__ bool extents_same_as_shape() const
+    {
+        for (uint32 b = 0; b < batch(); b++)
+        {
+            if (extent<HEIGHT_IDX>(b) != height() || extent<WIDTH_IDX>(b) != width()) return false;
+        }
+        return true;
+    }
+
+    inline void copy_extents(const Matrix<T>& src)
+    {
+        if (src.shape != shape)
+            throw_rte_with_backtrace(
+                "Cannot copy extents from matrix with different shape: ", src.shape, " to ", shape);
+        cudaMemcpy(extents_ptr, src.extents_ptr, shape.batch * 3 * sizeof(uint32),
+                   cudaMemcpyDeviceToDevice);
     }
 
     // grid size for given block to have a thread for each element in matrix
@@ -443,6 +426,19 @@ struct Matrix
         uint64 copy_count = (all_batches ? shape.numels : shape.size2d);
         uint64 offset = (all_batches ? 0 : shape.offset(*batch, 0, 0));
         return memcpy(src, offset, copy_count);
+    }
+
+    inline uint64 copy(const Matrix<T>& src, Optional<uint32> batch = {})
+    {
+        if (src.shape != shape)
+            throw_rte_with_backtrace("Cannot copy from matrix with different shape: ", src.shape,
+                                     " to ", shape);
+        uint64 copied = copy(src.rawData, batch);
+
+        cudaErrCheck(cudaMemcpy(extents_ptr, src.extents_ptr, shape.batch * 3 * sizeof(uint32),
+                                cudaMemcpyDefault));
+
+        return copied;
     }
 
     inline uint64 reset()
@@ -507,6 +503,28 @@ struct Matrix
     });
     T* rawData = data.get();
 
+    std::shared_ptr<uint32[]> extents = std::shared_ptr<uint32[]>(
+        MatrixInitUitls::allocManaged<uint32>(shape.batch * 3, id), [this](uint32* ptr) {
+            MatrixInitUitls::free<uint32>(ptr, id);
+            this->extents_ptr = nullptr;
+        });
+
+    uint32* extents_ptr = extents.get();
+
+    template <uint32 Dim>
+    inline __device__ __host__ uint32& extent(uint32 b)
+    {
+        if (b >= batch()) throw_rte_with_backtrace("Batch OOB: ", b, " >= ", batch());
+        return extents_ptr[batch() * Dim + b];
+    }
+
+    template <uint32 Dim>
+    inline __device__ __host__ const uint32& extent(uint32 b) const
+    {
+        if (b >= batch()) throw_rte_with_backtrace("Batch OOB: ", b, " >= ", batch());
+        return extents_ptr[batch() * Dim + b];
+    }
+
     template <typename U>
     uint64 memcpy(const U* src, uint64 offset, uint64 numels)
     {
@@ -537,14 +555,27 @@ struct Matrix
 };
 
 template <typename T>
+inline void print_extents(std::ostream& os, const Matrix<T>& m)
+{
+    if (m.extents_same_as_shape()) return;
+    os << "\nExtents for " << m.name << " : ";
+    for (uint32 b = 0; b < m.batch(); b++)
+    {
+        auto [h, w] = m.get_extents(b);
+        os << " [" << h << ", " << w << "]";
+    }
+    os << "\n";
+}
+
+template <typename T>
 inline std::ostream& operator<<(std::ostream& os,
                                 const Matrix<T>& m)  // usable to paste in torch ()
 {
     std::setiosflags(std::ios::fixed);
     uint32 precision = 6;
     os << ' ' << m.name << m.shape;
-    if (!m.extents.all_valid()) os << "\nExtents: " << m.extents;
-    os << "\t([" << std::fixed << std::setfill(' ');
+    print_extents(os, m);
+    os << "([" << std::fixed << std::setfill(' ');
 
     for (uint32 b = 0; b < m.batch(); b++)
     {

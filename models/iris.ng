@@ -1,0 +1,18 @@
+Input: input
+batch: $batch
+height: 1
+width: 4
+
+FeedForward: ff
+prev: input
+intermediate: 24
+l1_act: sigmoid
+rate1: 0.15
+rate2: 0.15
+bias: true
+act: LeakyReLU
+
+Inpuut: target
+batch: input->batch
+height: input->height
+width: 3

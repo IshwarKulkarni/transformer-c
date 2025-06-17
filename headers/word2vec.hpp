@@ -21,12 +21,12 @@ static constexpr FloatT L2D_DIST_THRESHOLD = FloatT(1e-2);
 // This is not right:
 static constexpr FloatT COSINE_SIM_THRESHOLD = FloatT(1) - 1e-4;
 
-typedef std::array<float32, WORD2VEC_DIM> Vec300;
-typedef std::pair<std::string, Vec300> WordVecPair;
+typedef std::array<float32, WORD2VEC_DIM> WORDVEC;
+typedef std::pair<std::string, WORDVEC> WordVecPair;
 typedef std::vector<WordVecPair>::iterator WordVecPairIter;
 
-std::ostream& operator<<(std::ostream& os, const Vec300& arr);
-std::istream& operator>>(std::istream& is, Vec300& arr);
+std::ostream& operator<<(std::ostream& os, const WORDVEC& arr);
+std::istream& operator>>(std::istream& is, WORDVEC& arr);
 
 static constexpr std::array<float32, 100> principal_comps = {
     167, 81,  243, 66,  77,  133, 281, 87,  295, 266, 190, 191, 224, 191, 74,  61,  156,
@@ -42,7 +42,7 @@ static_assert(N_PCA <= principal_comps.size(), "N_PCA is too large");
 
 static constexpr uint32 get_axis(uint32 depth) { return principal_comps[depth % N_PCA]; }
 
-inline FloatT l2_dist2_pca(const Vec300& a, const Vec300& b, uint32 L = N_PCA)
+inline FloatT l2_dist2_pca(const WORDVEC& a, const WORDVEC& b, uint32 L = N_PCA)
 {
     FloatT dist = 0;
     for (uint32 i = 0; i < L; i++)
@@ -53,7 +53,7 @@ inline FloatT l2_dist2_pca(const Vec300& a, const Vec300& b, uint32 L = N_PCA)
     return dist;
 }
 
-inline FloatT l2_dist2(const Vec300& a, const Vec300& b)
+inline FloatT l2_dist2(const WORDVEC& a, const WORDVEC& b)
 {
     FloatT dist = 0;
     for (uint32 i = 0; i < WORD2VEC_DIM; i++)
@@ -64,7 +64,7 @@ inline FloatT l2_dist2(const Vec300& a, const Vec300& b)
 }
 
 template <uint32 LD>
-inline std::array<float32, LD> vec300ToVecLD(const Vec300& vec)
+inline std::array<float32, LD> WORDVECToVecLD(const WORDVEC& vec)
 {
     std::array<float32, LD> vecLD;
     static constexpr uint32 chunk_size = WORD2VEC_DIM / LD;
@@ -76,30 +76,30 @@ inline std::array<float32, LD> vec300ToVecLD(const Vec300& vec)
     return vecLD;
 }
 
-std::array<std::pair<float32, bool>, WORD2VEC_DIM> diff(const Vec300& a, const Vec300& b,
+std::array<std::pair<float32, bool>, WORD2VEC_DIM> diff(const WORDVEC& a, const WORDVEC& b,
                                                         float32 eps = 1e-6,
                                                         uint32* count = nullptr);
 
-inline FloatT cos_sim(const Vec300& a, const Vec300& b)
+inline FloatT cos_sim(const WORDVEC& a, const WORDVEC& b)
 {
     return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
 }
 
-inline Vec300 make_vec300(const FloatT* arr)
+inline WORDVEC make_WORDVEC(const FloatT* arr)
 {
-    Vec300 vec;
+    WORDVEC vec;
     std::copy(arr, arr + WORD2VEC_DIM, vec.begin());
     return vec;
 }
 
-FloatT add_noise(Vec300& vec, FloatT mean = 0, FloatT std = 1);
+FloatT add_noise(WORDVEC& vec, FloatT mean = 0, FloatT std = 1);
 
-FloatT add_noise_normal(Vec300& vec, FloatT mean = 0, FloatT std = 1);
+FloatT add_noise_normal(WORDVEC& vec, FloatT mean = 0, FloatT std = 1);
 
 struct WordVecNode
 {
     const std::string word;
-    const Vec300 vec;
+    const WORDVEC vec;
     const uint16 depth;
     const uint32 id = get_id();
     WordVecNode *left = nullptr, *right = nullptr, *parent = nullptr;
@@ -107,9 +107,9 @@ struct WordVecNode
         : word(std::get<0>(tuple)), vec(std::get<1>(tuple)), depth(depth)
     {
     }
-    FloatT dist2(const Vec300& other) const { return l2_dist2(vec, other); }
+    FloatT dist2(const WORDVEC& other) const { return l2_dist2(vec, other); }
     FloatT dist2(const WordVecNode* node) const { return l2_dist2(vec, node->vec); }
-    FloatT cos_sim(const Vec300& other) const { return ::cos_sim(vec, other); }
+    FloatT cos_sim(const WORDVEC& other) const { return ::cos_sim(vec, other); }
     FloatT cos_sim(const WordVecNode* node) const { return ::cos_sim(vec, node->vec); }
 
  private:
@@ -120,7 +120,7 @@ struct WordVecNode
     }
 };
 typedef std::vector<const WordVecNode*> NodeVector;
-typedef std::pair<const WordVecNode*, FloatT> NodeDist2;  // node and similarity
+typedef std::pair<const WordVecNode*, FloatT> NodeDist2;  // node &&similarity
 
 void dfs(const WordVecNode* start_node, NodeVector& out);
 
@@ -128,7 +128,7 @@ void print_path(const WordVecNode* node);
 
 inline bool is_left_child(const WordVecNode* node)
 {
-    return node and node->parent and node->parent->left == node;
+    return node && node->parent && node->parent->left == node;
 }
 
 std::vector<const WordVecNode*> get_ancestors(const WordVecNode* node, bool root_first = true);
@@ -143,43 +143,57 @@ enum SearchOption  // for Word2Vec::nearest, tested by adding sigma=0.01 noise t
     ACCURATE = 1,
     EXACT = 2
 };
-struct Word2Vec
+
+// This is a base class for Word2Vec, supports lookup by word only
+struct Word2VecBase
+{
+    Word2VecBase(const std::string& filename, uint32 max_dic_size = UINT32_MAX);
+
+    size_t size() const { return m_word2Node.size(); }
+
+    std::vector<WordVecNode*> m_nodes;
+    std::unordered_map<std::string, const WordVecNode*> m_word2Node;
+
+    virtual const WordVecNode* operator[](const std::string& word) const
+    {
+        auto it = m_word2Node.find(word);
+        return it != m_word2Node.end() ? it->second : nullptr;
+    }
+    virtual ~Word2VecBase()
+    {
+        for (WordVecNode* node : m_nodes) delete node;
+    }
+
+ protected:
+    Word2VecBase(){};
+};
+
+// Derived class for Word2Vec, supports lookup by word &&vector by building a tree
+// of WordVecNodes
+struct Word2Vec : Word2VecBase
 {
     Word2Vec(const std::string& filename, uint32 max_dic_size = UINT32_MAX);
 
-    size_t size() const { return word2Node.size(); }
+    size_t size() const { return m_word2Node.size(); }
 
-    void nearest(const Vec300& vec, const WordVecNode* from, NodeDist2& out,
+    void nearest(const WORDVEC& vec, const WordVecNode* from, NodeDist2& out,
                  FloatT thresh = COSINE_SIM_THRESHOLD, uint32* count = nullptr,
                  uint32 count_threshold = 1000, uint32 maxDepthForExact = 8);
 
-    const WordVecNode* operator[](const Vec300& vec);
+    const WordVecNode* operator[](const WORDVEC& vec);
 
     inline const WordVecNode* operator[](uint32 id) const
     {
-        return id < this->nodes.size() ? nodes[id] : nullptr;
+        return id < this->m_nodes.size() ? m_nodes[id] : nullptr;
     }
 
-    inline const WordVecNode* operator[](const std::string& word) const
-    {
-        auto it = word2Node.find(word);
-        return it != word2Node.end() ? it->second : nullptr;
-    }
-
-    const WordVecNode* operator()(const Vec300& vec, SearchOption option = SearchOption::ACCURATE);
+    const WordVecNode* operator()(const WORDVEC& vec, SearchOption option = SearchOption::ACCURATE);
 
     uint32 nearest_count = 0;
 
-    ~Word2Vec()
-    {
-        for (WordVecNode* node : nodes) delete node;
-    }
-
  private:
     WordVecNode* build(WordVecPairIter begin, WordVecPairIter end, int depth);
-    const WordVecNode* root;
-    std::vector<WordVecNode*> nodes;
-    std::unordered_map<std::string, const WordVecNode*> word2Node;
+    const WordVecNode* m_root = nullptr;
 };
 
 #endif  // WORD2VEC_HPP

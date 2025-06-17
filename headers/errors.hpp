@@ -147,4 +147,13 @@ inline void print_backtrace()
     }
 #endif
 
+#ifdef DO_NAN_INF_CHECK
+#define NAN_INF_CHECK(x)                                     \
+    if (std::isnan(x) || std::isinf(x) || std::abs(x) > 1e6) \
+    {                                                        \
+        throw_rte_with_backtrace("NAN || INF in ", #x);      \
+    }
+#else
+#define NAN_INF_CHECK(x)
+#endif
 #endif

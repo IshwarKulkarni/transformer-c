@@ -24,7 +24,7 @@ struct Sum : Node<T>
     {
         if (prevs[0]->shape != prevs[1]->shape)
             throw_rte_with_backtrace("Matrix dimensions do not match for sum between ",
-                                     prevs[0]->name, prevs[0]->shape, " and ", prevs[1]->name,
+                                     prevs[0]->name, prevs[0]->shape, " &&", prevs[1]->name,
                                      prevs[1]->shape);
         LOG(BLUE, this->name, "\t", prevs[0]->shape, " -> ", this->shape);
     }
@@ -33,6 +33,12 @@ struct Sum : Node<T>
     {
         (void)ctx;
         binary_apply(*this, this->prev(0), this->prev(1), Plus<T>());
+        for (uint32 i = 0; i < this->batch(); i++)
+        {
+            auto [y0, x0] = this->prev(0)->extents(i);
+            auto [y1, x1] = this->prev(1)->extents(i);
+            this->extents.set(i, std::min(y0, y1), std::min(x0, x1));
+        }
     }
 
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
@@ -49,6 +55,8 @@ struct Sum : Node<T>
                "\" shape=rect  xlabel=<<font color=\"green\" POINT-SIZE=\"10.0\">" + "Sum" +
                "</font>>]\n";
     }
+
+    virtual std::string type() const override { return "Sum"; }
 };
 
 // Element wise subtraction, prevs[0](=A) - prevs[1](=B), output shape is same as A, B is
@@ -62,10 +70,10 @@ struct Subtract : Node<T>
         : Node<T>(prevs[0]->shape, prevs, name, 2), A(prevs[0]), B(prevs[1])
 
     {
-        if (!broadcastable<0>(B->shape, A->shape) or !broadcastable<1>(B->shape, A->shape) or
+        if (!broadcastable<0>(B->shape, A->shape) || !broadcastable<1>(B->shape, A->shape) or
             !broadcastable<2>(B->shape, A->shape))
             throw_rte_with_backtrace("Matrix dimensions do not match for Subtract between ",
-                                     A->name, A->shape, " and ", B->name, B->shape, " for ",
+                                     A->name, A->shape, " &&", B->name, B->shape, " for ",
                                      this->name);
         uint32 mimatches = 0;
         for (uint32 i = 0; i < 3; i++) mimatches += (A->shape[i] != B->shape[i]);
@@ -87,7 +95,7 @@ struct Subtract : Node<T>
         A->backward(gradIn, ctx);
 
         // We could have broadcasted B to A, so we need to sum the gradient in broadcasted
-        // dimensions, and negate the result
+        // dimensions, &&negate the result
         if (gradientB.shape[0] != gradIn->shape[0])
             reduce<T, 0>(gradientB, *gradIn, Plus<T>(), T(0), Neg<T>());
         else if (gradientB.shape[1] != gradIn->shape[1])
