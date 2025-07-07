@@ -7,6 +7,7 @@ temp/*
 .cache/*
 datasets/*
 data/*
+test_data/*
 *.dot
 runs/*
 git*

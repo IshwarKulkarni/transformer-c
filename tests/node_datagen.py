@@ -565,8 +565,8 @@ def gen_adam_data():
 
 if __name__ == "__main__":
     functions = {name: obj for name, obj in globals().items() 
-                if callable(obj) &&obj.__module__ == __name__ &&name.startswith("gen_")}
-    if len(sys.argv) == 1 ||  (len(sys.argv) > 1 &&sys.argv[1] == "all"):
+                if callable(obj) and obj.__module__ == __name__ and name.startswith("gen_")}
+    if len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1] == "all"):
         for name in functions.keys():
             print(f"Generating {name}")
             functions[name]()

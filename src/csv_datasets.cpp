@@ -5,7 +5,6 @@
  */
 
 #include <fstream>
-#include <iostream>
 #include <map>
 #include <string>
 #include <vector>
@@ -16,16 +15,7 @@
 #include "types"
 #include "utils.hpp"
 
-template <typename T, typename U>
-inline std::string join(const std::map<T, U>& strs, const std::string& delim = ", ")
-{
-    std::string result;
-    for (const auto& [key, value] : strs)
-    {
-        result += key + " : " + MAGENTA + std::to_string(value) + RESET + delim;
-    }
-    return result;
-}
+const char* DataModeStr[] = {"Train", "Validation", "Test"};
 
 CSV::CSV(std::string filename, bool has_header, char delimiter, char quote, uint32 max_samples)
     : delimiter(delimiter), quote(quote), has_header(has_header)
@@ -59,18 +49,26 @@ CSV::CSV(std::string filename, bool has_header, char delimiter, char quote, uint
         data.push_back(header);
     }
 
-    while (std::getline(file, line) && data.size() < max_samples)
+    uint32 malformed_lines = 0;
+    while (data.size() < max_samples && file.good())
     {
-        auto tokens = split_str(line, delimiter, quote);
+        std::vector<std::string> tokens;
+        for (uint32 i = 0; i < column_count && file.good(); ++i)
+        {
+            char delim = i == column_count - 1 ? '\n' : delimiter;
+            if (std::getline(file, line, delim)) tokens.push_back(line);
+        }
         if (tokens.size() != column_count)
         {
-            LOG(RED, "Number of columns in the csv file: ", tokens.size());
-            throw std::runtime_error("Number of columns in the csv file is not consistent");
+            malformed_lines++;
         }
-        data.push_back(tokens);
+        else
+            data.push_back(tokens);
     }
-    LOG("Read ", GREEN, data.size(), RESET, " rows from ", GREEN, filename, RESET, " with ", GREEN,
-        column_count, RESET, " columns");
+    std::string malformed =
+        malformed_lines > 0 ? " with " + std::to_string(malformed_lines) + " malformed lines" : "";
+    LOG("Read ", GREEN, commas_int(data.size()), RESET, " rows from ", GREEN, filename, RESET,
+        " with ", GREEN, column_count, RESET, " columns", RED, malformed);
 }
 
 void CSV::print_counts(const std::string& col)
@@ -87,11 +85,15 @@ void CSV::print_counts(const std::string& col)
     {
         unique_counts[data[row][col_idx]]++;
     }
-    LOG(GREEN, join(unique_counts, "\t"));
+    std::stringstream ss;
+    for (const auto& [value, count] : unique_counts)
+    {
+        ss << value << " : " << count << "\t";
+    }
+    LOG(GREEN, ss.str());
 }
 
-// print histogram of the column, using "*"s to represent the count ,
-template <typename T>
+// print histogram of the column, using "*"s to represent the count , or print counts.
 void CSV::print_stats(const std::string& col, Optional<uint32> num_bins)
 {
     if (header_to_index.find(col) == header_to_index.end())
@@ -100,14 +102,14 @@ void CSV::print_stats(const std::string& col, Optional<uint32> num_bins)
     }
 
     uint32 col_idx = get_column_index(col);
-    std::map<T, uint32> counts;
+    std::map<FloatT, uint32> counts;
 
-    std::vector<T> values;
+    std::vector<FloatT> values;
     FloatT min = std::numeric_limits<FloatT>::max(), max = std::numeric_limits<FloatT>::min();
     for (uint32 row = 0; row < num_rows(); ++row)
     {
         std::string str_val = data[row][col_idx];
-        T val = string_to_type<T>(str_val);
+        FloatT val = string_to_type<FloatT>(str_val);
         counts[val]++;
         values.push_back(val);
         min = std::min(min, string_to_type<FloatT>(str_val));
@@ -119,9 +121,15 @@ void CSV::print_stats(const std::string& col, Optional<uint32> num_bins)
         std::map<std::string, uint32> counts_str;
         for (const auto& [value, count] : counts)
         {
-            counts_str[std::to_string(value)] = count;
+            // TODO: this cast to uint32 is wrong when T is not an integer type
+            counts_str[std::to_string(uint32(value))] = count;
         }
-        LOG(GREEN, join(counts_str, "\t"));
+        std::stringstream ss;
+        for (const auto& [value, count] : counts_str)
+        {
+            ss << value << ": " << uint32(count) << "|\t";
+        }
+        LOG(ss.str());
         return;
     }
 
@@ -155,19 +163,18 @@ void CSV::print_stats(const std::string& col, Optional<uint32> num_bins)
     }
     LOG(GREEN, "\n", "stats for column `", col, "`\n", ss.str());
 }
-
+//clang-format off
 CSVDataset::CSVDataset(std::string csv_filename, DataMode mode, Input<FloatT>* features_node,
-                       Input<FloatT>* target_node, const VarArgs& args)
-    : Dataset(mode, mode == DataMode::TRAIN, features_node, target_node),
+                       Input<FloatT>* target_node, bool has_header, char delimiter, char quote,
+                       uint32 max_samples, uint32 one_hot_classes, const std::string& feature_col,
+                       const std::string& target_col)
+    : Dataset(mode, mode == DataMode::TRAIN && false, features_node, target_node),
       m_features_node(features_node),
       m_target_node(target_node),
       m_one_hot_classes(0)
 {
-    char delimiter = args.get("delimiter", ',');
-    char quote = args.get("quote", '"');
-
-    m_csv = std::make_unique<CSV>(csv_filename, args.get("has_header", true), delimiter, quote,
-                                  args.get("max_samples", UINT32_MAX));
+    //clang-format on
+    m_csv = std::make_unique<CSV>(csv_filename, has_header, delimiter, quote, max_samples);
 
     if (m_csv->num_columns() == 0 || m_csv->num_rows() == 0)
     {
@@ -184,8 +191,8 @@ CSVDataset::CSVDataset(std::string csv_filename, DataMode mode, Input<FloatT>* f
         return col_indices;
     };
 
-    m_tgt_cols = cols_to_indices(args.get("target_columns", ""));
-    m_feat_cols = cols_to_indices(args.get("feature_columns", ""));
+    m_tgt_cols = cols_to_indices(feature_col);
+    m_feat_cols = cols_to_indices(target_col);
 
     if (m_tgt_cols.empty())
     {
@@ -211,7 +218,7 @@ CSVDataset::CSVDataset(std::string csv_filename, DataMode mode, Input<FloatT>* f
         }
     }
 
-    if (auto one_host_classes = args.get("one_hot_classes", 0))
+    if (one_hot_classes > 0)
     {
         // TODO: return std::vector<std::vector<FloatT>> for multiple target columns
         if (m_tgt_cols.size() != 1)
@@ -219,13 +226,21 @@ CSVDataset::CSVDataset(std::string csv_filename, DataMode mode, Input<FloatT>* f
             throw_rte_with_backtrace(
                 "One-hot encoding is only supported for a single target column");
         }
-        m_one_hot_classes = one_host_classes;
+        m_one_hot_classes = one_hot_classes;
     }
+}
 
+CSVDataset::CSVDataset(std::string csv_filename, DataMode mode, Input<FloatT>* features_node,
+                       Input<FloatT>* target_node, const VarArgs& args)
+    : CSVDataset(csv_filename, mode, features_node, target_node, args.get("has_header", true),
+                 args.get("delimiter", ','), args.get("quote", '"'),
+                 args.get("max_samples", UINT32_MAX), args.get("one_hot_classes", 0),
+                 args.get("feature_columns", ""), args.get("target_columns", ""))
+{
     if (m_one_hot_classes != 0 && m_one_hot_classes != m_target_node->width())
     {
         throw_rte_with_backtrace("Target node width must be ", m_one_hot_classes,
-                                 " for one-hot encoding");
+                                 " for one-hot encoding target of width ", m_target_node->width());
     }
     else if (m_one_hot_classes == 0 && m_tgt_cols.size() != m_target_node->width())
     {
@@ -244,85 +259,26 @@ CSVDataset::CSVDataset(std::string csv_filename, DataMode mode, Input<FloatT>* f
     m_do_normalize = args.get("normalize", false);
     if (args.get("pre-parse", true))
     {
+        StrsToFloats str_to_float;
         if (m_one_hot_classes > 0)
         {
-            parse(StrsToFloats(), StrsToOneHot{m_one_hot_classes});
+            StrsToOneHot target_parser{m_one_hot_classes};
+            parse(str_to_float, target_parser);
         }
         else
         {
-            parse(StrsToFloats(), StrsToFloats());
+            parse(str_to_float, str_to_float);
         }
-    }
-}
-
-template <typename FeatureParser, typename TargetParser>
-void CSVDataset::parse(const FeatureParser& feature_parser, const TargetParser& target_parser)
-{
-    m_features.clear();
-    m_labels.clear();
-
-    std::vector<uint32> feat_cols;
-    std::vector<uint32> tgt_cols;  // to preserve order of columns.
-    std::string feat_col_names;
-    std::string tgt_col_names;
-    for (uint32 col = 0; col < m_csv->num_columns(); ++col)
-    {
-        if (m_feat_cols.find(col) != m_feat_cols.end())
-        {
-            feat_cols.push_back(col);
-            feat_col_names += m_csv->get_column_name(col) + ", ";
-        }
-        if (m_tgt_cols.find(col) != m_tgt_cols.end())
-        {
-            tgt_cols.push_back(col);
-            tgt_col_names += m_csv->get_column_name(col) + ", ";
-        }
-    }
-
-    if (mode == DataMode::TRAIN)
-    {
-        LOG(GREEN, "Feature column", (feat_cols.size() > 0 ? "s: " : ": "), YELLOW, feat_col_names);
-        LOG(GREEN, "Target column", (tgt_cols.size() > 0 ? "s: " : ": "), YELLOW, tgt_col_names);
-    }
-
-    for (uint32 row = 0; row < m_csv->num_rows(); ++row)
-    {
-        std::vector<std::string> feature_strs;
-        std::vector<std::string> target_strs;
-
-        for (uint32 col : feat_cols)
-        {
-            feature_strs.push_back((*m_csv)(col, row));
-        }
-        for (uint32 col : tgt_cols)
-        {
-            target_strs.push_back((*m_csv)(col, row));
-        }
-
-        m_features.push_back(feature_parser(feature_strs));
-        m_labels.push_back(target_parser(target_strs));
     }
     if (m_do_normalize)
     {
         normalize();
     }
-
-    m_indices.resize(m_features.size());
-    std::iota(m_indices.begin(), m_indices.end(), 0);
-
-    for (uint32 col : m_tgt_cols)
-    {
-        auto col_name = m_csv->get_column_name(col);
-        m_csv->print_stats<FloatT>(col_name);
-    }
-
-    this->set_num_batches(m_features.size() / m_features_node->batch());
 }
 
 // normalize features in place
 void CSVDataset::normalize()
 {
-    LOG(GREEN, "Normalizing features");
     std::vector<FloatT> column;
     column.reserve(m_features.size());
     for (uint32 i = 0; i < m_features[0].size(); i++)
@@ -348,17 +304,16 @@ void CSVDataset::normalize()
 
 void CSVDataset::load(uint32 batch_idx)
 {
-    if (batch_idx % m_indices.size() == 0 && m_shuffle)
-    {
-        std::shuffle(m_indices.begin(), m_indices.end(), rdm::rdm_gen);
-    }
-
     uint32 batch_size = m_features_node->batch();
-    uint32 start_idx = batch_idx * batch_size;
+    populate_next_batch(batch_idx, batch_size);
 
     for (uint32 i = 0; i < batch_size; ++i)
     {
-        auto data_idx = m_indices[(start_idx + i) % m_indices.size()];
+        auto data_idx = m_last_load_indices[i];
+        m_features[data_idx].resize(m_features_node->shape.size2d,
+                                    std::numeric_limits<FloatT>::quiet_NaN());
+        m_labels[data_idx].resize(m_target_node->shape.size2d,
+                                  std::numeric_limits<FloatT>::quiet_NaN());
         m_features_node->copy(m_features[data_idx].data(), i);
         m_target_node->copy(m_labels[data_idx].data(), i);
     }

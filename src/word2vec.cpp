@@ -118,7 +118,6 @@ static bool read_binary(const std::string& filename, std::vector<WordVecPair>& w
     {
         return false;
     }
-    Timer timer("Reading Word2Vec Binary");
     uint32 n_words, vec_size, max_word_len;
     file.read((char*)&n_words, sizeof(uint32));
     file.read((char*)&vec_size, sizeof(uint32));
@@ -145,17 +144,19 @@ static bool read_binary(const std::string& filename, std::vector<WordVecPair>& w
 static bool read_text(const std::string& filename, std::vector<WordVecPair>& wordVecPairs,
                       uint32 max_dict_size, bool has_headers = true)
 {
+    Timer timer("Reading Word2Vec");
     if (endswith(filename, ".bin") && !read_binary(filename, wordVecPairs))
     {
         throw std::runtime_error("Binary failed to load");
     }
     if (read_binary(filename + ".bin", wordVecPairs))
     {
-        LOG(YELLOW, "Loaded ", wordVecPairs.size(),
-            " words from binary, check number of words read");
+        char line[256] = {0};
+        snprintf(line, 256, "Loaded %'lu words from binary, check number of words read",
+                 wordVecPairs.size());
+        LOG(YELLOW, line);
         return true;
     }
-    Timer timer("Reading Text");
     std::ifstream file(filename, std::ios::binary);
     uint32 n_words = -1;
     if (has_headers)

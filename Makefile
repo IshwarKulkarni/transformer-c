@@ -33,7 +33,7 @@ NVCC          := /usr/local/cuda-12.5/bin/nvcc -ccbin $(HOST_COMPILER)
 
 # Flags
 NVCCFLAGS     := -m64 --expt-relaxed-constexpr # -Xptxas=-v
-CCFLAGS       := --std=c++17 -fPIC -rdynamic -Wall -Wextra -Wsign-compare -I/usr/include/c++/11 -I/usr/include/x86_64-linux-gnu/c++/11
+CCFLAGS       := --std=c++17 -fPIC -rdynamic -Wall -Wextra -Wsign-compare -I/usr/include/c++/11 -I/usr/include/x86_64-linux-gnu/c++/11  #-fsanitize=address
 LDFLAGS       :=
 
 # Debug build flags
@@ -41,8 +41,8 @@ ifeq ($(dbg),1)
     NVCCFLAGS += -g -G
 	CCFLAGS += -g -O0 -DDEBUG
 else
-	NVCCFLAGS += -lineinfo  # -DDISABLE_SIZE_CHECK
-	CCFLAGS += -O3 
+	NVCCFLAGS += -lineinfo  #-DDISABLE_SIZE_CHECK
+    CCFLAGS += -O3
 endif
 
 # Main flags
@@ -91,10 +91,15 @@ build/%: $(BUILDDIR)/%$(SUFFIX)
 	@echo "\033[1;32mBuild complete for $@ -> $< \033[0m"
 
 clean:
-	rm -fr temp/* *.csv *.info *.ppm *.dot
+	rm -fr temp/* *.csv *.info *.ppm *.dot $(BUILDDIR)/*
 
-clean_all: clean
-	rm -fr $(BUILDDIR)/*
+# preserve the *cu.o files
+clean_cpp:
+	rm -fr $(ROOT_TARGETS)
+	ls $(BUILDDIR)/*/* | grep "matrix.*.cu.o" -v  | xargs rm
+
+format:
+	find . -type f -name "*.cpp" -o -name "*.hpp" -o -name "*.cu" -o -name "*.h" -o -name "*.cuh" | xargs clang-format -i
 
 $(OBJDIR)/%.cu.o: $(SRCDIR)/%.cu
 	@mkdir -p $(OBJDIR);
@@ -114,15 +119,12 @@ $(BUILDDIR)/%$(SUFFIX): $(OBJDIR_EXE)/%.o $(OBJECTSCU) $(OBJECTS)
 	@echo "\033[1;32mBuild complete for $@ \033[0m"
 
 
-
 # Run targets for each executable
 run_%: $(BUILDDIR)/%$(SUFFIX)
 	./$< $(var)
 
-
-# Only build debug, do not run
-# Run valgrind
-valgrind: build_dbg
+# Run valgrind on main
+valgrind: $(BUILDDIR)/main$(SUFFIX)
 	valgrind --leak-check=full \
          --show-leak-kinds=all \
          --track-origins=yes \

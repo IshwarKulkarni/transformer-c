@@ -375,6 +375,12 @@ struct Matrix
         return std::make_pair(extent<HEIGHT_IDX>(b), extent<WIDTH_IDX>(b));
     }
 
+    inline __device__ __host__ void set_extents(uint32 b, std::pair<uint32, uint32> extents)
+    {
+        extent<HEIGHT_IDX>(b) = extents.first;
+        extent<WIDTH_IDX>(b) = extents.second;
+    }
+
     template <uint32 Dim>
     inline __device__ __host__ uint32 get_extent(uint32 b) const
     {
@@ -594,6 +600,68 @@ inline std::ostream& operator<<(std::ostream& os,
     }
     os << "])\n";
     return os;
+}
+
+inline void print_param_histogram(std::ostream& os, Matrix<FloatT>* mat, uint32 num_bins = 100)
+{
+    auto weights = mat->get_data();
+    FloatT min_val = std::numeric_limits<FloatT>::max();
+    FloatT max_val = std::numeric_limits<FloatT>::min();
+
+    // Find min and max values
+    for (uint32 i = 0; i < mat->numels(); ++i)
+    {
+        min_val = std::min(min_val, weights[i]);
+        max_val = std::max(max_val, weights[i]);
+    }
+
+    // count small values
+    uint32 small_values = 0;
+    float32 small_value_epsilon = 0.0001;
+
+    // Create histogram bins
+    std::vector<uint32> bin_counts(num_bins, 0);
+    std::set<uint32> used_bins;
+    for (uint32 i = 0; i < mat->numels(); ++i)
+    {
+        if (std::abs(weights[i]) < small_value_epsilon) small_values++;
+        uint32 bin_idx = (weights[i] - min_val) / (max_val - min_val) * num_bins;
+        bin_idx = std::min(bin_idx, num_bins - 1);  // Ensure we don't go out of bounds
+        bin_counts[bin_idx]++;
+        used_bins.insert(bin_idx);
+    }
+
+    if (used_bins.size() == 1)
+    {
+        os << "All values are in same bin: " << min_val << " .. " << max_val << " for " << mat->name
+           << mat->shape << "\n";
+        return;
+    }
+
+    // Print histogram
+    uint32 max_count = *std::max_element(bin_counts.begin(), bin_counts.end());
+    uint32 max_width = 50;  // Maximum width of histogram bars
+    os << " ---------------------------------------------------------------\n";
+    os << "#Small values: " << small_values << " :" << small_values * 100.0 / mat->numels() << "% ["
+       << -small_value_epsilon << " , " << small_value_epsilon << "]\n";
+    os << "Histogram for " << mat->name << mat->shape << ":\n";
+
+    for (uint32 i = 0; i < num_bins; ++i)
+    {
+        uint32 count = bin_counts[i];
+        uint32 bar_length = max_count > 0 ? (count * max_width / max_count) : 0;
+
+        // Add at least one character if there are values in this bin
+        if (count > 0 && bar_length == 0) bar_length = 1;
+
+        FloatT bin_min = min_val + i * (max_val - min_val) / num_bins;
+        FloatT bin_max = min_val + (i + 1) * (max_val - min_val) / num_bins;
+
+        char line[120];
+        snprintf(line, sizeof(line), "%2d|  %8.4f - %8.4f: %6d : %s\n", i, bin_min, bin_max, count,
+                 std::string(bar_length, '>').c_str());
+        os << line;
+    }
 }
 
 #endif  // MATRIX_CUH

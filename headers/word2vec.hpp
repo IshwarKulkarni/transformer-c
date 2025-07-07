@@ -164,11 +164,13 @@ struct Word2VecBase
         for (WordVecNode* node : m_nodes) delete node;
     }
 
+    uint32 vector_dim() const { return WORD2VEC_DIM; }
+
  protected:
     Word2VecBase(){};
 };
 
-// Derived class for Word2Vec, supports lookup by word &&vector by building a tree
+// Derived class for Word2Vec, supports lookup by word and vector by building a tree
 // of WordVecNodes
 struct Word2Vec : Word2VecBase
 {

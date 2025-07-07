@@ -13,14 +13,14 @@
 #include "node.hpp"
 #include "nodes/parameterized.hpp"
 /*
-File contains parameterized composite nodes, which are nodes that contain other attention &&linear
+File contains parameterized composite nodes, which are nodes that contain other attention and linear
 nodes.
 */
 
 /*
 MultiHeadAttention:
 Input is a std::vector of 3 matrices, each of size `S x Ei`, where S is the sequence length.
-With `n_heads`, each head projects querys &&keys to `S x q_size`
+With `n_heads`, each head projects querys and keys to `S x q_size`
 to generate attention and, values are projected to `S x v_size` to generate each output,
 that are concatenated to `S x n_heads * v_size`, which are then linearly transformed to
 `S x out_size`.
@@ -33,10 +33,10 @@ struct MultiHeadAttention : Node<T>
     std::unique_ptr<Concat0<T>> concat;
     std::vector<std::unique_ptr<Att>> heads;
 
-    // Oinp.prev &&Oinp.name are ignored
+    // Oinp.prev and Oinp.name are ignored
     MultiHeadAttention(uint32 num_heads, LinearInput<T> Qinp, LinearInput<T> Kinp,
                        LinearInput<T> Vinp,
-                       LinearInput<T> Oinp,  // Oinp.prev &&Oinp.name are ignored
+                       LinearInput<T> Oinp,  // Oinp.prev and Oinp.name are ignored
                        std::string name = "MHA")
         : Node<T>({Qinp.prev->batch(), Qinp.prev->height(), Oinp.out_size}, {}, name, 0)
     {
@@ -144,7 +144,7 @@ struct MultiHeadSelfAttention : MultiHeadAttention<T>
 {
     std::unique_ptr<LinearProxy<T>> x;
     MultiHeadSelfAttention(uint32 num_heads, LinearInput<T> Linp,
-                           LinearInput<T> Oinp,  // Oinp.prev &&Oinp.name are ignored
+                           LinearInput<T> Oinp,  // Oinp.prev and Oinp.name are ignored
                            std::string name = "MHSA")
         : MultiHeadAttention<T>(num_heads, Linp.set_name(Linp.name + "_Q"),
                                 Linp.set_name(Linp.name + "_K"), Linp.set_name(Linp.name + "_V"),
@@ -243,9 +243,9 @@ struct MultiHeadCrossAttention : MultiHeadAttention<T>
     V0: No residual connections, V1: Residual across Linear1, V2: Residual Linear2, V3: Residual
    across both
 
-    if PWidth == IWidth &&IWidth == OWidth, then V3
-    else if PWidth != IWidth &&IWidth == OWidth, then V2
-    else if PWidth == IWidth &&IWidth != OWidth, then V1
+    if PWidth == IWidth and IWidth == OWidth, then V3
+    else if PWidth != IWidth and IWidth == OWidth, then V2
+    else if PWidth == IWidth and IWidth != OWidth, then V1
     else V0
 */
 template <typename T = FloatT>
@@ -256,8 +256,10 @@ struct FeedForward : Node<T>
                 FloatT dropout1_rate, uint32 intermediate_dim,
                 LinearInput<T> l_inp2,  // ::prev is ignored, prev is either residual1 || dropout1,
                                         // name is ignored
-                FloatT dropout2_rate, std::string name = "FeedForward")
-        : Node<T>(l_inp1.prev->shape.set(WIDTH_IDX, l_inp2.out_size), {}, name, 0)
+                FloatT dropout2_rate, uint32 normalize_dim = UINT32_MAX,
+                std::string name = "FeedForward")
+        : Node<T>(l_inp1.prev->shape.set(WIDTH_IDX, l_inp2.out_size), {}, name, 0),
+          m_normalize_dim(normalize_dim)
     {
         uint32 prev_width = l_inp1.prev->width();
         uint32 out_width = l_inp2.out_size;
@@ -276,29 +278,50 @@ struct FeedForward : Node<T>
 
         linear2 = std::make_unique<Linear<T>>(l_inp2);
         dropout2 = std::make_unique<Dropout<T>>(dropout2_rate, linear2.get(), name + "_Dropout2");
-        NodePtr<T> prev = dropout2.get();
+        m_terminal_node = dropout2.get();
         if (intermediate_dim == out_width)
         {
-            residual2 = std::make_unique<Add<T>>(NodePtrVec<T>{l_inp2.prev, dropout2.get()},
+            residual2 = std::make_unique<Add<T>>(NodePtrVec<T>{l_inp2.prev, m_terminal_node},
                                                  name + "_Residual2");
-            prev = residual2.get();
+            m_terminal_node = residual2.get();
         }
-        layer_norm = std::make_unique<Normalize<T, WIDTH_IDX>>(prev, name + "_LayerNorm");
-        this->set_data(layer_norm->get_data());
+        if (m_normalize_dim == 0)
+        {
+            layer_norm =
+                std::make_unique<Normalize<T, WIDTH_IDX>>(m_terminal_node, name + "_LayerNorm");
+            m_terminal_node = layer_norm.get();
+            LOG(YELLOW, "Using LayerNorm");
+        }
+        else if (m_normalize_dim == 1)
+        {
+            instance_norm =
+                std::make_unique<Normalize<T, HEIGHT_IDX>>(m_terminal_node, name + "_InstanceNorm");
+            m_terminal_node = instance_norm.get();
+            LOG(YELLOW, "Using InstanceNorm");
+        }
+        else if (m_normalize_dim == 2)
+        {
+            batch_norm =
+                std::make_unique<Normalize<T, BATCH_IDX>>(m_terminal_node, name + "_BatchNorm");
+            m_terminal_node = batch_norm.get();
+            LOG(YELLOW, "Using BatchNorm");
+        }
+
+        this->set_data(m_terminal_node->get_data());
         LOG_NODE_NAME(l_inp1.prev->shape, R_JUST("->", 4), linear2->shape);
     }
 
     void forward(Context* ctx) override
     {
         LOG_NODE_TRACE("FeedForward::forward for ", this->name);
-        layer_norm->compute(ctx);
-        this->copy_extents(*layer_norm);
+        m_terminal_node->compute(ctx);
+        this->copy_extents(*m_terminal_node);
     }
 
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("FeedForward::backward for ", this->name);
-        layer_norm->backward(gradientIn, ctx);
+        m_terminal_node->backward(gradientIn, ctx);
     }
 
     virtual std::vector<NodePtr<T>> get_dependencies() const override
@@ -306,7 +329,7 @@ struct FeedForward : Node<T>
         return linear1->prev_nodes;
     }
 
-    virtual NodePtr<T> get_terminal_node() override { return layer_norm.get(); }
+    virtual NodePtr<T> get_terminal_node() override { return m_terminal_node; }
 
     virtual uint32 param_count() override
     {
@@ -332,6 +355,9 @@ struct FeedForward : Node<T>
         ss << "\n\t" << this->id << "}\n";
         if (residual1) ss << residual1->dot_repr() << '\n';
         if (residual2) ss << residual2->dot_repr() << '\n';
+        if (layer_norm) ss << layer_norm->dot_repr() << '\n';
+        if (instance_norm) ss << instance_norm->dot_repr() << '\n';
+        if (batch_norm) ss << batch_norm->dot_repr() << '\n';
         ss << this->id << " [label = \"" << this->name << "[" << num_to_si(learnable_count, true)
            << "]\", shape=box3d,  style=filled, fillcolor=azure ]\n";
         return ss.str();
@@ -359,6 +385,10 @@ struct FeedForward : Node<T>
     std::unique_ptr<Dropout<T>> dropout2;
     std::unique_ptr<Add<T>> residual2;
     std::unique_ptr<Normalize<T, WIDTH_IDX>> layer_norm;
+    std::unique_ptr<Normalize<T, HEIGHT_IDX>> instance_norm;
+    std::unique_ptr<Normalize<T, BATCH_IDX>> batch_norm;
+    uint32 m_normalize_dim;  // UINT32_MAX means no normalization, 0 : width, 1: height, 2: batch
+    NodePtr<T> m_terminal_node{nullptr};
 };
 
 template <typename T = FloatT>

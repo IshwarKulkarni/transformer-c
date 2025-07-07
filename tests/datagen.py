@@ -29,7 +29,9 @@ This allows comparing the custom CUDA kernels results against known-good PyTorch
 
 """
 
-data_path = Path('./data')
+TEST_DATA_DIR = Path('./test_data')
+
+data_path = TEST_DATA_DIR
 os.makedirs(data_path, exist_ok=True)
 
 def save_tensor_to_csv(tensor, filename, append=False):
@@ -88,9 +90,9 @@ def write_softmax_grad_data(height, width):
     mse.backward()
 
     names = [
-        f'data/s_out{height}x{width}.csv',
-        f'data/s_grad_in{height}x{width}.csv',
-        f'data/s_grad_out{height}x{width}.csv'
+        f'{TEST_DATA_DIR}/s_out{height}x{width}.csv',
+        f'{TEST_DATA_DIR}/s_grad_in{height}x{width}.csv',
+        f'{TEST_DATA_DIR}/s_grad_out{height}x{width}.csv'
     ]
 
     save_tensor_to_csv(s,      names[0])

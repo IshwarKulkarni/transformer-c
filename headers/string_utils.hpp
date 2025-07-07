@@ -14,6 +14,43 @@
 #include <typeinfo>
 #include "utils.hpp"
 
+using StringStringMap = std::map<std::string, std::string>;
+using StringVector = std::vector<std::string>;
+using StringPairVec = std::vector<std::pair<std::string, std::string>>;
+
+inline std::string join(const StringVector& strs, const std::string& delim = ", ")
+{
+    std::string result;
+    for (uint32 i = 0; i < strs.size(); ++i)
+    {
+        result += strs[i];
+        if (i < strs.size() - 1) result += delim;
+    }
+    return result;
+}
+
+template <typename T>
+inline std::string join(const std::vector<T>& vec, const std::string& delim = ", ")
+{
+    std::string result;
+    for (uint32 i = 0; i < vec.size(); ++i)
+    {
+        result += std::to_string(vec[i]);
+        if (i < vec.size() - 1) result += delim;
+    }
+    return result;
+}
+
+inline std::string join(const StringStringMap& params, const std::string& delim = "\n")
+{
+    std::string result;
+    for (const auto& [key, value] : params)
+    {
+        result += key + " : " + value + delim;
+    }
+    return result;
+}
+
 inline std::vector<std::string> split_str(const std::string& line, char delimiter, char quote)
 {
     std::vector<std::string> result;
@@ -106,7 +143,19 @@ T string_to_type(const std::string& str)
         return str;
     else if constexpr (std::is_same<T, const char*>::value)
         return str.c_str();
+    else if constexpr (std::is_same<T, char>::value)
+    {
+        if (str.length() == 1) return str[0];
+        throw_rte_with_backtrace("Invalid char: ", str);
+    }
     throw_rte_with_backtrace("Unsupported type: ", typeid(T).name());
+}
+
+inline std::string commas_int(int64_t n)
+{
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%'ld", n);
+    return std::string(buffer);
 }
 
 // A structure to emulate Python's **kwargs
@@ -135,11 +184,7 @@ struct VarArgs
         }
     }
 
-    template <typename T>
-    void set(const std::string& key, T value)
-    {
-        args[key] = value;
-    }
+    void set(const std::string& key, const std::string& value) { args[key] = value; }
 
     template <typename T>
     Optional<T> get(const std::string& key) const

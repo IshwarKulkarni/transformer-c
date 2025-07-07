@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include "dataset.hpp"
 #include "matrix.cuh"
@@ -21,6 +22,15 @@
 std::ofstream C_file("C.csv");
 std::ofstream D_file("D.csv");
 std::ofstream diff_file("diff.csv");
+
+static const std::string test_data_dir = "test_data/";  // same as in datagen.py::TEST_DATA_DIR
+
+std::ifstream instream(std::string filename)
+{
+    std::ifstream in(filename);
+    if (!in.is_open()) throw_rte_with_backtrace("Failed to open file: ", filename);
+    return in;
+}
 
 using MatrixT = Matrix<FloatT>;
 
@@ -370,6 +380,13 @@ int test_mmtadd_extents()
 // Test for Matrix operations that takes in various parameters
 int32 run_parameterized_tests(int32 argc, char const* argv[])
 {
+    // check if test_data_dir exists
+    if (!std::filesystem::exists(test_data_dir))
+    {
+        LOG(RED, "Test data directory does not exist: ", test_data_dir);
+        return 1;
+    }
+
     std::string name = (argc > 1) ? argv[0] : "main";
     // clang-format off
     std::stringstream usage;
@@ -676,7 +693,7 @@ int32 test_linearb()
     uint32 bn, Ei, Sl, I0, I1;
     FloatT expected_loss = 0.0;
 
-    std::ifstream in("data/linear.txt");
+    std::ifstream in = instream(test_data_dir + "linear.txt");
     in >> bn >> Ei >> Sl >> I0 >> I1 >> expected_loss;
 
     LOG("TEST LINEARB Batch: ", bn, ", Embedding Size: ", Ei, ", Seq Len: ", Sl,
@@ -717,7 +734,7 @@ int32 test_linearb()
 
 int32 test_attention()
 {
-    std::ifstream golden("data/attention.txt");
+    std::ifstream golden = instream(test_data_dir + "attention.txt");
     uint32 bn, Ei, Eq, Ek, Ev, S;
     float32 expected_loss;
     golden >> bn >> Ei >> Eq >> Ek >> Ev >> S >> expected_loss;
@@ -824,7 +841,7 @@ int32 test_network_graph()
 
 int32 test_self_attention()
 {
-    std::ifstream golden("data/self_attention.txt");
+    std::ifstream golden = instream(test_data_dir + "self_attention.txt");
     uint32 bn, x0w, Eq, Sl;
     float32 expected_loss;
     golden >> bn >> x0w >> Eq >> Sl >> expected_loss;
@@ -877,7 +894,7 @@ int32 test_self_attention()
 
 int32 test_cross_attention()
 {
-    std::ifstream golden("data/cross_attention.txt");
+    std::ifstream golden = instream(test_data_dir + "cross_attention.txt");
     uint32 bn, x0w, Eq, Sl;
     float32 expected_loss;
     golden >> bn >> x0w >> Eq >> Sl >> expected_loss;
@@ -933,7 +950,7 @@ int32 test_productT()
     uint32 bn, x0w, Sl, I0, I2, I3;
     FloatT expected_loss = 0.0;
 
-    std::ifstream in("data/productT.txt");
+    std::ifstream in = instream(test_data_dir + "productT.txt");
     in >> bn >> x0w >> Sl >> I0 >> I2 >> I3 >> expected_loss;
 
     LOG("TEST PRODUCTT Batch: ", bn, ", x0w: ", x0w, ", Seq Len: ", Sl, ", Lin0 Emb Size: ", I0,
@@ -987,7 +1004,7 @@ int32 test_LSMCELoss()
 
     // Read the test data from file
     float32 expect_loss = 0.0;
-    std::ifstream golden("data/lsmce.txt");
+    std::ifstream golden = instream(test_data_dir + "lsmce.txt");
     golden >> x >> L0.W >> L0.b >> L1.W >> L1.b >> target >> expect_loss;
 
     NetworkGraph::write_dotviz("lsmce.dot", &loss);
@@ -1025,7 +1042,7 @@ int32 test_LSMCELoss()
 int32 test_adam()
 {
     LOG("TEST ADAM");
-    Matrix<FloatT> mat_v = read_csv<FloatT>("data/adam_v.csv");
+    Matrix<FloatT> mat_v = read_csv<FloatT>(test_data_dir + "adam_v.csv");
 
     Matrix<FloatT> grad_d({1, 2, 1}, "grad");
     Parameter<FloatT> p({1, 2, 1}, "p");
@@ -1060,7 +1077,7 @@ int32 test_adam()
                 std::setprecision(6), RED,   "\tvalue: [", v, ']');
         // clang-format on
 
-        p.update(lr, &ctx);
+        p.update(lr, &ctx, 0, 0, 1);
         if (x0 < 0 || x0 > 1 || x1 < 0 || x1 > 1) break;
         xy << std::setprecision(12) << p0 << ',' << p1 << ',' << g0 << ',' << g1 << ',' << v
            << '\n';
@@ -1224,7 +1241,7 @@ int32 test_softmaxDim()
     uint32 bn, Ei, Sl, I0;
     FloatT expected_loss = 0.0;
 
-    std::ifstream in("data/sm_dim" + std::to_string(SoftmaxDim) + ".txt");
+    std::ifstream in = instream(test_data_dir + "sm_dim" + std::to_string(SoftmaxDim) + ".txt");
     in >> bn >> Ei >> Sl >> I0 >> expected_loss;
 
     LOG("TEST SOFTMAX Batch: ", bn, " Embedding Size: ", Ei, " Seq Len: ", Sl,
@@ -1267,7 +1284,7 @@ int32 test_mean_node()
     uint32 bn, xw, Sl, I0;
     FloatT expected_loss = 0.0;
 
-    std::ifstream in("data/average.txt");
+    std::ifstream in = instream(test_data_dir + "average.txt");
     in >> bn >> xw >> Sl >> I0 >> expected_loss;
 
     LOG("TEST MEAN Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl, " Lin Emb Size: ", I0);
@@ -1305,7 +1322,7 @@ int32 test_layer_norm()
 {
     uint32 bn, xw, Sl, I0;
     FloatT expected_loss = 0.0;
-    std::ifstream in("data/layer_norm.txt");
+    std::ifstream in = instream(test_data_dir + "layer_norm.txt");
     in >> bn >> xw >> Sl >> I0 >> expected_loss;
 
     LOG("TEST LAYER NORM Batch: ", bn, " Embedding Size: ", xw, " Seq Len: ", Sl,
@@ -1341,7 +1358,7 @@ int32 test_layer_norm()
 
 int32 test_resampling_heatmap()
 {
-    auto a = read_csv<float32>("data/adam_v.csv");
+    auto a = read_csv<float32>(test_data_dir + "adam_v.csv");
     Matrix<float32> b({a.batch(), 768, 768}, "b");
     LOG("resampling from ", a.shape, " to ", b.shape);
     resample_matrix(b, a);
@@ -1361,10 +1378,10 @@ int32 test_feedforward()
     normal_init(x);
 
     LinearInput<FloatT> inp = {10, &x, true, "identity", "L1"};
-    FeedForward<FloatT> ff1(inp, 0.2f, 20, inp, 0.2f, "ff1");
+    FeedForward<FloatT> ff1(inp, 0.2f, 20, inp, 0.2f, WIDTH_IDX, "ff1");
 
     LinearInput<FloatT> inp2 = {10, &ff1, true, "relu", "L2"};
-    FeedForward<FloatT> ff2(inp2, 0.2f, 20, inp2, 0.2f, "ff2");
+    FeedForward<FloatT> ff2(inp2, 0.2f, 20, inp2, 0.2f, WIDTH_IDX, "ff2");
 
     Input<> y({1, 10}, "y");
     normal_init(y);
@@ -1476,6 +1493,9 @@ int32 test_mhsa_node()  // MultiHeadSelfAttention
 // uses data generated by tests/node_datagen.py
 int32 run_unparameterized_tests()
 {
+    if (!std::filesystem::exists(test_data_dir))
+        throw std::runtime_error("Test data directory does not exist: " + test_data_dir);
+
     int32 err = 0;
     //  Test kernel calls, self consistency tests.
     err += test_concat();
@@ -1519,6 +1539,5 @@ int32 run_unparameterized_tests()
 int32 main(int32 argc, char const* argv[])
 {
     if (argc > 1) return run_parameterized_tests(argc, argv);
-    // return run_unparameterized_tests();
-    test_LSMCELoss();
+    return run_unparameterized_tests();
 }

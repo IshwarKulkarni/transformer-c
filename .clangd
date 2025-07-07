@@ -9,5 +9,5 @@ CompileFlags:
     - -I/usr/local/cuda-12.5/include/
     - -I./headers/
     - -I./headers/nodes/
-    - -L/usr/local/cuda-12.5/include/lib64
+    - -L/usr/local/cuda-12.5/lib64
 

@@ -24,11 +24,11 @@ Various nodes that have learnable parameters, currently they are either Linear<>
 template <typename T = FloatT>
 struct LinearInput  // Consolidated input arguments for Linear.
 {
-    uint32 out_size;
-    NodePtr<T> prev;
-    bool useBias;
-    std::string act_name;
-    std::string name;
+    uint32 out_size = 0;
+    NodePtr<T> prev = nullptr;
+    bool useBias = true;
+    std::string act_name = "identity";
+    std::string name = "";
     LinearInput set_name(const std::string& n)
     {
         LinearInput<T> ret = *this;
@@ -153,7 +153,6 @@ struct Linear : Node<T>
             else
                 b.accumulate_grad(*gradIn, ctx);
         }
-
         auto* input_node = this->prev_nodes[0];
         transpose(tempT, *gradIn);
         mmadd(WGradUpdate, tempT, *input_node, {});
@@ -375,7 +374,7 @@ struct Attention : Node<T>
         if (input_ids.size() == 1) ss << Q.prev(0).id << "\n\t";
         ss << "\n\t{rank=same; " << Q.id << ' ' << K.id << ' ' << V.id << " }"
            << "\n\t{rank=same; " << attention_weights.id << ' ' << attention.id << " }"
-           << "\n\t" << this->id << "}\n";  // is attention
+           << "\n\t{rank=sink; " << this->id << "}\n";  // is attention
         return ss.str();
     }
 
@@ -413,6 +412,7 @@ struct SelfAttention : Attention<T>  // Optimizes number of gradient paths when 
                                      // same, using LinearProxy
 {
     std::unique_ptr<LinearProxy<T>> x;
+    NodePtr<T> prev;
     SelfAttention(const LinearInput<T>& inp, std::string name = "SelfAttention")
         : Attention<T>({inp.out_size, inp.prev, inp.useBias, inp.act_name, inp.name + "_Q"},
                        {inp.out_size, inp.prev, inp.useBias, inp.act_name, inp.name + "_K"},
@@ -429,8 +429,11 @@ struct SelfAttention : Attention<T>  // Optimizes number of gradient paths when 
             this->V.prev_nodes = {x.get()};
         }
         else
+        {
             LOG(YELLOW, "SelfAttention: ", this->name, " with input: ", inp.prev->name,
                 inp.prev->shape, " does not use LinearProxy");
+            prev = inp.prev;
+        }
     }
 
     void forward(Context* ctx) override
@@ -448,7 +451,7 @@ struct SelfAttention : Attention<T>  // Optimizes number of gradient paths when 
         if (x) x->proxy_backward(ctx);
     }
 
-    virtual NodePtrVec<T> get_dependencies() const override { return {x->in}; }
+    virtual NodePtrVec<T> get_dependencies() const override { return {x ? x->in : prev}; }
 
     virtual std::string type() const override { return "SelfAttention"; }
 };

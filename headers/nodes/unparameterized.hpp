@@ -14,6 +14,7 @@ means.
 
 #include <cmath>
 #include <sstream>
+#include "logger.hpp"
 #include "matrix.cuh"
 #include "node.hpp"
 #include "nodes/elemwise.hpp"
@@ -62,7 +63,7 @@ struct SoftmaxDim1 : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         transpose(gradientInT, *gradientIn);
         softmax_gradient(gradientOut, softmax, gradientInT);
         this->prev_nodes[0]->backward(&gradientOut, ctx);
@@ -94,7 +95,7 @@ struct SoftmaxDim0 : Node<T>
         if (prev->width() == 1)
         {
             throw_rte_with_backtrace("Dim[0] of previous node, ", prev->name, prev->shape,
-                                     " is 1 softmaxDim0 is invalid");
+                                     " is 1 softmaxDim0 cannot be used");
         }
     }
 
@@ -110,7 +111,7 @@ struct SoftmaxDim0 : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         softmax_gradient(gradientOut, *this, *gradientIn);
         transpose(gradientOutT, gradientOut);
         this->prev_nodes[0]->backward(&gradientOutT, ctx);
@@ -140,7 +141,7 @@ struct Product : Node<T>
     {
         if (this->prev(0).width() != this->prev(1).height())
             throw_rte_with_backtrace("Matrix dimensions do not match for product between ",
-                                     this->prev(0).shape, " &&", this->prev(1).shape);
+                                     this->prev(0).shape, " and ", this->prev(1).shape);
     }
 
     void forward(Context*) override { mmadd(*this, this->prev(0), this->prev(1), {}, pProcess); }
@@ -148,7 +149,7 @@ struct Product : Node<T>
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape, " &&prev0: ", this->prev(0).name, this->prev(0).shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         transpose(aT, this->prev(0), Neg<T>());
         mmTadd(a_grad_in, *gradientIn, this->prev(1), {}, pProcess);
         mmadd(b_grad_in, aT, *gradientIn, {}, pProcessN);
@@ -165,7 +166,7 @@ struct Product : Node<T>
 };
 
 /* Implements a multiplication between
-    matrix &&transpose of another: output = A * B^T
+    matrix and transpose of another: output = A * B^T
 
  Here's an equivalent python code:
  def Product(a, b):
@@ -189,7 +190,7 @@ struct ProductT : Node<T>
     {
         if (this->prev(0).width() != this->prev(1).width())
             throw_rte_with_backtrace("Matrix dimensions do not match for ProductT between ",
-                                     this->prev(0).name, this->prev(0).shape, " &&",
+                                     this->prev(0).name, this->prev(0).shape, " and ",
                                      this->prev(1).name, this->prev(1).shape);
     }
 
@@ -199,8 +200,8 @@ struct ProductT : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape, " &&prev0: ", this->prev(0).name, this->prev(0).shape,
-                       " &&prev1: ", this->prev(1).name, this->prev(1).shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape,
+                       " and prev1: ", this->prev(1).name, this->prev(1).shape);
         mmadd(a_grad_inN, *gradientIn, this->prev(1), {}, pProcess);
         transpose(gradInT, *gradientIn, Neg<T>());
         mmadd(b_grad_in, gradInT, this->prev(0), {}, pProcessN);
@@ -223,7 +224,7 @@ struct Add : Node<T>
     {
         if (prevs[0]->shape != prevs[1]->shape)
             throw_rte_with_backtrace("Matrix dimensions do not match for Plus between ",
-                                     prevs[0]->name, prevs[0]->shape, " &&", prevs[1]->name,
+                                     prevs[0]->name, prevs[0]->shape, " and ", prevs[1]->name,
                                      prevs[1]->shape);
         LOG_NODE_NAME(this->shape);
     }
@@ -237,7 +238,8 @@ struct Add : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape,
+                       " and prev1: ", this->prev(1).name, this->prev(1).shape);
         this->prev_nodes[0]->backward(gradientIn, ctx);
         this->prev_nodes[1]->backward(gradientIn, ctx);
     }
@@ -261,7 +263,7 @@ struct Transpose : Node<T>
     {
         if (this->prev(0).shape.t() != this->shape)
             throw_rte_with_backtrace("Matrix dimensions do not match for Transpose between ",
-                                     prev->name, " &&", this->name);
+                                     prev->name, " and ", this->name);
 
         LOG(BLUE, this->name, "\t", prev->shape, " -> ", this->shape);
     }
@@ -272,7 +274,7 @@ struct Transpose : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with  gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         transpose(gradientOut, *gradientIn);
         this->prev_nodes[0]->backward(&gradientOut, ctx);
     }
@@ -302,7 +304,7 @@ struct MeanUnext : Node<T>
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         unary_apply(this->gradientOut, *gradientIn, divOp);
         if (this->name == "mean{250}") LOG_SYNC(this->name, " Gradient out: ", this->gradientOut);
         this->prev_nodes[0]->backward(&this->gradientOut, ctx);
@@ -337,7 +339,7 @@ struct MeanExt : Node<T>
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         unary_apply(this->gradientOut, *gradientIn, divOp);
         this->prev_nodes[0]->backward(&this->gradientOut, ctx);
     }
@@ -366,7 +368,7 @@ using Mean = MeanExt<T, Dim>;
 //  sa2q->sa1q->x, sa2q->sa1k->x, sa2v->sa1v->x
 //  sa2k->sa1q->x, sa2k->sa1k->x, sa2k->sa1v->x
 //  sa2v->sa1q->x, sa2v->sa1k->x, sa2v->sa1v->x
-//  Instead if we use InputProxy &&make the graph Proxy(x)->SA1->Proxy(SA1)->SA2, then only 3
+//  Instead if we use InputProxy and make the graph Proxy(x)->SA1->Proxy(SA1)->SA2, then only 3
 //  gradients will be back-propagated to xp:
 // 3 from SA2(q,k,v)->SA1(q,k,v)->Proxy(x). Now there will be 6 paths of length 2, instead of 9 of
 // length 2 This effect becomes even more pronounced in MultiHeadAttention, where the number of
@@ -389,13 +391,13 @@ struct InputProxy : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         binary_apply(gradientOut, *gradientIn, Plus<T>());
     }
     void proxy_backward(Context* ctx)
     {
         LOG_NODE_TRACE("Proxy backward for ", this->name, " with gradientOut: ", gradientOut.name,
-                       gradientOut.shape);
+                       gradientOut.shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         in->backward(&gradientOut, ctx);
     }
 
@@ -412,7 +414,7 @@ struct InputProxy : Node<T>
 };
 
 // Normalization, Dim=WIDTH_IDX woult be similar to layer norm,
-// Dim=BATCH_IDX would be similar to  Batchorm with no momentum &&no affine transform.
+// Dim=BATCH_IDX would be similar to  Batchorm with no momentum and no affine transform.
 template <typename T = FloatT, uint32 Dim = WIDTH_IDX>
 struct Normalize : public Node<T>
 {
@@ -490,7 +492,7 @@ struct Concat0 : Node<T>  // Concatenates many matrices along width, to produce 
         {
             if (p->height() != this->height())
                 throw_rte_with_backtrace("Matrix dimensions do not match for Concat0 between ",
-                                         p->name, p->shape, " &&", this->name, p->shape);
+                                         p->name, p->shape, " and ", this->name, p->shape);
             grads.push_back(shaped_like(*p));
             prevs_as_mats.push_back((Matrix<T>*)p);
         }
@@ -578,7 +580,7 @@ struct Dropout : Node<T>
     void backward(const Matrix<T>* gradientIn, Context* ctx) override
     {
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", prev->name, prev->shape);
         if (drop_probability > 0 && this->is_training)
         {
             dropout(gradientOut, *gradientIn, mask, -1);
@@ -640,45 +642,11 @@ struct SinePositionalEmbedding : Node<T>
     {
         (void)ctx;
         LOG_NODE_TRACE("Backward for ", this->name, " with gradientIn: ", gradientIn->name,
-                       gradientIn->shape);
+                       gradientIn->shape, " and prev0: ", this->prev(0).name, this->prev(0).shape);
         this->prev_nodes[0]->backward(gradientIn, ctx);
     }
 
     virtual std::string type() const override { return "SinePosEmbn"; }
-};
-
-template <typename T>
-struct RotaryPositionEmbedding : Node<T>
-{
-    Matrix<T> sin_pos_emb;
-    Matrix<T> cos_pos_emb;
-    const uint32 base = 10000;
-
-    RotaryPositionEmbedding(NodePtr<T> prev, const std::string& name = "RotaryPositionEmbedding")
-        : Node<T>(prev->shape, {prev}, name, 1),
-          sin_pos_emb(prev->shape.set(BATCH_IDX, 1)),
-          cos_pos_emb(prev->shape.set(BATCH_IDX, 1)),
-          base(base)
-    {
-        LOG(BLUE, "RotaryPositionEmbedding with shape: ", this->shape);
-        for (uint32 y = 0; y < this->height(); ++y)
-        {
-            for (uint32 x = 0; x < this->width(); ++x)
-            {
-                FloatT theta = 1.f / std::pow(base, 2 * x / this->width());
-                sin_pos_emb(y, x) = std::sin(theta * y);
-                cos_pos_emb(y, x) = std::cos(theta * y);
-            }
-        }
-    }
-
-    void forward(Context* ctx) override
-    {
-        (void)ctx;
-        throw_rte_with_backtrace("RotaryPositionEmbedding is not implemented");
-    }
-
-    virtual std::string type() const override { return "RotaryPositionEmbedding"; }
 };
 
 #endif  // NODES_UNPARAMETERIZED_HPP

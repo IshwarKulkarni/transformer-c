@@ -353,8 +353,9 @@ __global__ void unary_apply_kernel(Matrix<Tr> res, const Matrix<T> A, Op op)
     auto out = UnaryApply(op, a_val, &res, b, y, x);
     if (std::isnan(out) || std::isinf(out))
     {
-        printf("NAN || INF in unary_apply at %d, %d, %d: %f | in: %f at out loc: %d, %d, %d\n",
-               Axy[0], Axy[1], Axy[2], out, a_val, b, y, x);
+        // printf("NAN || INF in unary_apply <%s> at %d, %d, %d: %f | in: %f at out loc: %d, %d,
+        // %d\n",
+        //       op.name, Axy[0], Axy[1], Axy[2], out, a_val, b, y, x);
     }
     NAN_INF_CHECK(out);
     res(b, y, x) = out;
@@ -446,6 +447,7 @@ template void binary_apply<FloatT, FloatT, FloatT, PowDiff<FloatT> >(Matrix<Floa
 template void binary_apply<FloatT, FloatT, FloatT, SecondMomentUpdate<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, SecondMomentUpdate<FloatT>);
 template void binary_apply<FloatT, FloatT, FloatT, Sub<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, Sub<FloatT, FloatT>);
 template void binary_apply<FloatT, FloatT, FloatT, WeightUpdate<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, WeightUpdate<FloatT, FloatT>);
+template void binary_apply<FloatT, FloatT, FloatT, SubExponentiate<FloatT, FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Matrix<FloatT> const&, SubExponentiate<FloatT, FloatT>);
 
 template void concat<FloatT, 0u, Identity<FloatT> >(Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> > const&, Identity<FloatT>);
 template void concat<FloatT, 1u, Identity<FloatT> >(Matrix<FloatT>&, std::vector<Matrix<FloatT>*, std::allocator<Matrix<FloatT>*> > const&, Identity<FloatT>);
@@ -472,4 +474,5 @@ template void unary_apply<FloatT, FloatT, Exp<FloatT> >(Matrix<FloatT>&, Matrix<
 template void unary_apply<FloatT, FloatT, MultiplyBy<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, MultiplyBy<FloatT>);
 template void unary_apply<FloatT, FloatT, Neg<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Neg<FloatT>);
 template void unary_apply<FloatT, FloatT, Pow<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, Pow<FloatT>);
+template void unary_apply<FloatT, FloatT, NLSToSoftmax<FloatT> >(Matrix<FloatT>&, Matrix<FloatT> const&, NLSToSoftmax<FloatT>);
 // clang-format on

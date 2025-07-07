@@ -7,11 +7,8 @@
 #ifndef NODE_HPP
 #define NODE_HPP
 
-#include "functors.cuh"
 #include "logger.hpp"
 #include "matrix.cuh"
-#include "matrix_ops.hpp"
-#include "matrix_ops_cpu.hpp"
 #include "parameter.hpp"
 #include "types"
 
@@ -49,6 +46,13 @@ struct NodeBase
     virtual std::string type() const { return "NodeBase"; }
 
     static std::vector<NodeBase*> all_nodes;
+
+    bool is_training = true;
+
+    static void set_all_is_training(bool is_training)
+    {
+        for (auto n : all_nodes) n->is_training = is_training;
+    }
 };
 
 template <typename T = FloatT>
@@ -71,31 +75,32 @@ struct Node : public Matrix<T>, NodeBase
     // call compute on all previous nodes to populate their outputs, then call forward
     virtual void compute(Context* ctx)
     {
-        LOG_NODE_TRACE(
-            "", forward_count, ": Computing inputs for `", this->name, "`",
-            (ctx->get_forward_pass_count() == forward_count ? ". Already computed skipping" : ""));
-        if (ctx->get_forward_pass_count() == forward_count) return;  // already computed
+        // skip only checks forward count, not depth because each node can occur only
+        // at one depth level, because this graph is a DAG.
+        bool skip = ctx->get_forward_pass_count() == m_forward_count;
+        LOG_NODE_TRACE("Call#", m_forward_count, std::string(ctx->get_depth(), '\t'),
+                       " Depth:", ctx->get_depth(), ": Computing inputs for `", this->name, "`",
+                       (skip ? ". Already computed skipping" : ""));
+        if (skip) return;  // already computed
+        ctx->depth_inc();
         for (auto& p : prev_nodes)
         {
             p->compute(ctx);
         }
-        forward_count++;
+        ctx->depth_dec();
+        m_forward_count++;
         this->forward(ctx);
     }
 
-    virtual void forward(
-        Context* ctx) = 0;  // Assumes that all `prev_nodes` are completed forward pass.
+    // Assumes that all `prev_nodes` have completed forward pass, and have their outputs populated
+    virtual void forward(Context* ctx) = 0;
     virtual void backward(const Matrix<T>* e, Context* ctx) = 0;
-    virtual void update_weights(FloatT lr, Context* ctx)
-    {
-        for (auto& p : params) p->update(lr, ctx);
-    }
 
     std::vector<Parameter<T, T>*> params;
     NodePtrVec<T> prev_nodes{};
 
-    uint64 forward_count = 0;
-    uint64 backward_count = 0;
+    uint64 m_forward_count = 0;
+    uint64 m_backward_count = 0;
 
     Matrix<T>& prev(uint32 i)
     {
@@ -112,15 +117,6 @@ struct Node : public Matrix<T>, NodeBase
         return total;
     }
 
-    bool is_training = true;
-
-    void set_is_training(bool is_training)
-    {
-        this->is_training = is_training;
-        for (auto& p : params) p->set_is_training(is_training);
-        for (auto& p : prev_nodes) p->set_is_training(is_training);
-    }
-
     // terminal node is the node that produces the output (should not be `this`)
     virtual NodePtr<T> get_terminal_node() { return nullptr; }
     virtual std::string dot_repr() { return " [label=\"" + this->name + "\" shape=rect]\n"; }
@@ -135,12 +131,5 @@ struct Node : public Matrix<T>, NodeBase
 
     virtual std::string type() const { return "Node"; }
 };
-
-template <typename Ta, typename Tb = Ta>
-std::ostream& operator<<(std::ostream& os, const Parameter<Ta, Tb>& p)
-{
-    os << *(Matrix<Ta>*)(&p) << " With Grads: " << p.grads() << std::endl;
-    return os;
-}
 
 #endif  // NODE_HPP

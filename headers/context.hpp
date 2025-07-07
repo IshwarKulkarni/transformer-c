@@ -29,8 +29,8 @@ inline std::string get_readable_id()
 
     auto now = std::chrono::system_clock::now();
     std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-    char ddmmyy[10];
-    std::strftime(ddmmyy, sizeof(ddmmyy), "%d%m%y", std::localtime(&now_time));
+    char yymmdd[10];
+    std::strftime(yymmdd, sizeof(yymmdd), "%y%m%d", std::localtime(&now_time));
     // random choice of adj1, adj2, animal:
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -41,14 +41,13 @@ inline std::string get_readable_id()
     std::string adj2_choice = adj2[dis2(gen)];
     dist dis3(0, animal.size() - 1);
     std::string animal_choice = animal[dis3(gen)];
-    return adj1_choice + "-" + adj2_choice + "-" + animal_choice + "-" + ddmmyy;
+    return adj1_choice + "-" + adj2_choice + "-" + animal_choice + "-" + yymmdd;
 }
 
 class Context
 {
  public:
     const std::string session_id;
-
     static Context& get()
     {
         static Context ctx;
@@ -61,11 +60,21 @@ class Context
 
     unsigned weight_update() { return weight_update_count++; }
 
+    unsigned lr_update() { return lr_update_count++; }
+
+    unsigned depth_inc() { return depth++; }
+
+    unsigned depth_dec() { return depth--; }
+
     unsigned get_forward_pass_count() { return forward_pass_count; }
 
     unsigned get_backward_pass_count() { return backward_pass_count; }
 
     unsigned get_weight_update_count() { return weight_update_count; }
+
+    unsigned get_lr_update_count() { return lr_update_count; }
+
+    unsigned get_depth() { return depth; }
 
     static void reset()
     {
@@ -74,6 +83,7 @@ class Context
         get().forward_pass_count = 0;
         get().backward_pass_count = 0;
         get().weight_update_count = 0;
+        get().lr_update_count = 0;
     }
 
     std::vector<std::string> node_names;
@@ -88,6 +98,7 @@ class Context
     unsigned forward_pass_count = 0;
     unsigned backward_pass_count = 0;
     unsigned weight_update_count = 0;
+    unsigned lr_update_count = 0;
 };
 
 #endif  // CONTEXT_HPP

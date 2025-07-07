@@ -10,6 +10,7 @@
 #include "context.hpp"
 #include "matrix.cuh"
 #include "matrix_ops.hpp"
+#include "matrix_ops_cpu.hpp"
 
 struct ParameterBase
 {
@@ -20,13 +21,19 @@ struct ParameterBase
         ParameterBase::param_count += s.numels;
         all_params.push_back(this);
     }
-    static uint64 get_param_count() { return param_count; }
-    static const std::vector<ParameterBase*>& get_all_params() { return all_params; }
+    static const std::vector<ParameterBase*>& get_params() { return all_params; }
     uint32 get_update_count() const { return update_count; }
     uint32 get_accum_count() const { return accum_count; }
 
+    static void set_all_is_training(bool is_training)
+    {
+        for (auto p : all_params) p->is_training = is_training;
+    }
+
     uint64 accum_count = 0;
     uint64 update_count = 0;
+
+    bool is_training = true;
 
  protected:
  private:
@@ -38,7 +45,7 @@ template <typename TW, typename TG = TW>  // weight &&gradient
 struct Parameter : Matrix<TW>, public ParameterBase
 {
     const float64 beta1 = 0.9;
-    const float64 beta2 = 0.99;
+    const float64 beta2 = 0.999;
 
     float64 beta1Decayed = 1.0;
     float64 beta2Decayed = 1.0;
@@ -81,8 +88,9 @@ struct Parameter : Matrix<TW>, public ParameterBase
         accum_count++;
     }
 
-    void update_adam(float32 lr)  // expects gradients to be accumulated in `gradients` and
-                                  // `updatedgradients` to be empty/usable
+    void update_adam(float32 lr, float32 l1_lambda, float32 l2_lambda, float32 Wfactor)
+    // expects gradients to be accumulated in `gradients` and
+    // `updatedgradients` to be empty/usable
     {
         /*
         m = beta1 * m + (1.0f - beta1) * gradient;
@@ -104,11 +112,16 @@ struct Parameter : Matrix<TW>, public ParameterBase
         }
 
         LOG_PARAM_UPDATE("Updating weights for ", YELLOW, this->name, RESET, " with ", accum_count,
-                         " accum'd grads for update# ", update_count, " mag: ", param_magnitude(),
-                         " grad mag: ", grad_magnitude(), " lr: ", lr);
+                         " accum'd grads for update# ", update_count, " mag: ", param_magnitude2(),
+                         " grad mag: ", grad_magnitude2(), " lr: ", lr);
         if (accum_count > 1)
         {
             unary_apply(gradients, DividedBy<TG>(accum_count));
+        }
+        if (std::isnan(grad_magnitude2()) && false)
+        {
+            LOG(RED, "NaN grad magnitude for ", this->name, " with grads: ", gradients);
+            exit(0);
         }
 
         binary_apply(m, gradients, MomentUpdate<TW>(beta1));
@@ -119,9 +132,8 @@ struct Parameter : Matrix<TW>, public ParameterBase
         AdamWeightUpdate<TW> awu(beta1Decayed, beta2Decayed);
         binary_apply(updatedGradients, m, v, awu);
 
-        binary_apply(*this, updatedGradients, WeightUpdate<TW>(lr));
-
-        gradients.reset();
+        WeightUpdate<TW> wu(lr, Wfactor, l1_lambda, l2_lambda);
+        binary_apply(*this, updatedGradients, wu);
     }
 
     void udate_SGD(float32 lr)
@@ -136,10 +148,9 @@ struct Parameter : Matrix<TW>, public ParameterBase
     /* @brief Update the weights using the gradients accumulated so far
      * @param lr: learning rate
      */
-    void update(float32 lr, Context*)
+    void update(float32 lr, Context*, float32 l1_lambda, float32 l2_lambda, float32 Wfactor)
     {
-        // udate_SGD(lr);
-        update_adam(lr);
+        update_adam(lr, l1_lambda, l2_lambda, Wfactor);
         accum_count = 0;
         update_count++;
     }
@@ -154,10 +165,6 @@ struct Parameter : Matrix<TW>, public ParameterBase
     {
         cudaErrCheck(cudaDeviceSynchronize());
         auto mag = sqrt(sum_squaredCPU(updatedGradients) / updatedGradients.numels());
-        if (std::isnan(mag) || std::isinf(mag))
-        {
-            throw_rte_with_backtrace("Gradient magnitude is NaN for ", *this);
-        }
         return mag;
     }
 
@@ -165,7 +172,12 @@ struct Parameter : Matrix<TW>, public ParameterBase
 
     const Matrix<TG>& prev_grads() const { return updatedGradients; }
 
-    void set_is_training(bool is_training) { this->is_training = is_training; }
+    // Reset gradients for validation
+    void reset_gradients()
+    {
+        gradients.reset();
+        updatedGradients.reset();
+    }
 
     void save_weights(std::ostream& os) const
     {
@@ -213,17 +225,30 @@ struct Parameter : Matrix<TW>, public ParameterBase
     }
 
  private:
-    bool is_training = true;
     Matrix<TG> gradients = Matrix<TG>(this->shape, this->name + "grads");
     Matrix<TG> updatedGradients = Matrix<TG>(this->shape, this->name + "updated_grads");
     Matrix<TW> updatedWeights = Matrix<TW>(this->shape, this->name + "updated");
 };
 
+template <typename TW = FloatT, typename TG>
+std::vector<Parameter<TW, TG>*> get_params_of_type()
+{
+    std::vector<Parameter<TW, TG>*> params;
+    for (auto param : ParameterBase::get_params())
+    {
+        auto p = dynamic_cast<Parameter<TW, TG>*>(param);
+        if (p != nullptr) params.push_back(p);
+    }
+    if (params.size() != ParameterBase::get_params().size())
+        LOG(RED, "There are params of type other than TW=", typeid(TW).name(),
+            "/TG=", typeid(TG).name());
+    return params;
+}
+
 inline void print_param_mags()
 {
-    for (auto param : ParameterBase::get_all_params())
+    for (auto p : get_params_of_type<FloatT, FloatT>())
     {
-        auto p = dynamic_cast<Parameter<FloatT>*>(param);
         auto param_mag = p->param_magnitude2();
         if (param_mag != 0)
             LOG("Magnitude: ", GREEN, param_mag, RESET, "\tGrad Mag: ", RED, p->grad_magnitude2(),

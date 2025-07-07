@@ -7,10 +7,9 @@
 #include "network_graph.hpp"
 #include <fstream>
 #include <istream>
-#include <regex>
 #include <sstream>
 #include "logger.hpp"
-#include "nodes/loss.hpp"
+#include "matrix.cuh"
 #include "nodes/node.hpp"
 #include "string_utils.hpp"
 #include "utils.hpp"
@@ -155,8 +154,6 @@ bool NetworkGraph::attempt_load_weight_file(std::string filename)
     m_network_desc_string = std::string(text_length, '\0');
     file_in.read(&m_network_desc_string[0], text_length);
     parse_network_desc();
-    LOG(GREEN, "Loaded network description from file `", filename, "`");
-
     // load weights as written in save_network
 
     std::set<std::string> all_node_names;
@@ -175,12 +172,13 @@ bool NetworkGraph::attempt_load_weight_file(std::string filename)
 
     for (auto node_name : all_node_names)
         throw_rte_with_backtrace("`", node_name, "` could not be located in the saved file");
+    LOG(GREEN, "Loaded network description from file `", filename, "` along with weights");
     return true;
 }
 
 void NetworkGraph::parse_network_desc()
 {
-    initialize_node_creators();
+    NodeCreatorMap::initialize();
     std::stringstream is(m_network_desc_string);
 
     // clear all internal data &&reset the graph
@@ -198,32 +196,32 @@ void NetworkGraph::parse_network_desc()
         // check if the line is a key_value_pair
         if (auto key_value_pair = parse_key_value_pair(line, ":"))
         {
-            auto [key, value] = *key_value_pair;
-            if (NodeCreatorMap::has(key))
+            auto [nodeType, nodeName] = *key_value_pair;
+            if (NodeCreatorMap::has(nodeType))
             {
-                if (m_nodes.count(value))
-                    throw_rte_with_backtrace("Node with name `", value,
+                if (m_nodes.count(nodeName))
+                    throw_rte_with_backtrace("Node with name `", nodeName,
                                              "` is being redefined on line:\n\t ", YELLOW, orig);
                 try
                 {
-                    auto* node = NodeCreatorMap::get(key)(is, value, *this);
-                    m_nodes[value] = node;
-                    m_nodes_sorted.push_back(std::make_pair(node, value));
+                    auto* node = NodeCreatorMap::get(nodeType)->create(is, nodeName, *this);
+                    m_nodes[nodeName] = node;
+                    m_nodes_sorted.push_back(std::make_pair(node, nodeName));
                 }
                 catch (const std::exception& e)
                 {
                     LOG(RED, "Parsing error on line:\n\t", YELLOW, orig, RESET);
-                    throw_rte_with_backtrace("Error creating node ", value);
+                    throw_rte_with_backtrace("Error creating node ", nodeName);
                 }
             }
-            else if (key[0] == '$')
+            else if (nodeType[0] == '$')
             {
-                if (!is_valid_literal(key))
-                    throw_rte_with_backtrace("Literal `", key, "` is not valid literal");
-                m_literals[key] = value;
+                if (!is_valid_literal(nodeType))
+                    throw_rte_with_backtrace("Literal `", nodeType, "` is not valid literal");
+                m_literals[nodeType] = nodeName;
             }
             else
-                throw_rte_with_backtrace("Unknown key: `", key, "`");
+                throw_rte_with_backtrace("Unknown key: `", nodeType, "`");
         }
     }
 
@@ -239,7 +237,6 @@ void NetworkGraph::save_network(const std::string& filename) const
 {
     std::stringstream text;
     text << m_network_desc_string << "\n";
-    text << TEXT_DELIM << "\n";
 
     std::ofstream file_out(filename, std::ios::out | std::ios::trunc | std::ios::binary);
     uint32 text_length = text.str().length();
@@ -360,40 +357,44 @@ NodePtr<FloatT> NetworkGraph::get_root_node() const
     return *all_nodes.begin();
 }
 
-void NetworkGraph::print_nodes()
+void NetworkGraph::print_nodes() const
 {
     uint32 total_param_count = 0;
-    char buffer[36];
+    char buffer[128];
+    char param_buffer[16];
     setlocale(LC_NUMERIC, "");
-    for (const auto& [node, key] : m_nodes_sorted)
+    for (const auto& [node, name] : m_nodes_sorted)
     {
-        uint32 id = node->id;
-        snprintf(buffer, sizeof(buffer), "%5d", id);
-        std::string id_str = std::string(buffer);
-
-        snprintf(buffer, 21, "%20s", key.c_str());
-        std::string key_str = std::string(buffer);
-
-        snprintf(buffer, sizeof(buffer), "%-30s", node->type().c_str());
-        std::string type_str = std::string(buffer);
-
         uint32 param_count = node->param_count();
-        snprintf(buffer, sizeof(buffer), " |%'10d", param_count);
-        std::string param_count_str =
-            param_count ? std::string(buffer) : std::string(" |") + std::string(10, ' ');
-
-        LOG(RED, id_str, param_count_str, key_str, ": ", type_str);
         total_param_count += param_count;
+
+        snprintf(param_buffer, sizeof(param_buffer), "%12d", param_count);
+        std::string param_str = param_count ? std::string(param_buffer) : std::string(12, ' ');
+
+        std::string shape_str = std::string(node->shape);
+        std::string type_str = node->type();
+
+        snprintf(buffer, sizeof(buffer), "%5d |%12s %12s: %-16.16s %16s", node->id,
+                 param_str.c_str(), name.c_str(), type_str.c_str(), shape_str.c_str());
+        LOG(RED, buffer);
     }
-    snprintf(buffer, sizeof(buffer), "Total |%'11d", total_param_count);
+    snprintf(buffer, sizeof(buffer), "Total |%'12d", total_param_count);
     LOG(RED, buffer);
 }
 
-void NetworkGraph::print_node_values()
+void NetworkGraph::print_node_values() const
 {
     cudaErrCheck(cudaDeviceSynchronize());
     for (const auto& [node, key] : m_nodes_sorted)
     {
-        LOG(key, ":\n", *node);
+        auto as_matrix = dynamic_cast<Matrix<FloatT>*>(node);
+        // skip "input" and "target"
+        std::stringstream ss;
+        if (key != "input" && key != "target")
+        {
+            ss << key << ":\n";
+            print_extents(ss, *as_matrix);
+            LOG(ss.str());
+        }
     }
 }

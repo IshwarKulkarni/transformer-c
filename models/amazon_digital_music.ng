@@ -1,0 +1,63 @@
+$GloveEmbDim: 300
+$max_sentence_len: 16
+
+Input: input
+batch: $batch
+seq_len: $max_sentence_len
+row_size: $GloveEmbDim
+
+FeedForward: encoder
+prev: input
+out_dim: 64
+intermediate_dim: 96
+l1_act: LeakyReLU
+l1_bias: true
+rate1: 0.15
+rate2: 0.15
+l2_act: LeakyReLU
+l2_bias: true
+
+SinePositionalEmbedding: PosEnc
+prev: encoder
+
+Linear: pre-mhsa
+prev: PosEnc
+out_dim: 64
+act: LeakyReLU
+
+MultiHeadSelfAttention: coreSA
+num_heads: 2
+prev:  pre-mhsa
+qkv_dims: 64
+out_dim: 64
+bias: false
+act: LeakyReLU
+
+FeedForward: decoder
+prev: coreSA
+out_dim: 64
+l1_act: LeakyReLU
+rate1: 0.15
+rate2: 0.15
+l1_bias: true
+l2_bias: true
+l1_act: LeakyReLU
+l2_act: LeakyReLU
+
+Mean: mean
+prev: decoder
+dim: 1
+
+Linear: output
+prev: mean
+out_dim: 5
+act: LeakyReLU
+
+Input: target
+batch: $batch
+seq_len: 1
+row_size: 5
+
+LogSoftmaxCELoss: loss
+predictions: output
+target: target

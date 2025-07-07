@@ -21,7 +21,7 @@ std::random_device rdm::rd;
 std::mt19937_64 rdm::det_gen(det_seed);
 std::seed_seq rdm::seed({rdm::rd()});
 std::mt19937_64 rdm::rdm_gen(seed);
-bool rdm::deterministic = false;
+bool rdm::deterministic = true;
 
 uint64 ParameterBase::param_count = 0;
 

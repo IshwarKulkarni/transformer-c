@@ -10,9 +10,6 @@
 #include <cuda_runtime_api.h>
 #include <algorithm>
 #include <chrono>
-#include <map>
-#include <random>
-#include <regex>
 #include <vector>
 #include "errors.hpp"
 #include "logger.hpp"
@@ -262,7 +259,9 @@ inline std::ostream& progress_bar(uint32 cur, uint32 limit)
     float64 rate = float32(cur) / timer.get_duration();
     float64 eta = float32(limit - cur) / rate;
     cout << "\r" << setw(3) << cur << '/' << limit << " " << setw(4) << pct << "% " << bar << " "
-         << setprecision(4) << setw(5) << rate << "it/s | " << setw(6) << eta << "s.";
+         << setprecision(4) << setw(5) << rate << "it/s | " << setw(6) << eta << "s."
+         << std::string(20, ' ');
+    if (cur >= limit) cout << '\n';
     return cout;
 }
 

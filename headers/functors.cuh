@@ -13,7 +13,6 @@
 #include <string>
 #include <type_traits>
 #include "errors.hpp"
-#include "logger.hpp"
 #include "matrix.cuh"
 #include "types"
 
@@ -90,7 +89,7 @@ template <typename Ta>
 struct Exp  // can apply shfted value
 {
     Ta shift;
-    static constexpr Ta max_exp = std::is_same<Ta, float16>::value ? 9 : 30;
+    static constexpr Ta max_exp = std::is_same<Ta, float16>::value ? 9 : 15;
     Exp(Ta shift = 0) : shift(shift) {}
     __host__ __device__ inline Ta operator()(Ta a) const
     {
@@ -158,6 +157,7 @@ struct MultiplyBy
     T factor;
     MultiplyBy(T factor) : factor(factor) {}
     __host__ __device__ inline T operator()(T a) const { return a * factor; }
+    static constexpr char const* name = "MultiplyBy";
 };
 
 template <typename T, int32 Multiplier>
@@ -224,6 +224,13 @@ struct Div
     __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return a / (b + epsilon); }
 };
 
+template <typename Ta, typename Tb = Ta>
+struct SubExponentiate
+{
+    __host__ __device__ inline Ta operator()(Ta a, Tb b) const { return exp(a - b); }
+    static constexpr char const* name = "SubExponentiate";
+};
+
 // differentiation of division operator
 template <typename T>
 struct DivDiff
@@ -239,6 +246,7 @@ struct Pow
     T exponent;
     Pow(T exponent) : exponent(exponent) {}
     __host__ __device__ inline T operator()(T a) const { return pow(a, exponent); }
+    static constexpr char const* name = "Pow";
 };
 
 template <typename T>
@@ -298,6 +306,7 @@ struct NLSToSoftmax
     // && -nls = [xi - log(Sum(e^xj))],
     // exp(-nls) =  e^xi/(Sum(e^xj))
     __host__ __device__ inline T operator()(T nls) const { return exp(-nls); }
+    static constexpr char const* name = "NLSToSoftmax";
 };
 
 template <typename Ta, typename Tb = Ta>
@@ -315,9 +324,24 @@ struct WeightUpdate
 {
     static constexpr WT Identity = 0;
     WuT clip = 1;
-    float64 learning_rate;
-    WeightUpdate(float64 learning_rate = 1e-3) : learning_rate(learning_rate) {}
-    __host__ __device__ inline WT operator()(WT a, WuT b) const { return a - learning_rate * b; }
+    const float64 learning_rate;
+    const float32 adam_Wfactor;  // adamW factor
+    const float32 l1_lambda;
+    const float32 l2_lambda;
+
+    WeightUpdate(float64 learning_rate = 1e-3, float32 w_factor = 0.001, float32 l1_lambda = 0.0001,
+                 float32 l2_lambda = 0.0001)
+        : learning_rate(learning_rate),
+          adam_Wfactor(w_factor),
+          l1_lambda(l1_lambda),
+          l2_lambda(l2_lambda)
+    {
+    }
+    __host__ __device__ inline WT operator()(WT a, WuT b) const
+    {
+        return a - learning_rate * b - adam_Wfactor * a - (a > 0 ? l1_lambda : -l1_lambda) -
+               l2_lambda * a;
+    }
 };
 
 template <typename WT, typename WuT = WT>
@@ -373,8 +397,8 @@ struct AdamWeightUpdate
         {
             return m / (sqrt(v) + epsilon);
         }
-        float32 m_hat = m / (1.0 - beta1d);
-        float32 v_hat = v / (1.0 - beta2d);
+        float32 m_hat = m / (beta1d > epsilon ? (1.0 - beta1d) : 1.0);
+        float32 v_hat = v / (beta2d > epsilon ? (1.0 - beta2d) : 1.0);
         float32 out = m_hat / (sqrt(v_hat) + epsilon);
         return WT(out);
     }
@@ -440,7 +464,7 @@ struct LeakyRelu
     typedef struct LeakyReluF
     {
         float32 slope;
-        LeakyReluF(float32 negative_slope = 3e-3) : slope(negative_slope) {}
+        LeakyReluF(float32 negative_slope = 0.01) : slope(negative_slope) {}
         __host__ __device__ inline T operator()(T a) const { return a > 0 ? a : a * slope; }
         static constexpr char const* name = "LeakyReluForward";
     } forward;
@@ -553,11 +577,5 @@ struct Composition<T, F>  // last functor
 
 template <typename T>  // (a - b)^2
 using DiffSq = Composition<T, Sub<T>, Square<T>>;
-
-template <typename T>  // (a - b)
-struct MultNeg2
-{
-    __host__ __device__ inline T operator()(T a, T b) const { return 2 * (a - b); }
-};
 
 #endif

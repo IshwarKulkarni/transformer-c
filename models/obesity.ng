@@ -1,28 +1,26 @@
 Input: input
 batch: $batch
-height: 1
-width: 8
+row_size: 16
 
 FeedForward: ff
 prev: input
 l1_act: leakyrelu
 l2_act: leakyrelu
 l1_bias: false
-intermediate_dim: 16
-out_size: 20
+intermediate_dim: 24
+out_dim: 12
 normalize: no
 
 Linear: out
 prev: ff
-dim: 3
+out_dim: 7
 bias: false
 act: identity
 
 Input: target
 batch: input->batch
-height: 1
-width: out->dim
+row_size: out->out_dim
 
 LSMCE: loss
-pred: out
-tgt: target
+predictions: out
+target: target
